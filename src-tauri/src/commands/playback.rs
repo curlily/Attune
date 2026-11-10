@@ -34,7 +34,9 @@ pub async fn connect_spotify(state: State<'_, AppState>) -> Result<(), AppError>
 #[tauri::command]
 pub async fn get_playstate(state: State<'_, AppState>) -> Result<PlayState, AppError> {
     let controller_slot = state.controller.lock().await;
-    let controller = controller_slot.as_ref().ok_or(jam_core::Error::NotConnected)?;
+    let controller = controller_slot
+        .as_ref()
+        .ok_or(jam_core::Error::NotConnected)?;
     Ok(controller.get_playstate().await?)
 }
 
@@ -43,7 +45,9 @@ pub async fn get_session_state(
     state: State<'_, AppState>,
 ) -> Result<jam_core::protocol::SessionMusicState, AppError> {
     let controller_slot = state.controller.lock().await;
-    let controller = controller_slot.as_ref().ok_or(jam_core::Error::NotConnected)?;
+    let controller = controller_slot
+        .as_ref()
+        .ok_or(jam_core::Error::NotConnected)?;
     Ok(controller.get_session_state().await?)
 }
 
@@ -53,7 +57,9 @@ pub async fn apply_session_snapshot(
     snapshot: SessionSnapshot,
 ) -> Result<(), AppError> {
     let controller_slot = state.controller.lock().await;
-    let controller = controller_slot.as_ref().ok_or(jam_core::Error::NotConnected)?;
+    let controller = controller_slot
+        .as_ref()
+        .ok_or(jam_core::Error::NotConnected)?;
     controller.apply_snapshot(&snapshot).await?;
     Ok(())
 }
@@ -64,7 +70,9 @@ pub async fn apply_session_operation(
     operation: SessionOperation,
 ) -> Result<(), AppError> {
     let controller_slot = state.controller.lock().await;
-    let controller = controller_slot.as_ref().ok_or(jam_core::Error::NotConnected)?;
+    let controller = controller_slot
+        .as_ref()
+        .ok_or(jam_core::Error::NotConnected)?;
     controller.apply_operation(&operation).await?;
     Ok(())
 }

@@ -87,10 +87,7 @@ pub enum SessionOperation {
         is_playing: bool,
     },
     #[serde(rename = "playback.seek")]
-    PlaybackSeek {
-        entry_id: String,
-        position_ms: u64,
-    },
+    PlaybackSeek { entry_id: String, position_ms: u64 },
     #[serde(rename = "playback.setPlaying")]
     PlaybackSetPlaying { is_playing: bool },
 }
@@ -105,10 +102,13 @@ mod tests {
         let operation = SessionOperation::PlaybackSetPlaying { is_playing: true };
         let value = serde_json::to_value(operation).expect("serialize operation");
 
-        assert_eq!(value, json!({
-            "type": "playback.setPlaying",
-            "isPlaying": true,
-        }));
+        assert_eq!(
+            value,
+            json!({
+                "type": "playback.setPlaying",
+                "isPlaying": true,
+            })
+        );
     }
 
     #[test]
@@ -140,6 +140,9 @@ mod tests {
         let value = serde_json::to_value(state).expect("serialize state");
 
         assert_eq!(value["currentEntryId"], serde_json::Value::Null);
-        assert_eq!(value["playback"]["positionCapturedAtMs"], 1_800_000_000_000_u64);
+        assert_eq!(
+            value["playback"]["positionCapturedAtMs"],
+            1_800_000_000_000_u64
+        );
     }
 }

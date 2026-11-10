@@ -122,9 +122,10 @@ impl BridgeController {
             }
         };
 
-        let target = match targets.into_iter().find(|target| {
-            target.r#type == "page" && target.url.contains(&self.config.page_url)
-        }) {
+        let target = match targets
+            .into_iter()
+            .find(|target| target.r#type == "page" && target.url.contains(&self.config.page_url))
+        {
             Some(target) => target,
             None => {
                 handler_task.abort();
@@ -150,11 +151,7 @@ impl BridgeController {
         Ok(())
     }
 
-    async fn find_page(
-        &self,
-        browser: &Browser,
-        target: &TargetInfo,
-    ) -> Result<Page> {
+    async fn find_page(&self, browser: &Browser, target: &TargetInfo) -> Result<Page> {
         const ATTEMPTS: u32 = 20;
 
         // Try to get the page a few times with delays, because Chromiumoxide can be slow
@@ -407,7 +404,8 @@ impl BridgeController {
 
     /// Call a method on the shared protocol API exposed by each provider script.
     async fn call_protocol(&self, method: &'static str, args: &[Value]) -> Result<Value> {
-        self.call_api("window.__MYJAM_BRIDGE_V1__", method, args).await
+        self.call_api("window.__MYJAM_BRIDGE_V1__", method, args)
+            .await
     }
 
     /// Returns the method's value; a void JavaScript method yields `Value::Null`.
@@ -424,7 +422,10 @@ impl BridgeController {
         let expression = format!(
             "(async () => {{ try {{ const api = {api_expression}; if (!api) throw new Error('Bridge API is unavailable'); const fn = api[{method_json}]; if (typeof fn !== 'function') throw new Error('Bridge method is unavailable: ' + {method_json}); const value = await fn.apply(api, {args_json}); return {{ __myjamBridgeResult: true, ok: true, value: value === undefined ? null : value }}; }} catch (error) {{ return {{ __myjamBridgeResult: true, ok: false, error: String(error?.stack ?? error) }}; }} }})()"
         );
-        let invalid = || Error::InvalidBridgeResponse { method, source: None };
+        let invalid = || Error::InvalidBridgeResponse {
+            method,
+            source: None,
+        };
         let mut result = self.eval_value(&expression).await?.ok_or_else(invalid)?;
 
         if result["__myjamBridgeResult"] != true {
@@ -558,11 +559,7 @@ fn parse_bridge_value<T: DeserializeOwned>(method: &'static str, value: Value) -
     })
 }
 
-async fn wait_for_cdp(
-    debugging_port: u16,
-    page_url: &str,
-    timeout: Duration,
-) -> Result<()> {
+async fn wait_for_cdp(debugging_port: u16, page_url: &str, timeout: Duration) -> Result<()> {
     let deadline = tokio::time::Instant::now() + timeout;
 
     info!("Waiting for CDP...");
@@ -609,11 +606,10 @@ async fn music_client_running(debugging_port: u16, page_url: &str) -> Result<boo
         return Ok(false);
     }
 
-    let targets: Vec<serde_json::Value> =
-        response.json().await.map_err(|source| Error::Http {
-            context: "read the CDP target list",
-            source,
-        })?;
+    let targets: Vec<serde_json::Value> = response.json().await.map_err(|source| Error::Http {
+        context: "read the CDP target list",
+        source,
+    })?;
 
     Ok(targets.iter().any(|target| {
         target["type"] == "page"
@@ -677,7 +673,6 @@ async fn kill_music_client(sys: &mut System, path: &Path) -> Result<()> {
         sleep(Duration::from_millis(100)).await;
     }
 }
-
 
 impl Drop for BridgeController {
     fn drop(&mut self) {

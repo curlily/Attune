@@ -6,4 +6,3 @@ pub mod providers;
 pub mod structs;
 
 pub use error::{Error, Result};
-

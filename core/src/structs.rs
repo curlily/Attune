@@ -39,5 +39,5 @@ pub struct PlayState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueueState {
-    pub queue: Vec<Track>
+    pub queue: Vec<Track>,
 }

@@ -9,20 +9,20 @@ async fn main() -> jam_core::Result<()> {
     let controller = BridgeController::initialise(providers::tidal()?).await?;
 
     let play_state = controller.get_playstate().await?;
-        match play_state.track {
-            Some(track) => {
-                println!(
-                    "Current Playstate\n| Title: {} \n| Artists: {}\n| Position: {}\n| Timestamp: {}\n| Playing: {}",
-                    track.title,
-                    track.artists.join(", "),
-                    play_state.position_ms.unwrap_or_default(),
-                    play_state.timestamp_ms.unwrap_or_default(),
-                    play_state.playing
-                )
-            }
-            None => {
-                println!("Currently not playing");
-            }
+    match play_state.track {
+        Some(track) => {
+            println!(
+                "Current Playstate\n| Title: {} \n| Artists: {}\n| Position: {}\n| Timestamp: {}\n| Playing: {}",
+                track.title,
+                track.artists.join(", "),
+                play_state.position_ms.unwrap_or_default(),
+                play_state.timestamp_ms.unwrap_or_default(),
+                play_state.playing
+            )
         }
+        None => {
+            println!("Currently not playing");
+        }
+    }
     Ok(())
 }
