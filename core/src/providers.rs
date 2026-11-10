@@ -1,9 +1,7 @@
 use std::path::PathBuf;
 
-use anyhow::Context;
-
 use crate::{
-    Result,
+    Error, Result,
     structs::{ProviderConfig, ProviderId},
 };
 
@@ -12,10 +10,10 @@ use crate::{
 const TIDAL_CDP_PORT: u16 = 9222;
 const SPOTIFY_CDP_PORT: u16 = 9223;
 
-fn env_dir(var: &str) -> anyhow::Result<PathBuf> {
+fn env_dir(var: &'static str) -> Result<PathBuf> {
     std::env::var_os(var)
         .map(PathBuf::from)
-        .with_context(|| format!("{var} is not set"))
+        .ok_or(Error::MissingEnv { var })
 }
 
 pub fn spotify() -> Result<ProviderConfig> {

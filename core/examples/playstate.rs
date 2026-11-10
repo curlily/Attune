@@ -1,12 +1,12 @@
 use jam_core::{bridge_controller::BridgeController, providers};
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> jam_core::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "jam_core=info".into()))
         .init();
 
-    let mut controller = BridgeController::initialise(providers::tidal()?).await?;
+    let controller = BridgeController::initialise(providers::tidal()?).await?;
 
     let play_state = controller.get_playstate().await?;
         match play_state.track {

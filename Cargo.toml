@@ -3,7 +3,6 @@ members = ["core", "src-tauri"]
 resolver = "2"
 
 [workspace.dependencies]
-anyhow = "1.0.104"
 chromiumoxide = "0.9.1"
 futures-util = "0.3.33"
 reqwest = { version= "0.13.4", features = ["json"] }
@@ -14,3 +13,11 @@ tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "sync", "
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 thiserror = "2.0.21"
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

@@ -5,7 +5,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, anyhow, bail};
 use chromiumoxide::cdp::{
     browser_protocol::{
         log::{EnableParams as LogEnableParams, EventEntryAdded},
@@ -26,8 +25,15 @@ use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    Error::{self, CDPError}, Result, protocol::{SessionMusicState, SessionOperation, SessionSnapshot}, structs::{PlayState, ProviderConfig, QueueState, Track},
+    Error, Result,
+    protocol::{SessionMusicState, SessionOperation, SessionSnapshot},
+    structs::{PlayState, ProviderConfig, QueueState, Track},
 };
+
+/// Attach a static context to a chromiumoxide failure.
+fn cdp(context: &'static str) -> impl FnOnce(chromiumoxide::error::CdpError) -> Error {
+    move |source| Error::Cdp { context, source }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", content = "data")]
@@ -92,7 +98,7 @@ impl BridgeController {
         );
         let (mut browser, mut handler) = Browser::connect(&cdp_url)
             .await
-            .or(Err(Error::BrowserConnectionFailed))?;
+            .map_err(cdp("connect to the provider browser"))?;
 
         let handler_task = tokio::spawn(async move {
             while let Some(result) = handler.next().await {
@@ -112,7 +118,7 @@ impl BridgeController {
             Ok(targets) => targets,
             Err(error) => {
                 handler_task.abort();
-                return Err(CDPError(error));
+                return Err(cdp("list browser targets")(error));
             }
         };
 
@@ -122,7 +128,9 @@ impl BridgeController {
             Some(target) => target,
             None => {
                 handler_task.abort();
-                return Err(Error::TargetUrlNotFound { url: self.config.page_url.clone() });
+                return Err(Error::TargetNotFound {
+                    url: self.config.page_url.clone(),
+                });
             }
         };
 
@@ -130,7 +138,7 @@ impl BridgeController {
             Ok(page) => page,
             Err(error) => {
                 handler_task.abort();
-                return Err(error.into());
+                return Err(error);
             }
         };
 
@@ -146,33 +154,24 @@ impl BridgeController {
         &self,
         browser: &Browser,
         target: &TargetInfo,
-    ) -> anyhow::Result<Page> {
-        let mut last_error = None;
+    ) -> Result<Page> {
+        const ATTEMPTS: u32 = 20;
 
         // Try to get the page a few times with delays, because Chromiumoxide can be slow
-        for attempt in 1..=20 {
+        let mut attempt = 1;
+        loop {
             match browser.get_page(target.target_id.clone()).await {
                 Ok(page) => return Ok(page),
-                Err(error) => {
-                    last_error = Some(error);
-
-                    tracing::debug!(
-                        attempt,
-                        target_id = ?target.target_id,
-                        "Page not ready yet"
-                    );
-
+                Err(error) if attempt >= ATTEMPTS => {
+                    return Err(cdp("attach to the provider page target")(error));
+                }
+                Err(_) => {
+                    debug!(attempt, target_id = ?target.target_id, "Page not ready yet");
+                    attempt += 1;
                     sleep(Duration::from_millis(100)).await;
                 }
             }
         }
-
-        Err(anyhow!(
-            "Target was found but never became attachable: {}",
-            last_error
-                .map(|error| error.to_string())
-                .unwrap_or_else(|| "unknown error".to_string())
-        ))
     }
 
     #[allow(dead_code)]
@@ -192,10 +191,8 @@ impl BridgeController {
         Ok(())
     }
 
-    fn page(&self) -> anyhow::Result<&Page> {
-        self.page
-            .as_ref()
-            .ok_or_else(|| anyhow!("not connected to page"))
+    fn page(&self) -> Result<&Page> {
+        self.page.as_ref().ok_or(Error::NotConnected)
     }
 
     pub async fn install_bridge(&mut self) -> Result<()> {
@@ -207,40 +204,40 @@ impl BridgeController {
         // Enable the CDP domains used by our event listeners.
         page.execute(PageEnableParams::default())
             .await
-            .context("failed to enable Page domain")?;
+            .map_err(cdp("enable the Page domain"))?;
         page.execute(RuntimeEnableParams::default())
             .await
-            .context("failed to enable Runtime domain")?;
+            .map_err(cdp("enable the Runtime domain"))?;
         page.execute(LogEnableParams::default())
             .await
-            .context("failed to enable Log domain")?;
+            .map_err(cdp("enable the Log domain"))?;
 
         // Register listeners before reload.
         let mut binding_events = page
             .event_listener::<EventBindingCalled>()
             .await
-            .context("failed to subscribe to CDP binding events")?;
+            .map_err(cdp("subscribe to CDP binding events"))?;
         let mut console_events = page
             .event_listener::<EventConsoleApiCalled>()
             .await
-            .context("failed to subscribe to browser console events")?;
+            .map_err(cdp("subscribe to browser console events"))?;
         let mut exception_events = page
             .event_listener::<EventExceptionThrown>()
             .await
-            .context("failed to subscribe to JavaScript exception events")?;
+            .map_err(cdp("subscribe to JavaScript exception events"))?;
         let mut log_events = page
             .event_listener::<EventEntryAdded>()
             .await
-            .context("failed to subscribe to Chromium log events")?;
+            .map_err(cdp("subscribe to Chromium log events"))?;
 
         page.execute(AddBindingParams::new("__jamEvent"))
             .await
-            .context("failed to install __jamEvent binding")?;
+            .map_err(cdp("install the __jamEvent binding"))?;
 
         let script_id = page
             .evaluate_on_new_document(&bridge_source)
             .await
-            .context("failed to install bridge init script")?;
+            .map_err(cdp("install the bridge init script"))?;
 
         info!(?script_id, "Bridge init script registered");
 
@@ -331,9 +328,7 @@ impl BridgeController {
         info!("Requesting page reload to execute bridge");
         if let Err(error) = page.execute(ReloadParams::default()).await {
             event_task.abort();
-            return Err(anyhow!(error)
-                .context("failed to issue page reload")
-                .into());
+            return Err(cdp("reload the provider page")(error));
         }
 
         info!("Reload requested; waiting for bridge Ready");
@@ -343,9 +338,7 @@ impl BridgeController {
             tokio::select! {
                 _ = tokio::time::sleep_until(deadline) => {
                     event_task.abort();
-                    return Err(anyhow!(
-                        "Timed out waiting for bridge Ready"
-                    ).into());
+                    return Err(Error::Timeout { context: "receive the bridge Ready event" });
                 }
 
                 event = bridge_rx.recv() => {
@@ -356,12 +349,13 @@ impl BridgeController {
 
                             let version = self
                                 .eval_value("window.__MYJAM_BRIDGE_V1__?.version ?? null")
-                                .await?;
-                            if version.and_then(|value| value.as_u64()) != Some(1) {
+                                .await?
+                                .and_then(|value| value.as_u64());
+                            if version != Some(1) {
                                 if let Some(task) = self.event_task.take() {
                                     task.abort();
                                 }
-                                bail!("provider bridge does not implement MyJam bridge protocol v1");
+                                return Err(Error::UnsupportedBridgeVersion { found: version });
                             }
 
                             return Ok(());
@@ -369,9 +363,7 @@ impl BridgeController {
 
                         Ok(BridgeEvent::Error(error)) => {
                             event_task.abort();
-                            return Err(anyhow!(
-                                "Bridge initialization failed: {error}"
-                            ).into());
+                            return Err(Error::BridgeReported { message: error });
                         }
 
                         Ok(event) => {
@@ -384,9 +376,7 @@ impl BridgeController {
 
                         Err(broadcast::error::RecvError::Closed) => {
                             event_task.abort();
-                            return Err(anyhow!(
-                                "Bridge event channel closed"
-                            ).into());
+                            return Err(Error::EventChannelClosed);
                         }
                     }
                 }
@@ -403,7 +393,7 @@ impl BridgeController {
         let result = page
             .evaluate_expression(expression)
             .await
-            .with_context(|| format!("CDP evaluation failed: {expression}"))?;
+            .map_err(cdp("evaluate a renderer expression"))?;
 
         Ok(result.into_value::<Value>().ok())
     }
@@ -411,21 +401,22 @@ impl BridgeController {
     /// Call a method on the legacy provider bridge API (`window.bridge`).
     /// The CDP transport stays provider-neutral; only the injected script
     /// implements the method's provider-specific behavior.
-    async fn call_bridge(&self, method: &str, args: &[Value]) -> Result<Option<Value>> {
+    async fn call_bridge(&self, method: &'static str, args: &[Value]) -> Result<Value> {
         self.call_api("window.bridge", method, args).await
     }
 
     /// Call a method on the shared protocol API exposed by each provider script.
-    async fn call_protocol(&self, method: &str, args: &[Value]) -> Result<Option<Value>> {
+    async fn call_protocol(&self, method: &'static str, args: &[Value]) -> Result<Value> {
         self.call_api("window.__MYJAM_BRIDGE_V1__", method, args).await
     }
 
+    /// Returns the method's value; a void JavaScript method yields `Value::Null`.
     async fn call_api(
         &self,
         api_expression: &str,
-        method: &str,
+        method: &'static str,
         args: &[Value],
-    ) -> Result<Option<Value>> {
+    ) -> Result<Value> {
         let method_json = serde_json::to_string(method)?;
         let args_json = serde_json::to_string(args)?;
         // Return an explicit envelope so a JS exception is never confused
@@ -433,35 +424,30 @@ impl BridgeController {
         let expression = format!(
             "(async () => {{ try {{ const api = {api_expression}; if (!api) throw new Error('Bridge API is unavailable'); const fn = api[{method_json}]; if (typeof fn !== 'function') throw new Error('Bridge method is unavailable: ' + {method_json}); const value = await fn.apply(api, {args_json}); return {{ __myjamBridgeResult: true, ok: true, value: value === undefined ? null : value }}; }} catch (error) {{ return {{ __myjamBridgeResult: true, ok: false, error: String(error?.stack ?? error) }}; }} }})()"
         );
-        let result = self
-            .eval_value(&expression)
-            .await?
-            .context("CDP did not return a bridge result")?;
+        let invalid = || Error::InvalidBridgeResponse { method, source: None };
+        let mut result = self.eval_value(&expression).await?.ok_or_else(invalid)?;
 
         if result["__myjamBridgeResult"] != true {
-             bail!("CDP returned an invalid bridge response");
+            return Err(invalid());
         }
         if result["ok"] != true {
-            let error = result["error"]
+            let message = result["error"]
                 .as_str()
-                .unwrap_or("unknown JavaScript error");
-            bail!("provider bridge call failed: {error}");
+                .unwrap_or("unknown JavaScript error")
+                .to_owned();
+            return Err(Error::BridgeCallFailed { method, message });
         }
 
-        Ok(Some(result["value"].clone()))
+        Ok(result["value"].take())
     }
 
     async fn call_protocol_value<T: DeserializeOwned>(
         &self,
-        method: &str,
+        method: &'static str,
         args: &[Value],
     ) -> Result<T> {
-        let value = self
-            .call_protocol(method, args)
-            .await?
-            .context("bridge method returned no value")?;
-        Ok(serde_json::from_value(value)
-            .context("bridge returned an invalid value")?)
+        let value = self.call_protocol(method, args).await?;
+        parse_bridge_value(method, value)
     }
 
     /// Read the current provider state in the shared, provider-independent format.
@@ -472,10 +458,9 @@ impl BridgeController {
     /// Apply an authoritative session snapshot to the connected music client.
     pub async fn apply_snapshot(&self, snapshot: &SessionSnapshot) -> Result<()> {
         if snapshot.protocol_version != 1 {
-            bail!(
-                "unsupported session protocol version: {}",
-                snapshot.protocol_version
-            );
+            return Err(Error::UnsupportedProtocolVersion {
+                found: snapshot.protocol_version,
+            });
         }
         self.call_protocol("applySnapshot", &[serde_json::to_value(&snapshot.state)?])
             .await?;
@@ -506,13 +491,8 @@ impl BridgeController {
     }
 
     pub async fn get_playstate(&self) -> Result<PlayState> {
-        let result = self
-            .call_bridge("getPlayState", &[])
-            .await?
-            .context("provider bridge returned no play state")?;
-        serde_json::from_value(result)
-            .context("provider bridge returned an invalid play state")
-            .map_err(Into::into)
+        let value = self.call_bridge("getPlayState", &[]).await?;
+        parse_bridge_value("getPlayState", value)
     }
 
     pub async fn play_track(&self, track: Track) -> Result<()> {
@@ -571,6 +551,13 @@ impl BridgeController {
     }
 }
 
+fn parse_bridge_value<T: DeserializeOwned>(method: &'static str, value: Value) -> Result<T> {
+    serde_json::from_value(value).map_err(|source| Error::InvalidBridgeResponse {
+        method,
+        source: Some(source),
+    })
+}
+
 async fn wait_for_cdp(
     debugging_port: u16,
     page_url: &str,
@@ -585,7 +572,9 @@ async fn wait_for_cdp(
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(Error::CDPTimeout)
+            return Err(Error::Timeout {
+                context: "find the provider page on the CDP port",
+            });
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
@@ -620,7 +609,11 @@ async fn music_client_running(debugging_port: u16, page_url: &str) -> Result<boo
         return Ok(false);
     }
 
-    let targets: Vec<serde_json::Value> = response.json().await?;
+    let targets: Vec<serde_json::Value> =
+        response.json().await.map_err(|source| Error::Http {
+            context: "read the CDP target list",
+            source,
+        })?;
 
     Ok(targets.iter().any(|target| {
         target["type"] == "page"
@@ -634,11 +627,16 @@ async fn kill_music_client(sys: &mut System, path: &Path) -> Result<()> {
     let exe = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| Error::PathNotFound { path: path.to_path_buf() })?;
+        .ok_or_else(|| Error::InvalidExecutablePath {
+            path: path.to_path_buf(),
+        })?;
     let status = Command::new("taskkill")
         .args(["/IM", exe, "/T", "/F"])
         .status()
-        .context("failed to execute taskkill")?;
+        .map_err(|source| Error::KillFailed {
+            exe: exe.to_owned(),
+            source,
+        })?;
 
     // Exit code 128 = The process "TIDAL.exe" was not found.
     if let Some(128) = status.code() {
@@ -647,7 +645,10 @@ async fn kill_music_client(sys: &mut System, path: &Path) -> Result<()> {
     }
 
     if !status.success() {
-        bail!("Taskkill failed with status: {status}");
+        return Err(Error::KillCommandFailed {
+            exe: exe.to_owned(),
+            status,
+        });
     }
 
     let timeout = Duration::from_secs(5);
@@ -667,7 +668,10 @@ async fn kill_music_client(sys: &mut System, path: &Path) -> Result<()> {
         }
 
         if start.elapsed() >= timeout {
-            bail!("{exe} is still running after {} seconds", timeout.as_secs());
+            return Err(Error::ProcessStillRunning {
+                exe: exe.to_owned(),
+                timeout_secs: timeout.as_secs(),
+            });
         }
 
         sleep(Duration::from_millis(100)).await;
