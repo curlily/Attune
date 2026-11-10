@@ -1,0 +1,14 @@
+{
+  "name": "jam",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "check:bridges": "node --check core/src/adapters/tidal.js && node --check core/src/adapters/spotify.js",
+    "test": "node --test core/tests/tidal-bridge.test.mjs && npm run check:bridges"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
