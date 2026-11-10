@@ -96,33 +96,3 @@ pub enum Error {
     #[error("JSON serialization failed")]
     Json(#[from] serde_json::Error),
 }
-
-impl Error {
-    /// Stable, machine-readable identifier for this kind of failure.
-    ///
-    /// UI and wire consumers branch on this instead of on display text, which
-    /// may be reworded. The match is exhaustive, so adding a variant forces a
-    /// deliberate code choice.
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::NotConnected => "notConnected",
-            Self::AlreadyConnected => "alreadyConnected",
-            Self::MissingEnv { .. } => "missingEnv",
-            Self::InvalidExecutablePath { .. } => "invalidExecutablePath",
-            Self::LaunchFailed { .. } => "launchFailed",
-            Self::KillFailed { .. } | Self::KillCommandFailed { .. } => "killFailed",
-            Self::ProcessStillRunning { .. } => "processStillRunning",
-            Self::Cdp { .. } => "cdp",
-            Self::Http { .. } => "http",
-            Self::TargetNotFound { .. } => "targetNotFound",
-            Self::Timeout { .. } => "timeout",
-            Self::BridgeReported { .. } => "bridgeReported",
-            Self::BridgeCallFailed { .. } => "bridgeCallFailed",
-            Self::InvalidBridgeResponse { .. } => "invalidBridgeResponse",
-            Self::UnsupportedBridgeVersion { .. } => "unsupportedBridgeVersion",
-            Self::EventChannelClosed => "eventChannelClosed",
-            Self::UnsupportedProtocolVersion { .. } => "unsupportedProtocolVersion",
-            Self::Json(_) => "json",
-        }
-    }
-}

@@ -8,22 +8,6 @@ pub enum AppError {
     Io(#[from] std::io::Error),
 }
 
-impl AppError {
-    fn code(&self) -> &'static str {
-        match self {
-            Self::Core(error) => error.code(),
-            Self::Io(_) => "io",
-        }
-    }
-}
-
-/// Shape the frontend receives when a command rejects: `{ code, message }`.
-#[derive(Serialize)]
-struct WireError {
-    code: &'static str,
-    message: String,
-}
-
 /// Join an error and all of its sources: "outer: middle: root cause".
 ///
 /// `#[error(transparent)]` forwards both Display and source() to the wrapped
@@ -39,13 +23,10 @@ fn message_chain(error: &dyn std::error::Error) -> String {
     message
 }
 
+/// Commands reject with the full cause chain as a plain string.
 impl Serialize for AppError {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        WireError {
-            code: self.code(),
-            message: message_chain(self),
-        }
-        .serialize(s)
+        s.serialize_str(&message_chain(self))
     }
 }
 
@@ -54,7 +35,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn serializes_code_and_full_cause_chain() {
+    fn serializes_full_cause_chain() {
         let error: AppError = jam_core::Error::KillFailed {
             exe: "TIDAL.exe".to_owned(),
             source: std::io::Error::other("access denied"),
@@ -63,9 +44,8 @@ mod tests {
 
         let value = serde_json::to_value(&error).expect("serialize error");
 
-        assert_eq!(value["code"], "killFailed");
         assert_eq!(
-            value["message"],
+            value,
             "failed to run the process termination command for TIDAL.exe: access denied"
         );
     }
@@ -75,7 +55,6 @@ mod tests {
         let error: AppError = jam_core::Error::NotConnected.into();
         let value = serde_json::to_value(&error).expect("serialize error");
 
-        assert_eq!(value["code"], "notConnected");
-        assert_eq!(value["message"], "not connected to a music provider");
+        assert_eq!(value, "not connected to a music provider");
     }
 }
