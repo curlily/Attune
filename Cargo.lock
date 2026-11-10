@@ -2018,6 +2018,7 @@ version = "0.1.0"
 dependencies = [
  "chromiumoxide",
  "futures-util",
+ "jam-protocol",
  "reqwest",
  "serde",
  "serde_json",
@@ -2026,6 +2027,15 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "jam-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

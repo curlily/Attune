@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 
 [dependencies]
+jam-protocol = { path = "../protocol" }
 chromiumoxide.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true

@@ -458,7 +458,7 @@ impl BridgeController {
 
     /// Apply an authoritative session snapshot to the connected music client.
     pub async fn apply_snapshot(&self, snapshot: &SessionSnapshot) -> Result<()> {
-        if snapshot.protocol_version != 1 {
+        if snapshot.protocol_version != crate::protocol::PROTOCOL_VERSION {
             return Err(Error::UnsupportedProtocolVersion {
                 found: snapshot.protocol_version,
             });

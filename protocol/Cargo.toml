@@ -1,0 +1,15 @@
+[package]
+name = "jam-protocol"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Provider-independent MyJam session protocol: models, wire messages, state transitions and the session coordinator."
+
+# Keep this crate free of I/O and runtime dependencies (no tokio, no sockets)
+# so it can be shared by the desktop client and the relay server unchanged.
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
