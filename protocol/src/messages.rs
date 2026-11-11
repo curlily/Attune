@@ -144,11 +144,13 @@ pub enum ServerMessage {
         applied: bool,
         accepted_at_ms: u64,
     },
-    /// Sent to every participant except the sender.
+    /// Sent to every participant except the sender. Operations the server
+    /// issues itself (e.g. skipping a song nobody can play) have no origin
+    /// client and go to everyone.
     #[serde(rename = "operation.accepted")]
     OperationAccepted {
         sequence: u64,
-        origin_client_id: String,
+        origin_client_id: Option<String>,
         operation: SessionOperation,
         /// Server clock; receivers use it as the playback capture time.
         accepted_at_ms: u64,

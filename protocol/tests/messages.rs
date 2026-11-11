@@ -198,7 +198,7 @@ fn every_server_message_round_trips() {
         (
             ServerMessage::OperationAccepted {
                 sequence: 4,
-                origin_client_id: "a".to_owned(),
+                origin_client_id: Some("a".to_owned()),
                 operation: SessionOperation::PlaybackSetPlaying { is_playing: false },
                 accepted_at_ms: 9,
             },

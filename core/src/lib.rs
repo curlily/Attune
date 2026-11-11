@@ -1,6 +1,7 @@
 mod error;
 
 pub mod bridge_controller;
+pub mod network;
 pub mod providers;
 pub mod structs;
 

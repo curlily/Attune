@@ -397,7 +397,7 @@ impl SessionCoordinator {
                 to: Recipient::AllExcept(client_id.to_owned()),
                 message: ServerMessage::OperationAccepted {
                     sequence: self.sequence,
-                    origin_client_id: client_id.to_owned(),
+                    origin_client_id: Some(client_id.to_owned()),
                     operation,
                     accepted_at_ms: now_ms,
                 },

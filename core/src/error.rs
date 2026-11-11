@@ -103,4 +103,54 @@ pub enum Error {
 
     #[error("JSON serialization failed")]
     Json(#[from] serde_json::Error),
+
+    // --- Session networking ---------------------------------------------
+    #[error("invalid session server URL: {reason}")]
+    InvalidServerUrl { reason: &'static str },
+
+    #[error("invite must look like <sessionId>.<joinToken>")]
+    InvalidInvite,
+
+    #[error("WebSocket connection failed")]
+    WebSocket(#[source] Box<tokio_tungstenite::tungstenite::Error>),
+
+    #[error("TLS setup failed")]
+    Tls(#[source] rustls::Error),
+
+    #[error("no trusted root certificates are available for wss:// connections")]
+    NoRootCertificates,
+
+    #[error("the connection to the session server closed")]
+    TransportClosed,
+
+    #[error("the session client has stopped")]
+    SessionClosed,
+
+    #[error("the session server sent a message that could not be parsed")]
+    InvalidServerMessage(#[source] serde_json::Error),
+
+    #[error("the session server violated the protocol: {reason}")]
+    ProtocolViolation { reason: &'static str },
+
+    #[error("the session server sent an invalid session state")]
+    InvalidRemoteState(#[source] jam_protocol::state::StateError),
+
+    /// A structured error from the server. `message` is display text only.
+    #[error("the session server refused the request ({code:?}): {message}")]
+    Remote {
+        code: jam_protocol::ErrorCode,
+        message: String,
+    },
+
+    #[error("a {len}-byte message exceeds the {max}-byte limit")]
+    MessageTooLarge { len: usize, max: usize },
+
+    #[error("too many requests are waiting for the session server")]
+    TooManyPendingRequests,
+}
+
+impl From<tokio_tungstenite::tungstenite::Error> for Error {
+    fn from(error: tokio_tungstenite::tungstenite::Error) -> Self {
+        Self::WebSocket(Box::new(error))
+    }
 }

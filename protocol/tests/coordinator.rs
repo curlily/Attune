@@ -286,7 +286,7 @@ fn accepted_operation_is_acked_to_sender_and_broadcast_to_others() {
                 to: Recipient::AllExcept("a".to_owned()),
                 message: ServerMessage::OperationAccepted {
                     sequence: 1,
-                    origin_client_id: "a".to_owned(),
+                    origin_client_id: Some("a".to_owned()),
                     operation: pause(),
                     accepted_at_ms: T0 + 500,
                 },
