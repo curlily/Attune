@@ -246,16 +246,33 @@
         return score;
     }
 
+    // Result IDs of a completed search, or null while it is missing/loading.
+    // A finished search with no hits is an empty list with `loading: false`
+    // (verified live); treat only an explicit `false` as finished.
     function getSearchResultIds(query) {
         const key = `search/tracks/${encodeURIComponent(query)}`;
         const list = store.getState()?.content?.trackLists?.[key];
-        const ids = list?.sorted?.defaultSort?.items;
-        return Array.isArray(ids) ? ids : null;
+        const page = list?.sorted?.defaultSort;
+        const ids = page?.items;
+        if (!Array.isArray(ids)) return null;
+        if (ids.length > 0 || page.loading === false) return ids;
+        return null;
     }
 
-    async function searchTrackIds(query) {
+    // TIDAL keeps only its latest search: dispatching SEARCH_FOR while another
+    // search is in flight cancels the earlier one (verified live). Run them
+    // strictly one at a time.
+    let searchQueue = Promise.resolve();
+
+    function searchTrackIds(query) {
+        const run = searchQueue.then(() => searchTrackIdsNow(query));
+        searchQueue = run.catch(() => {});
+        return run;
+    }
+
+    async function searchTrackIdsNow(query) {
         const existing = getSearchResultIds(query);
-        if (existing?.length) return existing;
+        if (existing) return existing;
 
         dispatch("search/SEARCH_FOR", {
             query,
@@ -267,7 +284,7 @@
         const deadline = performance.now() + SEARCH_TIMEOUT_MS;
         while (performance.now() < deadline) {
             const ids = getSearchResultIds(query);
-            if (ids?.length) return ids;
+            if (ids) return ids;
             await new Promise(resolve => setTimeout(resolve, 100));
         }
 
@@ -333,10 +350,14 @@
         return productId;
     }
 
-    // Resolve every entry independently. Lookup failures are returned per
-    // entry; any other error (e.g. the store disappeared) is rethrown.
-    async function resolveEntries(entries) {
+    // Resolve every entry independently. Entries already in TIDAL's queue
+    // (`known`: entryId -> product ID) need no search. Lookup failures are
+    // returned per entry; any other error (e.g. the store disappeared) is
+    // rethrown.
+    async function resolveEntries(entries, known) {
         return Promise.all(entries.map(async entry => {
+            const loadedProductId = known.get(entry.entryId);
+            if (loadedProductId != null) return { entry, productId: loadedProductId };
             try {
                 return { entry, productId: await resolveTrack(entry.track) };
             } catch (error) {
@@ -390,21 +411,30 @@
         };
     }
 
+    // `latestCurrentTime` is not live: it is the position at
+    // `latestCurrentTimeSyncTimestamp` (epoch ms), updated only on play,
+    // pause, seek and track changes (verified live). Report that pair so
+    // receivers extrapolate from the right moment.
+    const MAX_SYNC_SKEW_MS = 24 * 60 * 60 * 1000;
+
     function getPlayback(state) {
         const controls = state?.playbackControls ?? {};
         const positionSeconds = Number(controls.latestCurrentTime ?? 0);
+        const now = Date.now();
+        const syncedAt = Number(controls.latestCurrentTimeSyncTimestamp);
+        // Guard against a different unit or a missing value in other builds.
+        const plausible = Number.isFinite(syncedAt) && Math.abs(now - syncedAt) < MAX_SYNC_SKEW_MS;
         return {
             isPlaying: controls.playbackState === "PLAYING",
             positionMs: Number.isFinite(positionSeconds)
                 ? Math.max(0, Math.round(positionSeconds * 1000))
                 : 0,
-            // Capture locally. TIDAL's private sync timestamp has not been
-            // verified to use the same units in every client build.
-            positionCapturedAtMs: Date.now(),
+            positionCapturedAtMs: plausible ? syncedAt : now,
         };
     }
 
-    function stateFromRedux(reduxState) {
+    // TIDAL queue elements as MyJam sees them: current first, no history.
+    function currentQueueElements(reduxState) {
         const rawEntries = queueElements(reduxState);
         const activeProductId = reduxState?.playbackControls?.mediaProduct?.productId;
 
@@ -418,7 +448,21 @@
                 mediaItemId: activeProductId,
             });
         }
+        return rawEntries;
+    }
 
+    // Session entry ID -> TIDAL product ID for everything in TIDAL's queue.
+    function loadedProductIds() {
+        const known = new Map();
+        currentQueueElements(store.getState()).forEach((element, index) => {
+            const productId = mediaItemId(element);
+            if (productId != null) known.set(makeEntryId(element, productId, index), String(productId));
+        });
+        return known;
+    }
+
+    function stateFromRedux(reduxState) {
+        const rawEntries = currentQueueElements(reduxState);
         const queue = rawEntries.map((entry, index) => makeQueueEntry(entry, index, reduxState));
         return {
             queue,
@@ -503,13 +547,16 @@
         const orderedEntries = entries.slice(selectedIndex);
 
         // Resolve every recording before replacing the active queue, so an
-        // unplayable current track leaves the user's queue intact.
-        const resolved = await resolveEntries(orderedEntries);
-        const failures = resolved.filter(result => result.error);
-        if (resolved[0].error) {
-            throw trackUnavailableError(failures);
+        // unplayable current track leaves the user's queue intact. The current
+        // entry goes first: if it can't play, don't search for the rest.
+        const known = loadedProductIds();
+        const [current] = await resolveEntries([orderedEntries[0]], known);
+        if (current.error) {
+            throw trackUnavailableError([current]);
         }
-        const loaded = resolved.filter(result => !result.error);
+        const upcoming = await resolveEntries(orderedEntries.slice(1), known);
+        const failures = upcoming.filter(result => result.error);
+        const loaded = [current, ...upcoming.filter(result => !result.error)];
 
         setRemoteMutationWindow();
         dispatch("playQueue/ADD_MEDIA_ITEMS_TO_QUEUE", {

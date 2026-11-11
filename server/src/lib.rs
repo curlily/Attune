@@ -24,6 +24,7 @@ use axum::{
     extract::{State, WebSocketUpgrade},
     response::Response,
     routing::get,
+    serve::ListenerExt,
 };
 use tokio::net::TcpListener;
 
@@ -69,6 +70,13 @@ pub async fn serve(
     config: ServerConfig,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
+    // Session messages are small and latency-sensitive: without TCP_NODELAY,
+    // Nagle's algorithm held broadcasts back by 25-55 ms (measured live).
+    let listener = listener.tap_io(|stream| {
+        if let Err(error) = stream.set_nodelay(true) {
+            tracing::warn!(%error, "Could not disable Nagle's algorithm");
+        }
+    });
     axum::serve(listener, app(config))
         .with_graceful_shutdown(shutdown)
         .await

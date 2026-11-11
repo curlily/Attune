@@ -29,6 +29,12 @@ function createStore() {
                     isrc: "ISRC-REPEAT",
                     streamReady: true,
                 },
+                "303": {
+                    title: "Third Track",
+                    artists: [{ name: "Artist Three" }],
+                    album: { title: "Third Album" },
+                    duration: 150,
+                },
             },
             trackLists: {},
         },
@@ -51,12 +57,21 @@ function createStore() {
 
     const listeners = new Set();
     let generatedUid = 0;
+    let pendingSearch = null;
+    const searches = [];
 
     function notify() {
         for (const listener of [...listeners]) listener();
     }
 
+    function update(change) {
+        state = structuredClone(state);
+        change(state);
+        notify();
+    }
+
     return {
+        searches,
         getState: () => state,
         subscribe(listener) {
             listeners.add(listener);
@@ -69,15 +84,20 @@ function createStore() {
             state = structuredClone(state);
 
             if (type === "search/SEARCH_FOR") {
-                // Every query returns one result: "Repeated Track" for queries
-                // that mention it, otherwise "Current Track". Any other title
-                // therefore has no matching recording.
+                // A query naming a known track returns it; "ghost" queries finish
+                // with no results (like real TIDAL); anything else returns
+                // "Current Track", which then fails the title match.
+                // Like real TIDAL, results arrive asynchronously and a new
+                // search cancels one still in flight.
+                searches.push(payload.query);
+                clearTimeout(pendingSearch);
+                const query = payload.query.toLowerCase();
+                const id = query.includes("repeated track") ? "202" : query.includes("third track") ? "303" : "101";
+                const items = query.includes("ghost") ? [] : [id];
                 const queryKey = `search/tracks/${encodeURIComponent(payload.query)}`;
-                const isRepeatedTrack = payload.query.toLowerCase().includes("repeated track");
-                const id = isRepeatedTrack ? "202" : "101";
-                state.content.trackLists[queryKey] = {
-                    sorted: { defaultSort: { items: [id] } },
-                };
+                pendingSearch = setTimeout(() => update(s => {
+                    s.content.trackLists[queryKey] = { sorted: { defaultSort: { items, loading: false } } };
+                }), 10);
             } else if (type === "playQueue/ADD_MEDIA_ITEMS_TO_QUEUE") {
                 state.playQueue = {
                     currentIndex: 0,
@@ -154,6 +174,7 @@ const repeatedTrack = {
     durationMs: 200_000,
 };
 const ghostTrack = { title: "Ghost Song", artists: ["Nobody"] };
+const thirdTrack = { title: "Third Track", artists: ["Artist Three"], album: "Third Album", durationMs: 150_000 };
 
 function playback(isPlaying = true, positionMs = 0) {
     return { isPlaying, positionMs, positionCapturedAtMs: Date.now() };
@@ -207,9 +228,12 @@ test("TIDAL adapter exposes the shared API and normalizes queue history/duplicat
 test("TIDAL skips upcoming tracks it cannot find and reports them", async () => {
     const { bridge } = await loadAdapter();
 
+    // "Third Track" is searched before "Ghost Song". If searches overlapped,
+    // the later one would cancel it (as real TIDAL does) and it would time out.
     const outcome = await bridge.applySnapshot({
         queue: [
             { entryId: "session-current", track: repeatedTrack },
+            { entryId: "session-third", track: thirdTrack },
             { entryId: "session-ghost", track: ghostTrack },
             { entryId: "session-copy", track: repeatedTrack },
         ],
@@ -220,13 +244,30 @@ test("TIDAL skips upcoming tracks it cannot find and reports them", async () => 
     assert.deepEqual([...outcome.unavailableEntryIds], ["session-ghost"]);
     assert.deepEqual(
         entryIds(bridge.getState()),
-        ["session-current", "session-copy"],
+        ["session-current", "session-third", "session-copy"],
         "loaded entries keep their session IDs even after a skipped one",
     );
 });
 
+test("TIDAL does not search for entries already in its queue", async () => {
+    const { bridge, store } = await loadAdapter();
+    const state = bridge.getState();
+
+    // Same entries, reordered: everything is known by entry ID.
+    const [current, upcomingA, upcomingB] = state.queue;
+    const outcome = await bridge.applySnapshot({
+        queue: [current, upcomingB, upcomingA],
+        currentEntryId: current.entryId,
+        playback: playback(),
+    });
+
+    assert.deepEqual([...outcome.unavailableEntryIds], []);
+    assert.deepEqual([...store.searches], []);
+    assert.deepEqual(entryIds(bridge.getState()), [current.entryId, upcomingB.entryId, upcomingA.entryId]);
+});
+
 test("TIDAL rejects an unplayable current track with a structured error and changes nothing", async () => {
-    const { bridge } = await loadAdapter();
+    const { bridge, store } = await loadAdapter();
     const before = entryIds(bridge.getState());
 
     await assert.rejects(
@@ -241,12 +282,13 @@ test("TIDAL rejects an unplayable current track with a structured error and chan
         }),
         error => {
             assert.equal(error.code, "trackUnavailable");
-            assert.deepEqual([...error.details.entryIds], ["session-ghost", "session-wrong-isrc"]);
+            assert.deepEqual([...error.details.entryIds], ["session-ghost"]);
             assert.match(error.message, /No matching TIDAL recording found for "Ghost Song"/);
             return true;
         },
     );
     assert.deepEqual(entryIds(bridge.getState()), before, "TIDAL queue must be untouched");
+    assert.deepEqual([...store.searches], ["Ghost Song Nobody"], "the rest is not searched once the current fails");
 });
 
 test("TIDAL publishes local changes but not the effects of a remote apply", async () => {
@@ -269,4 +311,21 @@ test("TIDAL publishes local changes but not the effects of a remote apply", asyn
     });
     await sleep(STORE_EVENT_SETTLE_MS);
     assert.deepEqual(operations(events), []);
+});
+
+test("TIDAL position is reported with the time it was captured, not the time it was read", async () => {
+    const { bridge, store } = await loadAdapter();
+
+    // TIDAL's position is a sync point: valid at its timestamp, frozen since.
+    const syncedAt = Date.now() - 5_000;
+    store.getState().playbackControls.latestCurrentTime = 10;
+    store.getState().playbackControls.latestCurrentTimeSyncTimestamp = syncedAt;
+    const playback = bridge.getState().playback;
+    assert.equal(playback.positionMs, 10_000);
+    assert.equal(playback.positionCapturedAtMs, syncedAt);
+
+    // An implausible timestamp (other unit, missing) falls back to "now".
+    store.getState().playbackControls.latestCurrentTimeSyncTimestamp = 123;
+    const before = Date.now();
+    assert.ok(bridge.getState().playback.positionCapturedAtMs >= before);
 });
