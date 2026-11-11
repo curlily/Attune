@@ -16,12 +16,13 @@
 
 mod connection;
 mod hub;
+mod limiter;
 
-use std::{sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
     Router,
-    extract::{State, WebSocketUpgrade},
+    extract::{ConnectInfo, State, WebSocketUpgrade},
     response::Response,
     routing::get,
     serve::ListenerExt,
@@ -42,6 +43,9 @@ pub struct ServerConfig {
     pub handshake_timeout: Duration,
     /// Largest accepted WebSocket message.
     pub max_message_bytes: usize,
+    /// Failed join attempts allowed per IP address per minute (also the
+    /// burst size). Join codes are short, so this is what stops guessing.
+    pub join_attempts_per_minute: u32,
 }
 
 impl Default for ServerConfig {
@@ -52,11 +56,13 @@ impl Default for ServerConfig {
             reconnect_grace: Duration::from_secs(60),
             handshake_timeout: Duration::from_secs(10),
             max_message_bytes: 1024 * 1024,
+            join_attempts_per_minute: 10,
         }
     }
 }
 
-/// The HTTP application. Useful for embedding or tests; [`serve`] runs it.
+/// The HTTP application. It needs the peer address, so serve it with
+/// `into_make_service_with_connect_info::<SocketAddr>()`, as [`serve`] does.
 pub fn app(config: ServerConfig) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -77,15 +83,22 @@ pub async fn serve(
             tracing::warn!(%error, "Could not disable Nagle's algorithm");
         }
     });
-    axum::serve(listener, app(config))
-        .with_graceful_shutdown(shutdown)
-        .await
+    axum::serve(
+        listener,
+        app(config).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
 }
 
-async fn websocket(upgrade: WebSocketUpgrade, State(hub): State<Arc<Hub>>) -> Response {
+async fn websocket(
+    upgrade: WebSocketUpgrade,
+    State(hub): State<Arc<Hub>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+) -> Response {
     let max = hub.config().max_message_bytes;
     upgrade
         .max_message_size(max)
         .max_frame_size(max)
-        .on_upgrade(move |socket| connection::serve(socket, hub))
+        .on_upgrade(move |socket| connection::serve(socket, hub, peer.ip()))
 }

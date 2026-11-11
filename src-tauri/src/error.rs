@@ -10,6 +10,12 @@ pub enum AppError {
     SessionActive,
     #[error("not in a session")]
     NotInSession,
+    #[error("{0}")]
+    InvalidSetting(String),
+    #[error("choose a display name first")]
+    NoDisplayName,
+    #[error("there is no saved session to rejoin")]
+    NoSavedSession,
 }
 
 /// Join an error and all of its sources: "outer: middle: root cause".

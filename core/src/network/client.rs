@@ -21,14 +21,27 @@
 //! rejoins with the same in-memory credentials, using exponential backoff.
 //! Nothing is queued while offline: requests made then fail immediately, and
 //! after rejoining the server's snapshot ([`SessionEvent::Rejoined`]) wins.
+//!
+//! # Clock
+//!
+//! Server timestamps (`acceptedAtMs`, snapshot capture times) are on the
+//! server's clock. The actor sends `time.ping` a few times after connecting
+//! and then every ping interval, and publishes a [`ClockEstimate`] from the
+//! fastest recent round trip: the slower a reply, the more its timing could
+//! be off.
 
-use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    fmt,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::{
     net::TcpStream,
-    sync::{broadcast, mpsc, oneshot},
-    time::{Instant, sleep, timeout},
+    sync::{broadcast, mpsc, oneshot, watch},
+    time::{Instant, sleep, sleep_until, timeout},
 };
 use tokio_tungstenite::{
     Connector, MaybeTlsStream, WebSocketStream,
@@ -42,7 +55,7 @@ use crate::{
     protocol::{
         ClientHello, ClientMessage, CreateSession, ErrorCode, JoinSession, OperationRequest,
         PROTOCOL_VERSION, Participant, ParticipantStatus, RejectCode, ServerMessage,
-        SessionMusicState, SessionOperation, SessionSnapshot, state,
+        SessionMusicState, SessionOperation, SessionSnapshot, normalize_join_code, state,
     },
 };
 
@@ -56,6 +69,83 @@ const EVENT_CAPACITY: usize = 256;
 const MAX_PENDING_REQUESTS: usize = 32;
 /// Server messages that arrive before the create/join reply and are replayed.
 const MAX_EARLY_MESSAGES: usize = 16;
+/// Clock probes sent right after connecting, one per `CLOCK_PROBE_SPACING`;
+/// after that, one per ping interval.
+const CLOCK_PROBES_AT_START: u32 = 5;
+const CLOCK_PROBE_SPACING: Duration = Duration::from_secs(1);
+/// Round trips kept for the estimate.
+const CLOCK_SAMPLES: usize = 8;
+/// Replies slower than this say little about the clock and are ignored.
+const MAX_CLOCK_ROUND_TRIP_MS: u64 = 5_000;
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// How this computer's clock relates to the server's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClockEstimate {
+    /// Server clock minus local clock.
+    pub offset_ms: i64,
+    /// Round trip of the sample the offset came from.
+    pub round_trip_ms: u64,
+}
+
+impl ClockEstimate {
+    /// Estimate from one probe sent at `sent_ms` and answered at
+    /// `received_ms` (both local), stamped `server_ms` by the server. The
+    /// server is assumed to have answered halfway through the round trip.
+    pub fn from_probe(sent_ms: u64, server_ms: u64, received_ms: u64) -> Option<Self> {
+        let round_trip_ms = received_ms.checked_sub(sent_ms)?;
+        let midpoint = sent_ms + round_trip_ms / 2;
+        Some(Self {
+            offset_ms: server_ms as i64 - midpoint as i64,
+            round_trip_ms,
+        })
+    }
+
+    pub fn server_time(&self, local_ms: u64) -> u64 {
+        local_ms.saturating_add_signed(self.offset_ms)
+    }
+
+    pub fn local_time(&self, server_ms: u64) -> u64 {
+        server_ms.saturating_add_signed(-self.offset_ms)
+    }
+
+    /// Estimated time for a message to reach the server.
+    pub fn one_way_ms(&self) -> u64 {
+        self.round_trip_ms / 2
+    }
+}
+
+/// Recent probe results; the estimate is the fastest one.
+#[derive(Debug, Default)]
+struct ClockSamples {
+    samples: VecDeque<ClockEstimate>,
+}
+
+impl ClockSamples {
+    fn add(&mut self, sample: ClockEstimate) -> Option<ClockEstimate> {
+        if sample.round_trip_ms > MAX_CLOCK_ROUND_TRIP_MS {
+            return self.best();
+        }
+        if self.samples.len() == CLOCK_SAMPLES {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(sample);
+        self.best()
+    }
+
+    fn best(&self) -> Option<ClockEstimate> {
+        self.samples
+            .iter()
+            .min_by_key(|sample| sample.round_trip_ms)
+            .copied()
+    }
+}
 
 /// A fresh random client ID. Generate it once per app run and reuse it for
 /// every session, so reconnects are recognised as the same participant.
@@ -138,39 +228,37 @@ impl SessionClientConfig {
     }
 }
 
-/// Session invite. The token is a bearer secret: `Debug` redacts it, and it
-/// must never be logged.
+/// How to get into a session: its join code, plus this participant's rejoin
+/// secret once it has a seat. The secret must never be logged; `Debug`
+/// redacts it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct JoinCredentials {
-    pub session_id: String,
-    pub join_token: String,
+    /// The four-letter join code, which is also the session ID.
+    pub code: String,
+    /// Proves on reconnect that this client is the participant it was.
+    /// Only valid together with the same client ID.
+    pub rejoin_secret: Option<String>,
 }
 
 impl fmt::Debug for JoinCredentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("JoinCredentials")
-            .field("session_id", &self.session_id)
-            .field("join_token", &"<redacted>")
+            .field("code", &self.code)
+            .field(
+                "rejoin_secret",
+                &self.rejoin_secret.as_ref().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }
 
 impl JoinCredentials {
-    /// Parse a shareable invite of the form `<sessionId>.<joinToken>`.
-    pub fn parse_invite(invite: &str) -> Result<Self> {
-        let (session_id, join_token) = invite.trim().split_once('.').ok_or(Error::InvalidInvite)?;
-        if session_id.is_empty() || join_token.is_empty() || join_token.contains('.') {
-            return Err(Error::InvalidInvite);
-        }
+    /// A join code as typed by the user, e.g. `"kwpz"`.
+    pub fn from_code(code: &str) -> Result<Self> {
         Ok(Self {
-            session_id: session_id.to_owned(),
-            join_token: join_token.to_owned(),
+            code: normalize_join_code(code).ok_or(Error::InvalidJoinCode)?,
+            rejoin_secret: None,
         })
-    }
-
-    /// The shareable invite string. Contains the secret token.
-    pub fn invite(&self) -> String {
-        format!("{}.{}", self.session_id, self.join_token)
     }
 }
 
@@ -284,13 +372,14 @@ pub struct SessionClient {
     credentials: JoinCredentials,
     client_id: String,
     request_timeout: Duration,
+    clock: watch::Receiver<Option<ClockEstimate>>,
     task: tokio::task::JoinHandle<()>,
 }
 
 impl fmt::Debug for SessionClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SessionClient")
-            .field("session_id", &self.credentials.session_id)
+            .field("code", &self.credentials.code)
             .field("client_id", &self.client_id)
             .finish_non_exhaustive()
     }
@@ -309,7 +398,7 @@ impl SessionClient {
         let (socket, reply, early) = handshake(&config, &request).await?;
         let ServerMessage::Created {
             session_id,
-            join_token,
+            rejoin_secret,
             snapshot,
         } = reply
         else {
@@ -317,9 +406,11 @@ impl SessionClient {
                 reason: "expected session.created",
             });
         };
-        if session_id.is_empty() || join_token.is_empty() {
+        if normalize_join_code(&session_id).as_ref() != Some(&session_id)
+            || rejoin_secret.is_empty()
+        {
             return Err(Error::ProtocolViolation {
-                reason: "session.created has empty credentials",
+                reason: "session.created has invalid credentials",
             });
         }
         if snapshot.revision != 0 {
@@ -329,28 +420,33 @@ impl SessionClient {
         }
         validate_snapshot(&snapshot, &session_id)?;
         let credentials = JoinCredentials {
-            session_id,
-            join_token,
+            code: session_id,
+            rejoin_secret: Some(rejoin_secret),
         };
-        info!(session_id = %credentials.session_id, client_id = %config.client_id, "Created session");
+        info!(client_id = %config.client_id, "Created session");
         Ok(Self::start(config, credentials, socket, snapshot, early))
     }
 
-    /// Join an existing session with an invite.
+    /// Join an existing session by its code. With a rejoin secret (from an
+    /// earlier run with the same client ID) this takes the old seat back.
     pub async fn join(
         config: SessionClientConfig,
-        credentials: JoinCredentials,
+        mut credentials: JoinCredentials,
     ) -> Result<(Self, SessionStart)> {
         let request = join_message(&config, &credentials);
         let (socket, reply, early) = handshake(&config, &request).await?;
-        let ServerMessage::Joined { snapshot } = reply else {
+        let ServerMessage::Joined {
+            snapshot,
+            rejoin_secret,
+        } = reply
+        else {
             return Err(Error::ProtocolViolation {
                 reason: "expected session.joined",
             });
         };
-        validate_snapshot(&snapshot, &credentials.session_id)?;
+        validate_snapshot(&snapshot, &credentials.code)?;
+        credentials.rejoin_secret = Some(rejoin_secret);
         info!(
-            session_id = %credentials.session_id,
             client_id = %config.client_id,
             sequence = snapshot.revision,
             "Joined session"
@@ -369,6 +465,7 @@ impl SessionClient {
         let (events_tx, events_rx) = broadcast::channel(EVENT_CAPACITY);
         let client_id = config.client_id.clone();
         let request_timeout = config.request_timeout;
+        let (clock_tx, clock_rx) = watch::channel(None);
 
         let actor = Actor {
             config,
@@ -378,6 +475,8 @@ impl SessionClient {
             last_sequence: snapshot.revision,
             pending_operations: HashMap::new(),
             pending_snapshots: HashMap::new(),
+            clock_samples: ClockSamples::default(),
+            clock: clock_tx,
         };
         let task = tokio::spawn(actor.run(socket, early));
 
@@ -387,6 +486,7 @@ impl SessionClient {
             credentials: credentials.clone(),
             client_id,
             request_timeout,
+            clock: clock_rx,
             task,
         };
         let start = SessionStart {
@@ -407,6 +507,11 @@ impl SessionClient {
 
     pub fn client_id(&self) -> &str {
         &self.client_id
+    }
+
+    /// The current clock estimate; `None` until the first probe returns.
+    pub fn clock(&self) -> Option<ClockEstimate> {
+        *self.clock.borrow()
     }
 
     /// Submit a local change. `base_sequence` must be the last sequence the
@@ -490,8 +595,8 @@ impl SessionClient {
 fn join_message(config: &SessionClientConfig, credentials: &JoinCredentials) -> ClientMessage {
     ClientMessage::Join(JoinSession {
         hello: config.hello(),
-        session_id: credentials.session_id.clone(),
-        join_token: credentials.join_token.clone(),
+        session_id: credentials.code.clone(),
+        rejoin_secret: credentials.rejoin_secret.clone(),
     })
 }
 
@@ -641,6 +746,8 @@ struct Actor {
     last_sequence: u64,
     pending_operations: HashMap<String, oneshot::Sender<Result<SubmitOutcome>>>,
     pending_snapshots: HashMap<String, oneshot::Sender<Result<SessionSnapshot>>>,
+    clock_samples: ClockSamples,
+    clock: watch::Sender<Option<ClockEstimate>>,
 }
 
 impl Actor {
@@ -658,7 +765,7 @@ impl Actor {
                 Exit::Stop(reason) => {
                     let _ = socket.close(None).await;
                     self.fail_pending();
-                    info!(session_id = %self.credentials.session_id, ?reason, "Session client stopped");
+                    info!(?reason, "Session client stopped");
                     self.emit(SessionEvent::Closed { reason });
                     return;
                 }
@@ -667,7 +774,7 @@ impl Actor {
                     match self.reconnect().await {
                         Ok(new_socket) => socket = new_socket,
                         Err(reason) => {
-                            info!(session_id = %self.credentials.session_id, ?reason, "Session client stopped");
+                            info!(?reason, "Session client stopped");
                             self.emit(SessionEvent::Closed { reason });
                             return;
                         }
@@ -682,9 +789,24 @@ impl Actor {
         let mut ping = tokio::time::interval(self.config.ping_interval);
         ping.tick().await; // the first tick completes immediately
         let mut last_heard = Instant::now();
+        let mut probes_sent = 0;
+        let mut next_probe = Instant::now();
 
         loop {
             tokio::select! {
+                () = sleep_until(next_probe) => {
+                    let probe = ClientMessage::TimePing { client_time_ms: now_ms() };
+                    if send(socket, &probe, self.config.max_message_bytes).await.is_err() {
+                        return Exit::ConnectionLost;
+                    }
+                    probes_sent += 1;
+                    next_probe += if probes_sent < CLOCK_PROBES_AT_START {
+                        CLOCK_PROBE_SPACING
+                    } else {
+                        self.config.ping_interval
+                    };
+                },
+
                 command = self.commands.recv() => match command {
                     None | Some(Command::Close) => return Exit::Stop(CloseReason::ClientClosed),
                     Some(Command::Leave { reply }) => {
@@ -722,7 +844,7 @@ impl Actor {
 
                 _ = ping.tick() => {
                     if last_heard.elapsed() > self.config.ping_interval * 2 {
-                        warn!(session_id = %self.credentials.session_id, "Session server stopped responding");
+                        warn!("Session server stopped responding");
                         return Exit::ConnectionLost;
                     }
                     if socket.send(Message::Ping(Default::default())).await.is_err() {
@@ -869,7 +991,7 @@ impl Actor {
                     debug!("Snapshot for a request that is no longer pending");
                     return None;
                 };
-                let result = validate_snapshot(&snapshot, &self.credentials.session_id).map(|()| {
+                let result = validate_snapshot(&snapshot, &self.credentials.code).map(|()| {
                     // Operations after this snapshot build on its revision.
                     self.last_sequence = snapshot.revision;
                     snapshot
@@ -887,6 +1009,22 @@ impl Actor {
             }
 
             ServerMessage::Left => return Some(Exit::Stop(CloseReason::Left)),
+
+            ServerMessage::TimePong {
+                client_time_ms,
+                server_time_ms,
+            } => {
+                if let Some(sample) =
+                    ClockEstimate::from_probe(client_time_ms, server_time_ms, now_ms())
+                {
+                    let best = self.clock_samples.add(sample);
+                    self.clock.send_if_modified(|current| {
+                        let changed = *current != best;
+                        *current = best;
+                        changed
+                    });
+                }
+            }
 
             ServerMessage::Created { .. } | ServerMessage::Joined { .. } => {
                 warn!("Ignoring an unexpected handshake reply");
@@ -927,12 +1065,12 @@ impl Actor {
     /// Rejoin with backoff until it works, the user leaves or closes, or
     /// the server says the session is gone.
     async fn reconnect(&mut self) -> std::result::Result<Socket, CloseReason> {
-        let session_id = self.credentials.session_id.clone();
+        let code = self.credentials.code.clone();
         let mut attempt = 0;
         loop {
             attempt += 1;
             let retry_in = self.config.reconnect.delay(attempt);
-            info!(%session_id, attempt, ?retry_in, "Reconnecting to the session server");
+            info!(attempt, ?retry_in, "Reconnecting to the session server");
             self.emit(SessionEvent::Reconnecting { attempt, retry_in });
 
             // Wait, still answering commands: nothing is queued offline.
@@ -955,9 +1093,17 @@ impl Actor {
 
             let request = join_message(&self.config, &self.credentials);
             let rejoin = match handshake(&self.config, &request).await {
-                Ok((socket, ServerMessage::Joined { snapshot }, early)) => {
-                    validate_snapshot(&snapshot, &session_id).map(|()| (socket, snapshot, early))
-                }
+                Ok((
+                    socket,
+                    ServerMessage::Joined {
+                        snapshot,
+                        rejoin_secret,
+                    },
+                    early,
+                )) => validate_snapshot(&snapshot, &code).map(|()| {
+                    self.credentials.rejoin_secret = Some(rejoin_secret);
+                    (socket, snapshot, early)
+                }),
                 Ok(_) => Err(Error::ProtocolViolation {
                     reason: "expected session.joined",
                 }),
@@ -966,7 +1112,7 @@ impl Actor {
 
             match rejoin {
                 Ok((socket, snapshot, early)) => {
-                    info!(%session_id, sequence = snapshot.revision, "Rejoined session");
+                    info!(sequence = snapshot.revision, "Rejoined session");
                     self.last_sequence = snapshot.revision;
                     self.emit(SessionEvent::Rejoined { snapshot });
                     for message in early {
@@ -978,10 +1124,10 @@ impl Actor {
                     code: ErrorCode::InvalidCredentials,
                     ..
                 }) => {
-                    warn!(%session_id, "Session no longer exists on the server");
+                    warn!("Session no longer exists on the server");
                     return Err(CloseReason::SessionEnded);
                 }
-                Err(error) => warn!(%session_id, attempt, %error, "Reconnect attempt failed"),
+                Err(error) => warn!(attempt, %error, "Reconnect attempt failed"),
             }
         }
     }
@@ -1011,26 +1157,65 @@ mod tests {
     }
 
     #[test]
-    fn invite_round_trips_and_rejects_malformed_input() {
-        let credentials = JoinCredentials::parse_invite(" abc-123.s3cr3t_token ").expect("parse");
-        assert_eq!(credentials.session_id, "abc-123");
-        assert_eq!(credentials.join_token, "s3cr3t_token");
-        assert_eq!(credentials.invite(), "abc-123.s3cr3t_token");
+    fn join_codes_are_normalized_and_checked() {
+        let credentials = JoinCredentials::from_code(" kwpz ").expect("parse");
+        assert_eq!(credentials.code, "KWPZ");
+        assert_eq!(credentials.rejoin_secret, None);
 
-        for invalid in ["", "no-separator", ".token", "session.", "a.b.c"] {
+        for invalid in ["", "KWP", "KWPZA", "KWP0", "abc.def"] {
             assert!(matches!(
-                JoinCredentials::parse_invite(invalid),
-                Err(Error::InvalidInvite)
+                JoinCredentials::from_code(invalid),
+                Err(Error::InvalidJoinCode)
             ));
         }
     }
 
     #[test]
-    fn credentials_debug_redacts_the_token() {
-        let credentials = JoinCredentials::parse_invite("abc.s3cr3t").expect("parse");
+    fn credentials_debug_redacts_the_secret() {
+        let credentials = JoinCredentials {
+            code: "KWPZ".to_owned(),
+            rejoin_secret: Some("s3cr3t".to_owned()),
+        };
         let debug = format!("{credentials:?}");
-        assert!(debug.contains("abc"));
+        assert!(debug.contains("KWPZ"));
         assert!(!debug.contains("s3cr3t"));
+    }
+
+    #[test]
+    fn clock_estimate_assumes_the_reply_left_halfway() {
+        // Sent at 1000, answered at 1100: the server stamped 5050 at about 1050.
+        let estimate = ClockEstimate::from_probe(1_000, 5_050, 1_100).expect("estimate");
+        assert_eq!(estimate.offset_ms, 4_000);
+        assert_eq!(estimate.round_trip_ms, 100);
+        assert_eq!(estimate.server_time(2_000), 6_000);
+        assert_eq!(estimate.local_time(6_000), 2_000);
+        assert_eq!(estimate.one_way_ms(), 50);
+
+        // A server clock behind ours.
+        let behind = ClockEstimate::from_probe(10_000, 9_020, 10_040).expect("estimate");
+        assert_eq!(behind.offset_ms, -1_000);
+        // A reply "before" the probe was sent (local clock jumped) is unusable.
+        assert_eq!(ClockEstimate::from_probe(1_000, 5_000, 900), None);
+    }
+
+    #[test]
+    fn clock_uses_the_fastest_recent_round_trip() {
+        let sample = |offset_ms, round_trip_ms| ClockEstimate {
+            offset_ms,
+            round_trip_ms,
+        };
+        let mut samples = ClockSamples::default();
+        assert_eq!(samples.add(sample(300, 120)), Some(sample(300, 120)));
+        assert_eq!(samples.add(sample(250, 40)), Some(sample(250, 40)));
+        assert_eq!(samples.add(sample(900, 400)), Some(sample(250, 40)));
+        // Far too slow to trust: ignored.
+        assert_eq!(samples.add(sample(0, 60_000)), Some(sample(250, 40)));
+
+        // The fast sample ages out after CLOCK_SAMPLES newer ones.
+        for _ in 0..CLOCK_SAMPLES {
+            samples.add(sample(260, 80));
+        }
+        assert_eq!(samples.best(), Some(sample(260, 80)));
     }
 
     #[test]

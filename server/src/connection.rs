@@ -1,6 +1,6 @@
 //! One WebSocket connection: handshake, then forwarding to its session.
 
-use std::sync::Arc;
+use std::{net::IpAddr, sync::Arc};
 
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt, stream::SplitStream};
@@ -21,7 +21,7 @@ fn error_message(code: ErrorCode, message: &str) -> ServerMessage {
     }
 }
 
-pub(crate) async fn serve(socket: WebSocket, hub: Arc<Hub>) {
+pub(crate) async fn serve(socket: WebSocket, hub: Arc<Hub>, ip: IpAddr) {
     let connection_id = hub.next_connection_id();
     let (mut sink, mut stream) = socket.split();
     let (outgoing, mut queue) = mpsc::channel::<ServerMessage>(OUTGOING_CAPACITY);
@@ -46,7 +46,7 @@ pub(crate) async fn serve(socket: WebSocket, hub: Arc<Hub>) {
     };
     let binding = match timeout(
         hub.config().handshake_timeout,
-        handshake(&mut stream, &hub, handle),
+        handshake(&mut stream, &hub, handle, ip),
     )
     .await
     {
@@ -69,7 +69,7 @@ pub(crate) async fn serve(socket: WebSocket, hub: Arc<Hub>) {
     let replies = outgoing.downgrade();
     drop(outgoing);
     let Binding {
-        session_id,
+        log_id,
         client_id,
         commands,
     } = binding;
@@ -90,7 +90,7 @@ pub(crate) async fn serve(socket: WebSocket, hub: Arc<Hub>) {
                     }
                     Err(_) => {
                         // Never log the payload: it can contain listening data.
-                        debug!(%session_id, %client_id, "Unparsable message from client");
+                        debug!(session = %log_id, %client_id, "Unparsable message from client");
                         if let Some(replies) = replies.upgrade() {
                             let _ = replies.try_send(error_message(ErrorCode::InvalidMessage, "unparsable message"));
                         }
@@ -120,6 +120,7 @@ async fn handshake(
     stream: &mut SplitStream<WebSocket>,
     hub: &Arc<Hub>,
     connection: ConnectionHandle,
+    ip: IpAddr,
 ) -> Result<Binding, Option<Rejection>> {
     let message = loop {
         match stream.next().await {
@@ -138,7 +139,7 @@ async fn handshake(
 
     match message {
         ClientMessage::Create(request) => hub.create(request, connection).map_err(Some),
-        ClientMessage::Join(request) => hub.join(request, connection).await.map_err(Some),
+        ClientMessage::Join(request) => hub.join(request, connection, ip).await.map_err(Some),
         _ => Err(Some(Box::new(error_message(
             ErrorCode::NotJoined,
             "create or join a session first",

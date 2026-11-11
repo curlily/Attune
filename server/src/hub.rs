@@ -7,6 +7,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
+    net::IpAddr,
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicU64, Ordering},
@@ -15,8 +16,10 @@ use std::{
 };
 
 use jam_protocol::{
-    ClientMessage, CreateSession, ErrorCode, JoinSession, ServerMessage,
+    ClientMessage, CreateSession, ErrorCode, JOIN_CODE_ALPHABET, JOIN_CODE_LEN, JoinSession,
+    ServerMessage,
     coordinator::{Outbound, Recipient, SessionCoordinator},
+    normalize_join_code,
 };
 use tokio::{
     sync::{mpsc, oneshot},
@@ -25,7 +28,7 @@ use tokio::{
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::ServerConfig;
+use crate::{ServerConfig, limiter::JoinLimiter};
 
 const SESSION_COMMAND_CAPACITY: usize = 64;
 const EXPIRY_CHECK_INTERVAL: Duration = Duration::from_millis(250);
@@ -45,6 +48,34 @@ fn rejection(code: ErrorCode, message: &str) -> Rejection {
         code,
         message: message.to_owned(),
     })
+}
+
+/// A rejoin secret: 244 random bits from two v4 UUIDs, as hex.
+fn new_secret() -> String {
+    format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+}
+
+/// A random join code. Bytes are drawn from v4 UUIDs and kept only below
+/// the largest multiple of the alphabet size, so every letter is equally
+/// likely.
+fn random_code() -> String {
+    let limit = (256 / JOIN_CODE_ALPHABET.len() * JOIN_CODE_ALPHABET.len()) as u8;
+    let mut code = String::with_capacity(JOIN_CODE_LEN);
+    while code.len() < JOIN_CODE_LEN {
+        for byte in Uuid::new_v4().into_bytes() {
+            if byte < limit && code.len() < JOIN_CODE_LEN {
+                code.push(char::from(
+                    JOIN_CODE_ALPHABET[usize::from(byte) % JOIN_CODE_ALPHABET.len()],
+                ));
+            }
+        }
+    }
+    code
+}
+
+/// Short ID for log lines, so join codes don't end up in logs.
+fn log_id() -> String {
+    Uuid::new_v4().simple().to_string()[..8].to_owned()
 }
 
 /// The write side of one WebSocket connection.
@@ -73,20 +104,31 @@ pub(crate) enum SessionCommand {
 
 /// A connection's membership after a successful create/join.
 pub(crate) struct Binding {
-    pub session_id: String,
+    /// For log lines only (never the join code).
+    pub log_id: String,
     pub client_id: String,
     pub commands: mpsc::Sender<SessionCommand>,
 }
 
+/// A running session, as the hub sees it.
+#[derive(Clone)]
+struct SessionEntry {
+    log_id: String,
+    commands: mpsc::Sender<SessionCommand>,
+}
+
 pub(crate) struct Hub {
     config: ServerConfig,
-    sessions: Mutex<HashMap<String, mpsc::Sender<SessionCommand>>>,
+    /// By join code.
+    sessions: Mutex<HashMap<String, SessionEntry>>,
+    limiter: JoinLimiter,
     next_connection_id: AtomicU64,
 }
 
 impl Hub {
     pub fn new(config: ServerConfig) -> Self {
         Self {
+            limiter: JoinLimiter::new(config.join_attempts_per_minute),
             config,
             sessions: Mutex::new(HashMap::new()),
             next_connection_id: AtomicU64::new(1),
@@ -101,7 +143,7 @@ impl Hub {
         self.next_connection_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    fn sessions(&self) -> MutexGuard<'_, HashMap<String, mpsc::Sender<SessionCommand>>> {
+    fn sessions(&self) -> MutexGuard<'_, HashMap<String, SessionEntry>> {
         // A poisoned lock only means another task panicked mid-update of a
         // plain map; the map itself is still usable.
         self.sessions
@@ -122,14 +164,20 @@ impl Hub {
             ));
         }
 
-        let session_id = Uuid::new_v4().to_string();
-        // 244 random bits from two v4 UUIDs; hex is URL- and invite-safe.
-        let join_token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        // The session limit is far below the number of codes, so a free
+        // one turns up within a few tries.
+        let code = loop {
+            let code = random_code();
+            if !sessions.contains_key(&code) {
+                break code;
+            }
+        };
+        let log_id = log_id();
         let client_id = request.hello.client_id.clone();
 
         let (coordinator, outbound) = SessionCoordinator::create(
-            session_id.clone(),
-            join_token,
+            code.clone(),
+            new_secret(),
             request,
             self.config.max_participants,
             now_ms(),
@@ -137,48 +185,66 @@ impl Hub {
         .map_err(|error| Box::new(error.into_message()))?;
 
         let (commands, receiver) = mpsc::channel(SESSION_COMMAND_CAPACITY);
-        sessions.insert(session_id.clone(), commands.clone());
+        sessions.insert(
+            code,
+            SessionEntry {
+                log_id: log_id.clone(),
+                commands: commands.clone(),
+            },
+        );
         drop(sessions);
 
         let mut actor = SessionActor {
             hub: self.clone(),
+            log_id: log_id.clone(),
             coordinator,
             connections: HashMap::from([(client_id.clone(), connection)]),
             disconnected_since: HashMap::new(),
             grace: self.config.reconnect_grace,
         };
-        info!(%session_id, %client_id, "Session created");
+        info!(session = %log_id, %client_id, "Session created");
         actor.route(outbound);
         tokio::spawn(actor.run(receiver));
 
         Ok(Binding {
-            session_id,
+            log_id,
             client_id,
             commands,
         })
     }
 
+    /// Join by code. Failed attempts count against `ip`'s limit.
     pub async fn join(
         &self,
-        request: JoinSession,
+        mut request: JoinSession,
         connection: ConnectionHandle,
+        ip: IpAddr,
     ) -> Result<Binding, Rejection> {
+        if !self.limiter.allows(ip) {
+            return Err(rejection(
+                ErrorCode::RateLimited,
+                "too many failed join attempts; try again in a minute",
+            ));
+        }
         let invalid = || {
+            self.limiter.failed(ip);
             rejection(
                 ErrorCode::InvalidCredentials,
-                "unknown session or invalid invite",
+                "unknown join code or invalid rejoin secret",
             )
         };
-        let session_id = request.session_id.clone();
-        let client_id = request.hello.client_id.clone();
-        let commands = self
-            .sessions()
-            .get(&session_id)
-            .cloned()
+        let entry = normalize_join_code(&request.session_id)
+            .and_then(|code| {
+                let entry = self.sessions().get(&code).cloned();
+                request.session_id = code;
+                entry
+            })
             .ok_or_else(invalid)?;
+        let client_id = request.hello.client_id.clone();
 
         let (reply, response) = oneshot::channel();
-        commands
+        entry
+            .commands
             .send(SessionCommand::Join {
                 request,
                 connection,
@@ -187,22 +253,39 @@ impl Hub {
             .await
             .map_err(|_| invalid())?;
         // A dropped reply means the session ended meanwhile.
-        response.await.map_err(|_| invalid())??;
+        match response.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                if matches!(
+                    *error,
+                    ServerMessage::Error {
+                        code: ErrorCode::InvalidCredentials,
+                        ..
+                    }
+                ) {
+                    self.limiter.failed(ip);
+                }
+                return Err(error);
+            }
+            Err(_) => return Err(invalid()),
+        }
 
         Ok(Binding {
-            session_id,
+            log_id: entry.log_id,
             client_id,
-            commands,
+            commands: entry.commands,
         })
     }
 
-    fn remove(&self, session_id: &str) {
-        self.sessions().remove(session_id);
+    fn remove(&self, code: &str) {
+        self.sessions().remove(code);
     }
 }
 
 struct SessionActor {
     hub: Arc<Hub>,
+    /// For log lines only (never the join code).
+    log_id: String,
     coordinator: SessionCoordinator,
     /// Current connection of each connected participant.
     connections: HashMap<String, ConnectionHandle>,
@@ -212,7 +295,7 @@ struct SessionActor {
 
 impl SessionActor {
     async fn run(mut self, mut commands: mpsc::Receiver<SessionCommand>) {
-        let session_id = self.coordinator.session_id().to_owned();
+        let code = self.coordinator.session_id().to_owned();
         let mut expiry = interval(EXPIRY_CHECK_INTERVAL);
 
         while !self.coordinator.is_empty() {
@@ -227,8 +310,8 @@ impl SessionActor {
 
         // Remove first so no new join reaches this actor; anything still
         // queued is dropped and its sender sees the session as gone.
-        self.hub.remove(&session_id);
-        info!(%session_id, "Session ended");
+        self.hub.remove(&code);
+        info!(session = %self.log_id, "Session ended");
     }
 
     fn handle(&mut self, command: SessionCommand) {
@@ -239,14 +322,14 @@ impl SessionActor {
                 reply,
             } => {
                 let client_id = request.hello.client_id.clone();
-                match self.coordinator.join(request, now_ms()) {
+                match self.coordinator.join(request, new_secret(), now_ms()) {
                     Ok(outbound) => {
                         // A rejoin replaces the old connection; dropping its
                         // handle lets its writer finish and close the socket.
                         self.connections.insert(client_id.clone(), connection);
                         self.disconnected_since.remove(&client_id);
                         let _ = reply.send(Ok(()));
-                        info!(session_id = %self.coordinator.session_id(), %client_id, "Participant joined");
+                        info!(session = %self.log_id, %client_id, "Participant joined");
                         self.route(outbound);
                     }
                     Err(error) => {
@@ -269,7 +352,7 @@ impl SessionActor {
                 if !self.coordinator.is_member(&client_id) {
                     // Left: the `session.left` reply is already queued.
                     self.connections.remove(&client_id);
-                    info!(session_id = %self.coordinator.session_id(), %client_id, "Participant left");
+                    info!(session = %self.log_id, %client_id, "Participant left");
                 }
             }
 
@@ -295,7 +378,7 @@ impl SessionActor {
         if !self.coordinator.is_member(client_id) {
             return;
         }
-        debug!(session_id = %self.coordinator.session_id(), %client_id, "Participant disconnected");
+        debug!(session = %self.log_id, %client_id, "Participant disconnected");
         self.disconnected_since
             .insert(client_id.to_owned(), Instant::now());
         let outbound = self.coordinator.set_connected(client_id, false);
@@ -311,7 +394,7 @@ impl SessionActor {
             .collect();
         for client_id in expired {
             self.disconnected_since.remove(&client_id);
-            info!(session_id = %self.coordinator.session_id(), %client_id, "Reconnect grace period expired");
+            info!(session = %self.log_id, %client_id, "Reconnect grace period expired");
             let outbound = self.coordinator.remove(&client_id, now_ms());
             self.route(outbound);
         }
@@ -340,7 +423,7 @@ impl SessionActor {
                 };
                 if connection.outgoing.try_send(message.clone()).is_err() {
                     warn!(
-                        session_id = %self.coordinator.session_id(),
+                        session = %self.log_id,
                         %client_id,
                         "Dropping a connection that cannot keep up"
                     );

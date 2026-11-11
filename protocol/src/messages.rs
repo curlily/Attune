@@ -3,7 +3,8 @@
 //! Identity (`protocolVersion`, `clientId`, display name) is sent only in the
 //! handshake (`session.create` / `session.join`). The server binds the
 //! connection to that identity, so later messages carry no identity fields.
-//! Keep-alive uses WebSocket Ping/Pong frames, not application messages.
+//! Keep-alive uses WebSocket Ping/Pong frames; `time.ping` / `time.pong`
+//! exist only to estimate the client's clock offset from the server.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +16,20 @@ pub const MAX_DISPLAY_NAME_CHARS: usize = 32;
 pub const MAX_PROVIDER_LABEL_CHARS: usize = 32;
 /// Longest accepted client, operation or request ID, in bytes.
 pub const MAX_ID_LEN: usize = 64;
+
+/// Letters used in join codes: no `I` or `O`, which read like `1` and `0`.
+pub const JOIN_CODE_ALPHABET: &[u8; 24] = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
+/// Length of a join code (24^4, about 330,000 codes).
+pub const JOIN_CODE_LEN: usize = 4;
+
+/// Normalize a join code as typed (`" kwpz "` -> `"KWPZ"`). `None` if it
+/// can't be a valid code.
+pub fn normalize_join_code(code: &str) -> Option<String> {
+    let code = code.trim().to_ascii_uppercase();
+    let valid =
+        code.len() == JOIN_CODE_LEN && code.bytes().all(|byte| JOIN_CODE_ALPHABET.contains(&byte));
+    valid.then_some(code)
+}
 
 // ---------------------------------------------------------------------------
 // Client -> server
@@ -39,6 +54,9 @@ pub enum ClientMessage {
     SnapshotRequest { request_id: String },
     #[serde(rename = "session.leave")]
     Leave,
+    /// Clock-offset probe; answered at once with `time.pong`.
+    #[serde(rename = "time.ping")]
+    TimePing { client_time_ms: u64 },
 }
 
 /// Who is connecting. Shared by create and join.
@@ -67,9 +85,12 @@ pub struct CreateSession {
 pub struct JoinSession {
     #[serde(flatten)]
     pub hello: ClientHello,
+    /// The session's join code, which is also its ID.
     pub session_id: String,
-    /// Bearer secret from the invite. Never log or broadcast it.
-    pub join_token: String,
+    /// Proves a returning participant is the same one: required when
+    /// `clientId` already has a seat, ignored otherwise. Never log it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejoin_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,13 +150,18 @@ pub struct Participant {
 pub enum ServerMessage {
     #[serde(rename = "session.created")]
     Created {
+        /// The join code to share; also the session ID.
         session_id: String,
-        /// Only ever sent to the creator.
-        join_token: String,
+        /// This participant's secret for reconnecting. Never log it.
+        rejoin_secret: String,
         snapshot: SessionSnapshot,
     },
     #[serde(rename = "session.joined")]
-    Joined { snapshot: SessionSnapshot },
+    Joined {
+        snapshot: SessionSnapshot,
+        /// Same meaning as in `session.created`; unchanged on a rejoin.
+        rejoin_secret: String,
+    },
     /// Sent only to the operation's sender.
     ///
     /// `applied == true`: `sequence` is the newly assigned sequence.
@@ -183,6 +209,13 @@ pub enum ServerMessage {
     Left,
     #[serde(rename = "session.error")]
     Error { code: ErrorCode, message: String },
+    /// Reply to `time.ping`: the client's own timestamp and the server's
+    /// clock when it answered.
+    #[serde(rename = "time.pong")]
+    TimePong {
+        client_time_ms: u64,
+        server_time_ms: u64,
+    },
 }
 
 /// Why an operation was not accepted. The session continues either way.
@@ -202,8 +235,11 @@ pub enum ErrorCode {
     UnsupportedVersion,
     /// The frame was not a valid message.
     InvalidMessage,
-    /// Unknown session or wrong token; deliberately not distinguished.
+    /// Unknown join code, or a wrong rejoin secret; deliberately not
+    /// distinguished.
     InvalidCredentials,
+    /// Too many failed join attempts from this address; try again later.
+    RateLimited,
     /// Session-scoped message before a successful create/join.
     NotJoined,
     /// create/join on a connection that is already in a session.

@@ -8,14 +8,14 @@ use jam_protocol::{
     state,
 };
 
-const SESSION: &str = "session-1";
-const TOKEN: &str = "token-abcdef";
+const SESSION: &str = "KWPZ";
+const SECRET_A: &str = "secret-of-a";
 const T0: u64 = 1_000;
 
 fn create_with(initial: SessionMusicState) -> (SessionCoordinator, Vec<Outbound>) {
     SessionCoordinator::create(
         SESSION.to_owned(),
-        TOKEN.to_owned(),
+        SECRET_A.to_owned(),
         CreateSession {
             hello: hello("a"),
             initial_state: initial,
@@ -30,16 +30,27 @@ fn create() -> SessionCoordinator {
     create_with(state(&["s1", "s2", "s3"], true, 0, 0)).0
 }
 
-fn join_request(client: &str, token: &str) -> JoinSession {
+fn secret(client: &str) -> String {
+    format!("secret-of-{client}")
+}
+
+fn join_request(client: &str, rejoin_secret: Option<&str>) -> JoinSession {
     JoinSession {
         hello: hello(client),
         session_id: SESSION.to_owned(),
-        join_token: token.to_owned(),
+        rejoin_secret: rejoin_secret.map(str::to_owned),
     }
 }
 
+/// Join, or rejoin with the client's own secret.
 fn join(session: &mut SessionCoordinator, client: &str) -> Vec<Outbound> {
-    session.join(join_request(client, TOKEN), T0).expect("join")
+    session
+        .join(
+            join_request(client, Some(&secret(client))),
+            secret(client),
+            T0,
+        )
+        .expect("join")
 }
 
 fn op(operation_id: &str, base_sequence: u64, operation: Op) -> ClientMessage {
@@ -91,13 +102,13 @@ fn create_returns_invite_and_snapshot_at_sequence_zero() {
             message:
                 ServerMessage::Created {
                     session_id,
-                    join_token,
+                    rejoin_secret,
                     snapshot,
                 },
         } => {
             assert_eq!(client, "a");
             assert_eq!(session_id, SESSION);
-            assert_eq!(join_token, TOKEN);
+            assert_eq!(rejoin_secret, SECRET_A);
             assert_eq!(snapshot.revision, 0);
             assert_eq!(snapshot.protocol_version, 1);
             // Position kept, capture time restamped with the server clock.
@@ -118,7 +129,7 @@ fn create_rejects_bad_version_identity_and_state() {
     let attempt = |hello, initial_state| {
         SessionCoordinator::create(
             SESSION.to_owned(),
-            TOKEN.to_owned(),
+            SECRET_A.to_owned(),
             CreateSession {
                 hello,
                 initial_state,
@@ -163,7 +174,7 @@ fn display_name_is_trimmed_and_empty_provider_dropped() {
     h.provider = Some(" ".to_owned());
     let (session, _) = SessionCoordinator::create(
         SESSION.to_owned(),
-        TOKEN.to_owned(),
+        SECRET_A.to_owned(),
         CreateSession {
             hello: h,
             initial_state: state(&[], false, 0, 0),
@@ -177,20 +188,98 @@ fn display_name_is_trimmed_and_empty_provider_dropped() {
 }
 
 #[test]
-fn join_requires_matching_session_and_token() {
+fn join_requires_the_matching_code() {
     let mut session = create();
+    let mut other_session = join_request("b", None);
+    other_session.session_id = "ABCD".to_owned();
     let error = session
-        .join(join_request("b", "wrong"), T0)
-        .expect_err("wrong token");
+        .join(other_session, secret("b"), T0)
+        .expect_err("wrong session");
     assert_eq!(error.code, ErrorCode::InvalidCredentials);
-
-    let mut other_session = join_request("b", TOKEN);
-    other_session.session_id = "session-2".to_owned();
-    let error = session.join(other_session, T0).expect_err("wrong session");
-    assert_eq!(error.code, ErrorCode::InvalidCredentials);
-    assert!(!error.message.contains(TOKEN));
-
     assert_eq!(session.participants().len(), 1);
+}
+
+#[test]
+fn a_taken_seat_needs_its_rejoin_secret() {
+    let mut session = create();
+    join(&mut session, "b");
+    session.set_connected("b", false);
+
+    // Client IDs are visible to everyone, so knowing one isn't enough.
+    for attempt in [None, Some("guess"), Some(SECRET_A)] {
+        let error = session
+            .join(join_request("b", attempt), "unused".to_owned(), T0)
+            .expect_err("rejoin without the right secret");
+        assert_eq!(error.code, ErrorCode::InvalidCredentials);
+        assert!(!error.message.contains(&secret("b")));
+    }
+    assert!(!session.participants()[1].connected);
+
+    let out = join(&mut session, "b");
+    match &out[0].message {
+        ServerMessage::Joined { rejoin_secret, .. } => assert_eq!(*rejoin_secret, secret("b")),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn new_participants_get_the_secret_the_server_chose() {
+    let mut session = create();
+    // A secret sent by a newcomer is ignored: the server picks it.
+    let out = session
+        .join(
+            join_request("b", Some("mine")),
+            "server-chosen".to_owned(),
+            T0,
+        )
+        .expect("join");
+    match &out[0].message {
+        ServerMessage::Joined { rejoin_secret, .. } => assert_eq!(rejoin_secret, "server-chosen"),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn leaving_forgets_the_rejoin_secret() {
+    let mut session = create();
+    join(&mut session, "b");
+    session.handle("b", ClientMessage::Leave, T0);
+
+    // Joining again is a fresh join with a new secret.
+    let out = session
+        .join(
+            join_request("b", Some(&secret("b"))),
+            "fresh".to_owned(),
+            T0,
+        )
+        .expect("join again");
+    match &out[0].message {
+        ServerMessage::Joined { rejoin_secret, .. } => assert_eq!(rejoin_secret, "fresh"),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn time_ping_is_answered_with_the_server_clock() {
+    let mut session = create();
+    let out = session.handle("a", ClientMessage::TimePing { client_time_ms: 42 }, T0 + 7);
+    assert_eq!(
+        *only_to(&out, "a"),
+        ServerMessage::TimePong {
+            client_time_ms: 42,
+            server_time_ms: T0 + 7,
+        }
+    );
+}
+
+#[test]
+fn join_codes_are_normalized() {
+    use jam_protocol::normalize_join_code;
+    assert_eq!(normalize_join_code(" kwpz "), Some("KWPZ".to_owned()));
+    // Wrong length, look-alike letters, digits.
+    for bad in ["KWP", "KWPZA", "KWPO", "KWP1", "KW Z", ""] {
+        assert_eq!(normalize_join_code(bad), None, "{bad:?}");
+    }
 }
 
 #[test]
@@ -201,7 +290,7 @@ fn join_returns_snapshot_and_announces_participant() {
     match &out[0] {
         Outbound {
             to: Recipient::Client(client),
-            message: ServerMessage::Joined { snapshot },
+            message: ServerMessage::Joined { snapshot, .. },
         } => {
             assert_eq!(client, "b");
             assert_eq!(snapshot.session_id, SESSION);
@@ -243,7 +332,7 @@ fn rejoin_reuses_participant_and_keeps_detached() {
 fn session_full_rejects_new_members_but_not_rejoins() {
     let (mut session, _) = SessionCoordinator::create(
         SESSION.to_owned(),
-        TOKEN.to_owned(),
+        SECRET_A.to_owned(),
         CreateSession {
             hello: hello("a"),
             initial_state: state(&[], false, 0, 0),
@@ -254,10 +343,10 @@ fn session_full_rejects_new_members_but_not_rejoins() {
     .expect("create");
     join(&mut session, "b");
     let error = session
-        .join(join_request("c", TOKEN), T0)
+        .join(join_request("c", None), secret("c"), T0)
         .expect_err("full");
     assert_eq!(error.code, ErrorCode::SessionFull);
-    assert!(session.join(join_request("b", TOKEN), T0).is_ok());
+    join(&mut session, "b");
 }
 
 // ---------------------------------------------------------------------------
@@ -519,7 +608,11 @@ fn non_members_and_repeated_handshakes_are_refused() {
         }
     ));
 
-    let out = session.handle("a", ClientMessage::Join(join_request("a", TOKEN)), T0);
+    let out = session.handle(
+        "a",
+        ClientMessage::Join(join_request("a", Some(SECRET_A))),
+        T0,
+    );
     assert!(matches!(
         only_to(&out, "a"),
         ServerMessage::Error {
@@ -616,7 +709,7 @@ fn client_mirrors_match_server_state() {
     let mut session = create();
     let out = join(&mut session, "b");
     let mut mirror_b = match &out[0].message {
-        ServerMessage::Joined { snapshot } => snapshot.state.clone(),
+        ServerMessage::Joined { snapshot, .. } => snapshot.state.clone(),
         other => panic!("unexpected {other:?}"),
     };
     let mut mirror_a = session.snapshot(T0).state;

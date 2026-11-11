@@ -108,8 +108,8 @@ pub enum Error {
     #[error("invalid session server URL: {reason}")]
     InvalidServerUrl { reason: &'static str },
 
-    #[error("invite must look like <sessionId>.<joinToken>")]
-    InvalidInvite,
+    #[error("a join code is four letters, like KWPZ")]
+    InvalidJoinCode,
 
     #[error("WebSocket connection failed")]
     WebSocket(#[source] Box<tokio_tungstenite::tungstenite::Error>),
@@ -147,6 +147,14 @@ pub enum Error {
 
     #[error("too many requests are waiting for the session server")]
     TooManyPendingRequests,
+
+    /// A queue edit made in MyJam that the session didn't take, e.g. because
+    /// the song was removed meanwhile. Nothing changed.
+    #[error("the session didn't take this queue edit: {message}")]
+    EditRejected {
+        code: jam_protocol::RejectCode,
+        message: String,
+    },
 }
 
 impl From<tokio_tungstenite::tungstenite::Error> for Error {

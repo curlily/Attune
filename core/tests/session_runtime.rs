@@ -19,7 +19,7 @@ use jam_core::{
         ParticipantStatus, QueueEntry, SessionMusicState, SessionOperation as Op, SessionPlayback,
         SessionSnapshot, TrackDescriptor, state,
     },
-    session::{Notice, ProviderBridge, SessionRuntime, SyncState},
+    session::{Notice, ProviderBridge, QueueEdit, SessionRuntime, SyncState},
 };
 use support::TestServer;
 use tokio::{sync::broadcast, time::timeout};
@@ -310,7 +310,7 @@ async fn joining_applies_the_session_and_changes_flow_both_ways() {
     })
     .await;
 
-    let session_id = s.a.credentials().session_id.clone();
+    let session_id = s.a.credentials().code.clone();
     eventually("both at the server's sequence", || {
         let sequence = s.server.sequence(&session_id);
         s.a.status().sequence == sequence && s.b.status().sequence == sequence
@@ -333,7 +333,7 @@ async fn joining_applies_the_session_and_changes_flow_both_ways() {
 #[tokio::test]
 async fn local_echoes_of_the_session_state_are_not_published() {
     let s = session(&[]).await;
-    let session_id = s.a.credentials().session_id.clone();
+    let session_id = s.a.credentials().code.clone();
     // Already playing: reporting "playing" again changes nothing.
     s.a_provider
         .emit(Op::PlaybackSetPlaying { is_playing: true });
@@ -559,7 +559,7 @@ async fn index_changes_are_translated_for_a_provider_missing_songs() {
 #[tokio::test]
 async fn echoes_from_a_provider_missing_songs_are_recognised() {
     let s = session(&["s2"]).await; // B has [s1, s3]
-    let session_id = s.a.credentials().session_id.clone();
+    let session_id = s.a.credentials().code.clone();
     let sequence = s.server.sequence(&session_id);
 
     // B's provider reports its own queue, which lacks s2: that is the
@@ -575,4 +575,85 @@ async fn echoes_from_a_provider_missing_songs_are_recognised() {
         "nothing was published"
     );
     assert_eq!(s.a_provider.ids(), ["s1", "s2", "s3"]);
+}
+
+fn status_ids(runtime: &SessionRuntime) -> Vec<String> {
+    runtime
+        .status()
+        .queue
+        .into_iter()
+        .map(|item| item.entry_id)
+        .collect()
+}
+
+#[tokio::test]
+async fn queue_edits_from_the_ui_reach_everyone_including_this_provider() {
+    let s = session(&[]).await;
+    s.b.edit_queue(QueueEdit::Move {
+        entry_id: "s3".to_owned(),
+        to_index: 1,
+    })
+    .await
+    .expect("move");
+    // Applied before edit_queue returns.
+    assert_eq!(status_ids(&s.b), ["s1", "s3", "s2"]);
+    eventually("B's provider moved it", || {
+        s.b_provider.ids() == ["s1", "s3", "s2"]
+    })
+    .await;
+    eventually("A's provider moved it", || {
+        s.a_provider.ids() == ["s1", "s3", "s2"]
+    })
+    .await;
+    assert_eq!(*s.b_provider.applied.lock().unwrap(), ["queue.move"]);
+
+    s.a.edit_queue(QueueEdit::Remove {
+        entry_id: "s2".to_owned(),
+    })
+    .await
+    .expect("remove");
+    eventually("both removed it", || {
+        s.a_provider.ids() == ["s1", "s3"] && s.b_provider.ids() == ["s1", "s3"]
+    })
+    .await;
+    // The providers' echoes of these edits are not published again.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(s.server.sequence(&s.a.credentials().code), 2);
+}
+
+#[tokio::test]
+async fn songs_can_be_edited_while_stepped_out_or_missing_here() {
+    let s = session(&["s2"]).await; // B has [s1, s3]
+    assert!(!s.b.status().queue[1].playable_here);
+    s.b.step_out().await.expect("step out");
+    sync_is(&s.b, SyncState::SteppedOut).await;
+
+    // B can't play s2 and isn't following, but can still remove it.
+    s.b.edit_queue(QueueEdit::Remove {
+        entry_id: "s2".to_owned(),
+    })
+    .await
+    .expect("remove");
+    assert_eq!(status_ids(&s.b), ["s1", "s3"]);
+    eventually("A removed it", || s.a_provider.ids() == ["s1", "s3"]).await;
+    assert!(
+        s.b_provider.applied.lock().unwrap().is_empty(),
+        "a stepped-out provider is left alone"
+    );
+}
+
+#[tokio::test]
+async fn an_edit_the_session_refuses_is_reported() {
+    let s = session(&[]).await;
+    let error =
+        s.b.edit_queue(QueueEdit::Remove {
+            entry_id: "gone".to_owned(),
+        })
+        .await
+        .expect_err("unknown entry");
+    assert!(
+        matches!(error, Error::EditRejected { .. }),
+        "unexpected {error}"
+    );
+    assert_eq!(status_ids(&s.b), ["s1", "s2", "s3"]);
 }

@@ -19,6 +19,14 @@
 //! provider couldn't find (`unavailable`). The runtime keeps that set,
 //! reports it to the server, re-inserts those entries into local queue
 //! edits, and waits instead of playing when one of them becomes current.
+//!
+//! # Timing
+//!
+//! The mirror is on the server's clock, the provider on the local one; the
+//! client's [`ClockEstimate`] converts between them. Positions handed to the
+//! provider are caught up to the moment they're applied (a seek that took
+//! 80 ms to arrive lands 80 ms further on), and positions published are
+//! moved ahead by the time they take to reach the server.
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -39,8 +47,8 @@ use crate::{
     Error, Result,
     bridge_controller::BridgeEvent,
     network::{
-        CloseReason, JoinCredentials, SessionClient, SessionClientConfig, SessionEvent,
-        SubmitOutcome,
+        ClockEstimate, CloseReason, JoinCredentials, SessionClient, SessionClientConfig,
+        SessionEvent, SubmitOutcome,
     },
     protocol::{
         Participant, ParticipantStatus, RejectCode, SessionMusicState, SessionOperation,
@@ -48,7 +56,7 @@ use crate::{
     },
     session::{
         bridge::ProviderBridge,
-        status::{Notice, RuntimeStatus, SyncState, UnavailableWarning},
+        status::{Notice, QueueItem, RuntimeStatus, SyncState, UnavailableWarning},
     },
 };
 
@@ -62,12 +70,47 @@ const MAX_PENDING: usize = 256;
 /// restores its real one.
 const SETTLE_INTERVAL: Duration = Duration::from_millis(500);
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(6);
+/// Most a position is moved for delivery time. A change that took longer
+/// than this to reach us is caught up by the next snapshot, not guessed at.
+const MAX_CATCH_UP_MS: u64 = 10_000;
 
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// `operation` with its playback position moved `by_ms` later, if it has one
+/// and playback runs from it. Kept within the track when its length is known.
+fn shift_position(
+    operation: &SessionOperation,
+    playing: bool,
+    by_ms: u64,
+    duration_ms: Option<u64>,
+) -> SessionOperation {
+    let shift = |position: u64| {
+        let shifted = position.saturating_add(by_ms.min(MAX_CATCH_UP_MS));
+        duration_ms.map_or(shifted, |duration| shifted.min(duration))
+    };
+    let mut operation = operation.clone();
+    match &mut operation {
+        SessionOperation::PlaybackSeek { position_ms, .. } if playing => {
+            *position_ms = shift(*position_ms)
+        }
+        SessionOperation::PlaybackAdvance {
+            position_ms,
+            is_playing: true,
+            ..
+        }
+        | SessionOperation::PlaybackSelect {
+            position_ms,
+            is_playing: true,
+            ..
+        } => *position_ms = shift(*position_ms),
+        _ => {}
+    }
+    operation
 }
 
 fn queue_ids(state: &SessionMusicState) -> Vec<&str> {
@@ -101,9 +144,27 @@ async fn settled_state<B: ProviderBridge>(bridge: &B) -> Result<SessionMusicStat
     }
 }
 
+/// A queue change made in MyJam's own UI. Deliberately only queue edits:
+/// playback is controlled in the music client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueueEdit {
+    Move { entry_id: String, to_index: usize },
+    Remove { entry_id: String },
+}
+
+impl QueueEdit {
+    fn operation(self) -> SessionOperation {
+        match self {
+            Self::Move { entry_id, to_index } => SessionOperation::QueueMove { entry_id, to_index },
+            Self::Remove { entry_id } => SessionOperation::QueueRemove { entry_id },
+        }
+    }
+}
+
 enum Command {
     StepOut,
     Resync,
+    Edit(QueueEdit, oneshot::Sender<Result<()>>),
     Leave(oneshot::Sender<Result<()>>),
 }
 
@@ -210,6 +271,19 @@ impl SessionRuntime {
             .map_err(|_| Error::SessionClosed)
     }
 
+    /// Change the session queue. Works whatever the sync state: the queue
+    /// belongs to the session, so even someone who stepped out (or can't play
+    /// the song) can reorder or remove it. Returns once the server accepted
+    /// it.
+    pub async fn edit_queue(&self, edit: QueueEdit) -> Result<()> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::Edit(edit, reply))
+            .await
+            .map_err(|_| Error::SessionClosed)?;
+        response.await.map_err(|_| Error::SessionClosed)?
+    }
+
     /// Leave the session. The provider stays connected.
     pub async fn leave(self) -> Result<()> {
         let (reply, response) = oneshot::channel();
@@ -271,10 +345,11 @@ impl<B: ProviderBridge> Worker<B> {
         let session_id = snapshot.session_id.clone();
         let initial_status = RuntimeStatus {
             session_id: session_id.clone(),
+            client_id: client.client_id().to_owned(),
             sync,
             sequence: snapshot.revision,
-            current: None,
-            queue_length: 0,
+            queue: Vec::new(),
+            playback: snapshot.state.playback.clone(),
             participants: Vec::new(),
             warnings: Vec::new(),
         };
@@ -308,6 +383,36 @@ impl<B: ProviderBridge> Worker<B> {
         &self.client
     }
 
+    /// Until the first clock probe returns, assume the clocks agree.
+    fn clock(&self) -> ClockEstimate {
+        self.client.clock().unwrap_or_default()
+    }
+
+    fn server_now(&self) -> u64 {
+        self.clock().server_time(now_ms())
+    }
+
+    /// Length of the track at `entry_id` in the mirror, if known.
+    fn duration_of(&self, entry_id: &str) -> Option<u64> {
+        self.mirror
+            .queue
+            .iter()
+            .find(|entry| entry.entry_id == entry_id)
+            .and_then(|entry| entry.track.duration_ms)
+    }
+
+    fn target_duration(&self, operation: &SessionOperation) -> Option<u64> {
+        match operation {
+            SessionOperation::PlaybackSeek { entry_id, .. }
+            | SessionOperation::PlaybackSelect { entry_id, .. }
+            | SessionOperation::PlaybackAdvance {
+                target_entry_id: entry_id,
+                ..
+            } => self.duration_of(entry_id),
+            _ => None,
+        }
+    }
+
     fn notify(&self, notice: Notice) {
         let _ = self.notices.send(notice);
     }
@@ -323,6 +428,10 @@ impl<B: ProviderBridge> Worker<B> {
                     Some(Command::Leave(reply)) => break Some(reply),
                     Some(Command::StepOut) => { self.step_out().await; Flow::Continue }
                     Some(Command::Resync) => { self.resync().await; Flow::Continue }
+                    Some(Command::Edit(edit, reply)) => {
+                        let _ = reply.send(self.edit(edit).await);
+                        Flow::Continue
+                    }
                 },
                 event = self.client_events.recv() => match event {
                     Ok(event) => self.on_session_event(event).await,
@@ -433,12 +542,26 @@ impl<B: ProviderBridge> Worker<B> {
                 })
             })
             .collect();
+        let queue = self
+            .mirror
+            .queue
+            .iter()
+            .map(|entry| QueueItem {
+                entry_id: entry.entry_id.clone(),
+                track: entry.track.clone(),
+                playable_here: !self.unavailable.contains(&entry.entry_id),
+            })
+            .collect();
+        let mut playback = self.mirror.playback.clone();
+        playback.position_captured_at_ms =
+            self.clock().local_time(playback.position_captured_at_ms);
         self.status.send_replace(RuntimeStatus {
             session_id: self.session_id.clone(),
+            client_id: self.client.client_id().to_owned(),
             sync: self.sync,
             sequence: self.applied,
-            current: self.mirror.queue.first().map(|entry| entry.track.clone()),
-            queue_length: self.mirror.queue.len(),
+            queue,
+            playback,
             participants: self.participants.clone(),
             warnings,
         });
@@ -447,6 +570,31 @@ impl<B: ProviderBridge> Worker<B> {
     // -----------------------------------------------------------------------
     // Commands
     // -----------------------------------------------------------------------
+
+    /// Submit a queue edit from the UI. Once accepted it is applied like
+    /// anyone else's change: to the mirror, and to the provider if synced.
+    async fn edit(&mut self, edit: QueueEdit) -> Result<()> {
+        let operation = edit.operation();
+        match self
+            .client()
+            .submit_operation(operation.clone(), self.applied)
+            .await?
+        {
+            SubmitOutcome::Applied {
+                sequence,
+                accepted_at_ms,
+            } => {
+                self.pending
+                    .insert(sequence, Pending::Remote(operation, accepted_at_ms));
+                self.drain().await;
+                Ok(())
+            }
+            SubmitOutcome::Unchanged { .. } => Ok(()),
+            SubmitOutcome::Rejected { code, message, .. } => {
+                Err(Error::EditRejected { code, message })
+            }
+        }
+    }
 
     async fn step_out(&mut self) {
         if self.sync == SyncState::Reconnecting {
@@ -495,7 +643,8 @@ impl<B: ProviderBridge> Worker<B> {
         let Ok(local) = self.bridge.get_state().await else {
             return false;
         };
-        let now = now_ms();
+        let local_now = now_ms();
+        let server_now = self.clock().server_time(local_now);
         let expected: Vec<&str> = queue_ids(target)
             .into_iter()
             .filter(|id| !self.unavailable.contains(*id))
@@ -503,7 +652,8 @@ impl<B: ProviderBridge> Worker<B> {
         queue_ids(&local) == expected
             && local.current_entry_id == target.current_entry_id
             && local.playback.is_playing == target.playback.is_playing
-            && state::position_at(&local, now).abs_diff(state::position_at(target, now))
+            && state::position_at(&local, local_now)
+                .abs_diff(state::position_at(target, server_now))
                 <= state::POSITION_TOLERANCE_MS
     }
 
@@ -525,7 +675,13 @@ impl<B: ProviderBridge> Worker<B> {
             debug!("Provider already matches the snapshot");
             self.set_sync(SyncState::Synced).await;
         } else {
-            match self.bridge.apply_snapshot(&snapshot).await {
+            // Adapters apply the position as given, so give the current one,
+            // stamped with the local clock.
+            let mut current = snapshot.clone();
+            let local_now = now_ms();
+            current.state = state::at_time(&snapshot.state, self.clock().server_time(local_now));
+            current.state.playback.position_captured_at_ms = local_now;
+            match self.bridge.apply_snapshot(&current).await {
                 Ok(outcome) => {
                     self.unavailable = outcome.unavailable_entry_ids.into_iter().collect();
                     self.set_sync(SyncState::Synced).await;
@@ -657,7 +813,7 @@ impl<B: ProviderBridge> Worker<B> {
             }
             self.applied = sequence;
             if remote {
-                self.follow(&operation).await;
+                self.follow(&operation, at).await;
             }
         }
         if self.sync == SyncState::Synced {
@@ -667,8 +823,9 @@ impl<B: ProviderBridge> Worker<B> {
         self.publish();
     }
 
-    /// Bring the provider along for one remote change (already in the mirror).
-    async fn follow(&mut self, operation: &SessionOperation) {
+    /// Bring the provider along for one remote change (already in the
+    /// mirror), accepted by the server at `accepted_at_ms`.
+    async fn follow(&mut self, operation: &SessionOperation, accepted_at_ms: u64) {
         match self.sync {
             SyncState::Synced => {}
             SyncState::WaitingForNextSong => {
@@ -692,6 +849,13 @@ impl<B: ProviderBridge> Worker<B> {
         let Some(operation) = self.provider_operation(operation) else {
             return;
         };
+        let in_transit = self.server_now().saturating_sub(accepted_at_ms);
+        let operation = shift_position(
+            &operation,
+            self.mirror.playback.is_playing,
+            in_transit,
+            self.target_duration(&operation),
+        );
         match self.bridge.apply_operation(&operation).await {
             Ok(outcome) => self.unavailable.extend(outcome.unavailable_entry_ids),
             Err(Error::TrackUnavailable { entry_ids, .. }) => {
@@ -799,10 +963,17 @@ impl<B: ProviderBridge> Worker<B> {
         // find, so its echo of a remote change only matches the session once
         // they are put back (verified live).
         let operation = self.session_operation(operation);
-        if state::is_noop(&self.mirror, &operation, now_ms()) {
+        if state::is_noop(&self.mirror, &operation, self.server_now()) {
             debug!("Dropping a local change that matches the session (echo)");
             return;
         }
+        // The server takes the position as of when it accepts the change.
+        let operation = shift_position(
+            &operation,
+            self.mirror.playback.is_playing,
+            self.clock().one_way_ms(),
+            self.target_duration(&operation),
+        );
 
         let outcome = self
             .client()
@@ -886,4 +1057,51 @@ impl<B: ProviderBridge> Worker<B> {
 
 fn pause() -> SessionOperation {
     SessionOperation::PlaybackSetPlaying { is_playing: false }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seek(position_ms: u64) -> SessionOperation {
+        SessionOperation::PlaybackSeek {
+            entry_id: "e".to_owned(),
+            position_ms,
+        }
+    }
+
+    #[test]
+    fn positions_move_on_only_while_playing() {
+        assert_eq!(shift_position(&seek(1_000), true, 80, None), seek(1_080));
+        assert_eq!(shift_position(&seek(1_000), false, 80, None), seek(1_000));
+
+        let advance = |position_ms, is_playing| SessionOperation::PlaybackAdvance {
+            target_entry_id: "e".to_owned(),
+            position_ms,
+            is_playing,
+        };
+        // An advance says itself whether playback runs from it.
+        assert_eq!(
+            shift_position(&advance(0, true), false, 50, None),
+            advance(50, true)
+        );
+        assert_eq!(
+            shift_position(&advance(0, false), true, 50, None),
+            advance(0, false)
+        );
+        // Operations without a position are untouched.
+        assert_eq!(shift_position(&pause(), true, 50, None), pause());
+    }
+
+    #[test]
+    fn shifts_stay_within_the_track_and_the_catch_up_limit() {
+        assert_eq!(
+            shift_position(&seek(179_900), true, 500, Some(180_000)),
+            seek(180_000)
+        );
+        assert_eq!(
+            shift_position(&seek(0), true, 60_000, None),
+            seek(MAX_CATCH_UP_MS)
+        );
+    }
 }

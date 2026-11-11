@@ -1,6 +1,9 @@
 mod commands;
 mod error;
+mod settings;
 mod state;
+
+use tauri::Manager;
 
 use crate::state::AppState;
 
@@ -18,20 +21,36 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState::default())
+        .setup(|app| {
+            let data_dir = app.path().app_data_dir()?;
+            app.manage(AppState::new(data_dir));
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let state = handle.state::<AppState>();
+                commands::playback::auto_connect(&handle, &state).await;
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
-            commands::playback::get_playstate,
-            commands::playback::connect_tidal,
-            commands::playback::connect_spotify,
-            commands::playback::get_session_state,
+            commands::settings::get_settings,
+            commands::settings::update_settings,
+            commands::playback::get_providers,
+            commands::playback::connect_provider,
             commands::playback::disconnect_provider,
+            commands::playback::get_playstate,
+            commands::playback::get_session_state,
             commands::session::create_session,
             commands::session::join_session,
+            commands::session::get_rejoin_offer,
+            commands::session::rejoin_session,
+            commands::session::dismiss_rejoin,
             commands::session::leave_session,
             commands::session::step_out,
             commands::session::resync,
+            commands::session::queue_move,
+            commands::session::queue_remove,
             commands::session::get_session_status,
-            commands::session::get_invite,
+            commands::session::get_join_code,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

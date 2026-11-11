@@ -653,7 +653,7 @@ async fn debug_port_open(debugging_port: u16) -> bool {
         .is_ok_and(|response| response.status().is_success())
 }
 
-async fn music_client_running(debugging_port: u16, page_url: &str) -> Result<bool> {
+pub(crate) async fn music_client_running(debugging_port: u16, page_url: &str) -> Result<bool> {
     let url = format!("http://127.0.0.1:{debugging_port}/json/list");
 
     let response = match reqwest::get(&url).await {

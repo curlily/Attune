@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::protocol::{Participant, ParticipantStatus, TrackDescriptor};
+use crate::protocol::{Participant, ParticipantStatus, SessionPlayback, TrackDescriptor};
 
 /// How this client relates to the session right now.
 ///
@@ -81,16 +81,32 @@ pub struct UnavailableWarning {
     pub missing_for: Vec<String>,
 }
 
+/// One song in the session queue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueItem {
+    pub entry_id: String,
+    pub track: TrackDescriptor,
+    /// False if this client's provider couldn't find it.
+    pub playable_here: bool,
+}
+
 /// Everything the UI shows about the session. Contains no secrets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeStatus {
+    /// The join code.
     pub session_id: String,
+    /// This client, so the UI can tell which participant is "you".
+    pub client_id: String,
     pub sync: SyncState,
     /// Last session sequence applied here.
     pub sequence: u64,
-    pub current: Option<TrackDescriptor>,
-    pub queue_length: usize,
+    /// The session queue, current song first.
+    pub queue: Vec<QueueItem>,
+    /// Session playback. `positionCapturedAtMs` is on this computer's clock,
+    /// so `position + (Date.now() - capturedAt)` gives the live position.
+    pub playback: SessionPlayback,
     pub participants: Vec<Participant>,
     pub warnings: Vec<UnavailableWarning>,
 }

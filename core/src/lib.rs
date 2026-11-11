@@ -1,6 +1,7 @@
 mod error;
 
 pub mod bridge_controller;
+pub mod detect;
 pub mod network;
 pub mod providers;
 pub mod session;

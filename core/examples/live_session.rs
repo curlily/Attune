@@ -170,7 +170,7 @@ async fn main() -> Outcome {
     println!(
         "  session {} with {} songs",
         runtime.status().session_id,
-        runtime.status().queue_length
+        runtime.status().queue.len()
     );
 
     let (client, start) = SessionClient::join(

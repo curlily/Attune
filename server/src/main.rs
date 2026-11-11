@@ -5,6 +5,9 @@
 //!   Behind Cloudflare Tunnel or another reverse proxy, keep it on loopback.
 //! - `JAM_MAX_SESSIONS` (default 100), `JAM_MAX_PARTICIPANTS` (default 16)
 //! - `JAM_RECONNECT_GRACE_SECS` (default 60)
+//! - `JAM_JOIN_ATTEMPTS_PER_MINUTE` (default 10): failed joins allowed per
+//!   IP address. Behind a reverse proxy every client shares the proxy's
+//!   address, so raise it there.
 //! - `RUST_LOG` for log filtering, default `info`.
 
 use std::{env, error::Error, process::ExitCode, time::Duration};
@@ -51,6 +54,9 @@ fn config() -> Result<ServerConfig, String> {
     }
     if let Some(seconds) = env_number("JAM_RECONNECT_GRACE_SECS")? {
         config.reconnect_grace = Duration::from_secs(seconds);
+    }
+    if let Some(value) = env_number("JAM_JOIN_ATTEMPTS_PER_MINUTE")? {
+        config.join_attempts_per_minute = value;
     }
     Ok(config)
 }

@@ -5,5 +5,5 @@ mod runtime;
 mod status;
 
 pub use bridge::ProviderBridge;
-pub use runtime::SessionRuntime;
-pub use status::{Notice, RuntimeStatus, SyncState, UnavailableWarning};
+pub use runtime::{QueueEdit, SessionRuntime};
+pub use status::{Notice, QueueItem, RuntimeStatus, SyncState, UnavailableWarning};

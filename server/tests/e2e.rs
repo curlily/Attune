@@ -6,8 +6,8 @@ use futures_util::{SinkExt, StreamExt};
 use jam_core::{
     Error,
     network::{
-        ReconnectPolicy, SessionClient, SessionClientConfig, SessionEvent, SessionStart,
-        SubmitOutcome,
+        JoinCredentials, ReconnectPolicy, SessionClient, SessionClientConfig, SessionEvent,
+        SessionStart, SubmitOutcome,
     },
     protocol::{
         ErrorCode, ParticipantStatus, QueueEntry, ServerMessage, SessionMusicState,
@@ -320,24 +320,66 @@ async fn session_limit_is_enforced() {
     ));
 }
 
+fn remote_code(error: Error) -> ErrorCode {
+    match error {
+        Error::Remote { code, .. } => code,
+        other => panic!("expected a server error, got {other}"),
+    }
+}
+
 #[tokio::test]
-async fn wrong_invite_is_refused() {
+async fn codes_are_case_insensitive_and_wrong_ones_are_refused() {
     let server = Server::start(ServerConfig::default()).await;
     let (_a, a_start) = SessionClient::create(server.client("a"), music(&["s1"]))
         .await
         .expect("create");
-    let mut wrong = a_start.credentials.clone();
-    wrong.join_token.push('x');
-    let error = SessionClient::join(server.client("b"), wrong)
+    let code = a_start.credentials.code.clone();
+    let typed = JoinCredentials::from_code(&code.to_lowercase()).expect("code");
+    SessionClient::join(server.client("b"), typed)
         .await
-        .expect_err("wrong token");
-    assert!(matches!(
-        error,
-        Error::Remote {
-            code: ErrorCode::InvalidCredentials,
-            ..
-        }
-    ));
+        .expect("join with a lowercase code");
+
+    let other = if code == "AAAA" { "BBBB" } else { "AAAA" };
+    let error = SessionClient::join(
+        server.client("c"),
+        JoinCredentials::from_code(other).expect("code"),
+    )
+    .await
+    .expect_err("unknown code");
+    assert_eq!(remote_code(error), ErrorCode::InvalidCredentials);
+}
+
+#[tokio::test]
+async fn guessing_codes_is_rate_limited_per_address() {
+    let config = ServerConfig {
+        join_attempts_per_minute: 3,
+        ..ServerConfig::default()
+    };
+    let server = Server::start(config).await;
+    let (_a, a_start) = SessionClient::create(server.client("a"), music(&["s1"]))
+        .await
+        .expect("create");
+    let code = a_start.credentials.code.clone();
+    let wrong = if code == "AAAA" { "BBBB" } else { "AAAA" };
+
+    // A join that works doesn't count.
+    SessionClient::join(server.client("b"), a_start.credentials.clone())
+        .await
+        .expect("join");
+    for _ in 0..3 {
+        let error = SessionClient::join(
+            server.client("guess"),
+            JoinCredentials::from_code(wrong).expect("code"),
+        )
+        .await
+        .expect_err("wrong code");
+        assert_eq!(remote_code(error), ErrorCode::InvalidCredentials);
+    }
+    // Now even the right code is refused until the limit refills.
+    let error = SessionClient::join(server.client("c"), a_start.credentials.clone())
+        .await
+        .expect_err("limited");
+    assert_eq!(remote_code(error), ErrorCode::RateLimited);
 }
 
 /// Raw WebSocket client for protocol-level checks.
@@ -397,8 +439,7 @@ async fn garbage_after_joining_gets_an_error_but_keeps_the_connection() {
         "protocolVersion": 1,
         "clientId": "raw",
         "displayName": "Raw",
-        "sessionId": a_start.credentials.session_id,
-        "joinToken": a_start.credentials.join_token,
+        "sessionId": a_start.credentials.code,
     });
     socket
         .send(Message::text(join.to_string()))

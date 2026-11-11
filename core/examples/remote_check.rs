@@ -64,9 +64,9 @@ async fn main() -> Check {
     let started = Instant::now();
     let (a, a_start) = SessionClient::create(config("Remote A"), initial).await?;
     println!(
-        "ok  create ({:?}), invite {}…",
+        "ok  create ({:?}), code {}",
         started.elapsed(),
-        &a_start.credentials.session_id[..8]
+        a_start.credentials.code
     );
 
     let started = Instant::now();

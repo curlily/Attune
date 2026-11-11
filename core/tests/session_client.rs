@@ -140,10 +140,12 @@ async fn create_and_join_exchange_snapshots_and_participants() {
     let (_a, mut a_start, _b, b_start) = pair(&server).await;
 
     let credentials = &a_start.credentials;
-    assert!(!credentials.session_id.is_empty());
-    assert!(!credentials.join_token.is_empty());
+    assert_eq!(credentials.code.len(), 4);
+    assert!(credentials.rejoin_secret.is_some());
+    assert!(b_start.credentials.rejoin_secret.is_some());
+    assert_ne!(b_start.credentials.rejoin_secret, credentials.rejoin_secret);
     assert_eq!(a_start.snapshot.revision, 0);
-    assert_eq!(b_start.snapshot.session_id, credentials.session_id);
+    assert_eq!(b_start.snapshot.session_id, credentials.code);
     assert_eq!(b_start.snapshot.state.queue.len(), 3);
 
     // A learns that B joined.
@@ -164,24 +166,26 @@ async fn create_and_join_exchange_snapshots_and_participants() {
         ClientMessage::Join(join) => {
             assert_eq!(join.hello.protocol_version, 1);
             assert_eq!(join.hello.client_id, "b");
-            assert_eq!(join.join_token, credentials.join_token);
+            assert_eq!(join.session_id, credentials.code);
         }
         other => panic!("unexpected {other:?}"),
     }
 }
 
 #[tokio::test]
-async fn invalid_invite_is_refused_without_leaking_the_token() {
+async fn taking_a_seat_needs_its_secret_and_the_error_does_not_leak_it() {
     let server = TestServer::start().await;
     let (_a, a_start) = create(&server, "a", &["s1"]).await;
+    let secret = a_start.credentials.rejoin_secret.clone().expect("secret");
+    // Someone else using A's (visible) client ID with a guessed secret.
     let wrong = JoinCredentials {
-        session_id: a_start.credentials.session_id.clone(),
-        join_token: "not-the-token".to_owned(),
+        code: a_start.credentials.code.clone(),
+        rejoin_secret: Some("not-the-secret".to_owned()),
     };
 
-    let error = SessionClient::join(config(&server, "b"), wrong)
+    let error = SessionClient::join(config(&server, "a"), wrong)
         .await
-        .expect_err("wrong token");
+        .expect_err("wrong secret");
     assert!(matches!(
         error,
         Error::Remote {
@@ -189,7 +193,29 @@ async fn invalid_invite_is_refused_without_leaking_the_token() {
             ..
         }
     ));
-    assert!(!error.to_string().contains(&a_start.credentials.join_token));
+    assert!(!error.to_string().contains(&secret));
+}
+
+#[tokio::test]
+async fn the_clock_estimate_arrives_shortly_after_joining() {
+    let server = TestServer::start().await;
+    let (a, _a_start) = create(&server, "a", &["s1"]).await;
+    timeout(WAIT, async {
+        while a.clock().is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("clock estimate");
+    let clock = a.clock().expect("clock");
+    // Same machine, same clock.
+    assert!(clock.offset_ms.abs() < 50, "{clock:?}");
+    assert!(
+        server
+            .received("a")
+            .iter()
+            .any(|message| matches!(message, ClientMessage::TimePing { .. }))
+    );
 }
 
 #[tokio::test]
@@ -434,7 +460,7 @@ async fn oversized_messages_are_refused_locally() {
 async fn reconnect_rejoins_with_the_same_identity_and_resumes() {
     let server = TestServer::start().await;
     let (a, mut a_start, _b, _b_start) = pair(&server).await;
-    let session_id = a_start.credentials.session_id.clone();
+    let session_id = a_start.credentials.code.clone();
 
     server.kill_connections();
     wait_for(&mut a_start.events, |e| {
@@ -602,7 +628,7 @@ async fn status_reports_reach_the_other_participants() {
 async fn two_clients_mirror_the_server_state() {
     let server = TestServer::start().await;
     let (a, a_start, b, b_start) = pair(&server).await;
-    let session_id = a_start.credentials.session_id.clone();
+    let session_id = a_start.credentials.code.clone();
 
     struct Follower {
         client: SessionClient,

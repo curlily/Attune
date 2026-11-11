@@ -2,7 +2,7 @@ const { invoke } = window.__TAURI__.core;
 
 async function connectTidal() {
   try {
-    await invoke("connect_tidal");
+    await invoke("connect_provider", { id: "Tidal" });
   } catch (e) {
     console.error(e);
   }
@@ -10,7 +10,7 @@ async function connectTidal() {
 
 async function connectSpotify() {
   try {
-    await invoke("connect_spotify");
+    await invoke("connect_provider", { id: "Spotify" });
   } catch (e) {
     console.error(e);
   }

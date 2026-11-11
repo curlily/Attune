@@ -96,11 +96,24 @@ impl Inner {
                 let client_id = request.hello.client_id.clone();
                 self.received
                     .push((client_id.clone(), ClientMessage::Create(request.clone())));
-                let session_id = uuid::Uuid::new_v4().to_string();
-                let token = uuid::Uuid::new_v4().simple().to_string();
+                let session_id = loop {
+                    let code: String = uuid::Uuid::new_v4()
+                        .into_bytes()
+                        .iter()
+                        .take(jam_core::protocol::JOIN_CODE_LEN)
+                        .map(|byte| {
+                            let alphabet = jam_core::protocol::JOIN_CODE_ALPHABET;
+                            char::from(alphabet[usize::from(*byte) % alphabet.len()])
+                        })
+                        .collect();
+                    if !self.sessions.contains_key(&code) {
+                        break code;
+                    }
+                };
+                let secret = uuid::Uuid::new_v4().simple().to_string();
                 match SessionCoordinator::create(
                     session_id.clone(),
-                    token,
+                    secret,
                     request,
                     MAX_PARTICIPANTS,
                     now,
@@ -128,7 +141,7 @@ impl Inner {
                         },
                     );
                 };
-                match coordinator.join(request, now) {
+                match coordinator.join(request, uuid::Uuid::new_v4().simple().to_string(), now) {
                     Ok(outbound) => {
                         self.bind(connection_id, &session_id, &client_id);
                         self.route(&session_id, outbound);

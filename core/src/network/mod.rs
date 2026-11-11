@@ -5,6 +5,6 @@
 mod client;
 
 pub use client::{
-    CloseReason, JoinCredentials, ReconnectPolicy, SessionClient, SessionClientConfig,
-    SessionEvent, SessionStart, SubmitOutcome, new_client_id,
+    ClockEstimate, CloseReason, JoinCredentials, ReconnectPolicy, SessionClient,
+    SessionClientConfig, SessionEvent, SessionStart, SubmitOutcome, new_client_id,
 };

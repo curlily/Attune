@@ -46,11 +46,16 @@ It listens on `127.0.0.1:8787` and serves:
 | `JAM_MAX_SESSIONS` | `100` |
 | `JAM_MAX_PARTICIPANTS` | `16` |
 | `JAM_RECONNECT_GRACE_SECS` | `60` |
+| `JAM_JOIN_ATTEMPTS_PER_MINUTE` | `10` (failed joins per IP address) |
 | `RUST_LOG` | `info` |
 
 Sessions live in memory: restarting the server ends them, and clients then report
 the session as ended. A session also ends when its last participant leaves or its
-reconnect grace period expires. Logs never contain join tokens or track data.
+reconnect grace period expires. Logs never contain join codes, rejoin secrets or
+track data.
+
+Behind a reverse proxy every client appears to come from the proxy's address, so
+they share one join-attempt limit; raise `JAM_JOIN_ATTEMPTS_PER_MINUTE` there.
 
 ### Exposing it with Cloudflare Tunnel
 
@@ -93,8 +98,16 @@ about 100 seconds; the client pings every 30 seconds, so sessions stay open.
 
 ## How a session works
 
-- **Invite:** creating a session returns an invite string `sessionId.joinToken`.
-  Anyone holding it can join; there are no accounts. Treat it like a password.
+- **Join code:** creating a session returns a four-letter code (like `KWPZ`; no
+  `I` or `O`). Anyone with the code can join; there are no accounts. Codes are
+  short, so the server allows only a few failed join attempts per IP address per
+  minute.
+- **Rejoin secret:** each participant also gets a private secret. Reconnecting
+  (or rejoining after restarting MyJam) uses it to take the same seat back, so
+  knowing the code and someone's client ID isn't enough to take their place.
+- **Clock:** clients measure how far their clock is from the server's and how long
+  messages take, and use that to place positions correctly: a seek that took
+  80 ms to arrive lands 80 ms further into the song.
 - **One order for everyone:** the server numbers every accepted change. Clients
   apply changes in that order and fetch a snapshot if they ever miss one.
 - **Conflicts:** concurrent playback changes (pause, seek, skip) simply apply. A

@@ -137,8 +137,8 @@ fn every_client_message_round_trips() {
         (
             ClientMessage::Join(JoinSession {
                 hello: hello("b"),
-                session_id: "s1".to_owned(),
-                join_token: "secret".to_owned(),
+                session_id: "KWPZ".to_owned(),
+                rejoin_secret: Some("secret".to_owned()),
             }),
             "session.join",
         ),
@@ -169,6 +169,12 @@ fn every_client_message_round_trips() {
             "session.snapshot.request",
         ),
         (ClientMessage::Leave, "session.leave"),
+        (
+            ClientMessage::TimePing {
+                client_time_ms: 1_234,
+            },
+            "time.ping",
+        ),
     ];
     for (message, tag) in messages {
         round_trip(&message, tag);
@@ -181,7 +187,7 @@ fn every_server_message_round_trips() {
         (
             ServerMessage::Created {
                 session_id: "s1".to_owned(),
-                join_token: "secret".to_owned(),
+                rejoin_secret: "secret".to_owned(),
                 snapshot: snapshot(),
             },
             "session.created",
@@ -189,6 +195,7 @@ fn every_server_message_round_trips() {
         (
             ServerMessage::Joined {
                 snapshot: snapshot(),
+                rejoin_secret: "secret".to_owned(),
             },
             "session.joined",
         ),
@@ -247,6 +254,13 @@ fn every_server_message_round_trips() {
             },
             "session.error",
         ),
+        (
+            ServerMessage::TimePong {
+                client_time_ms: 1_234,
+                server_time_ms: 5_678,
+            },
+            "time.pong",
+        ),
     ];
     for (message, tag) in messages {
         round_trip(&message, tag);
@@ -257,8 +271,8 @@ fn every_server_message_round_trips() {
 fn handshake_identity_is_flattened_into_the_message() {
     let message = ClientMessage::Join(JoinSession {
         hello: hello("b"),
-        session_id: "s1".to_owned(),
-        join_token: "secret".to_owned(),
+        session_id: "KWPZ".to_owned(),
+        rejoin_secret: None,
     });
     assert_eq!(
         serde_json::to_value(message).expect("serialize"),
@@ -268,8 +282,7 @@ fn handshake_identity_is_flattened_into_the_message() {
             "clientId": "b",
             "displayName": "User b",
             "provider": "tidal",
-            "sessionId": "s1",
-            "joinToken": "secret",
+            "sessionId": "KWPZ",
         })
     );
 }
