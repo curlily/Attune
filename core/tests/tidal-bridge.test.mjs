@@ -5,6 +5,9 @@ import vm from "node:vm";
 import test from "node:test";
 
 const adapterPath = new URL("../src/adapters/tidal.js", import.meta.url);
+const STORE_EVENT_SETTLE_MS = 250; // > the adapter's 180ms debounce
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function createStore() {
     let state = {
@@ -61,8 +64,14 @@ function createStore() {
         },
         dispatch(action) {
             const { type, payload } = action;
+            // Like Redux, never mutate the previous state object: the adapter
+            // keeps it to compare before/after.
+            state = structuredClone(state);
 
             if (type === "search/SEARCH_FOR") {
+                // Every query returns one result: "Repeated Track" for queries
+                // that mention it, otherwise "Current Track". Any other title
+                // therefore has no matching recording.
                 const queryKey = `search/tracks/${encodeURIComponent(payload.query)}`;
                 const isRepeatedTrack = payload.query.toLowerCase().includes("repeated track");
                 const id = isRepeatedTrack ? "202" : "101";
@@ -95,24 +104,24 @@ function createStore() {
     };
 }
 
-test("TIDAL adapter exposes the shared API and normalizes queue history/duplicates", async () => {
+async function loadAdapter() {
     const store = createStore();
     const events = [];
-    let observerDisconnected = false;
+    const context = { observerDisconnected: false };
     let randomId = 0;
 
     // The renderer script dynamically imports TIDAL chunks. Replace only that
     // import site so this test can supply a deterministic mock store accessor.
-    const source = (await readFile(adapterPath, "utf8"))
-        .replace("await import(url)", "await loadModule(url)");
-    assert.notEqual(source, await readFile(adapterPath, "utf8"), "test import hook was not applied");
+    const original = await readFile(adapterPath, "utf8");
+    const source = original.replace("await import(url)", "await loadModule(url)");
+    assert.notEqual(source, original, "test import hook was not applied");
 
     function getGlobalStore() {
         if (!store) throw new Error("No global store set");
         return store;
     }
 
-    const context = vm.createContext({
+    const vmContext = vm.createContext({
         window: {},
         document: { querySelectorAll: () => [] },
         performance: {
@@ -121,18 +130,40 @@ test("TIDAL adapter exposes the shared API and normalizes queue history/duplicat
         },
         PerformanceObserver: class {
             observe() {}
-            disconnect() { observerDisconnected = true; }
+            disconnect() { context.observerDisconnected = true; }
         },
         crypto: { randomUUID: () => `generated-${++randomId}` },
         loadModule: async () => ({ getGlobalStore }),
+        structuredClone,
         setTimeout,
         clearTimeout,
         console: { info() {}, log() {}, warn() {}, error() {} },
     });
-    context.window.__jamEvent = payload => events.push(JSON.parse(payload));
+    vmContext.window.__jamEvent = payload => events.push(JSON.parse(payload));
 
     const script = new vm.Script(source, { filename: fileURLToPath(adapterPath) });
-    const bridge = await script.runInContext(context);
+    const bridge = await script.runInContext(vmContext);
+    return { bridge, store, events, context, window: vmContext.window };
+}
+
+const repeatedTrack = {
+    title: "Repeated Track",
+    artists: ["Artist Two"],
+    isrc: "ISRC-REPEAT",
+    album: "Second Album",
+    durationMs: 200_000,
+};
+const ghostTrack = { title: "Ghost Song", artists: ["Nobody"] };
+
+function playback(isPlaying = true, positionMs = 0) {
+    return { isPlaying, positionMs, positionCapturedAtMs: Date.now() };
+}
+
+const entryIds = state => Array.from(state.queue, entry => entry.entryId);
+const operations = events => events.filter(event => event.type === "Operation");
+
+test("TIDAL adapter exposes the shared API and normalizes queue history/duplicates", async () => {
+    const { bridge, events, context, window } = await loadAdapter();
 
     assert.equal(bridge.version, 1);
     assert.equal(bridge.ready, true);
@@ -147,55 +178,95 @@ test("TIDAL adapter exposes the shared API and normalizes queue history/duplicat
         "duplicate tracks must keep distinct queue-entry identities",
     );
 
-    const repeatedTrack = {
-        title: "Repeated Track",
-        artists: ["Artist Two"],
-        isrc: "ISRC-REPEAT",
-        album: "Second Album",
-        durationMs: 200_000,
-    };
-
-    // A contradictory ISRC must fail before the current queue is replaced.
-    await assert.rejects(
-        bridge.applySnapshot({
-            queue: [{
-                entryId: "wrong-recording",
-                track: { ...repeatedTrack, isrc: "ISRC-DIFFERENT" },
-            }],
-            currentEntryId: "wrong-recording",
-            playback: { isPlaying: true, positionMs: 0, positionCapturedAtMs: Date.now() },
-        }),
-        /No matching TIDAL recording found/,
-    );
-    assert.equal(bridge.getState().queue[0].track.title, "Current Track");
-
-    await bridge.applySnapshot({
+    const outcome = await bridge.applySnapshot({
         queue: [
             { entryId: "session-current", track: repeatedTrack },
             { entryId: "session-copy", track: repeatedTrack },
         ],
         currentEntryId: "session-current",
-        playback: {
-            isPlaying: false,
-            positionMs: 5_000,
-            positionCapturedAtMs: Date.now(),
-        },
+        playback: playback(false, 5_000),
     });
+    assert.deepEqual([...outcome.unavailableEntryIds], []);
 
     const appliedState = bridge.getState();
-    assert.deepEqual(Array.from(appliedState.queue, entry => entry.entryId), [
-        "session-current",
-        "session-copy",
-    ]);
+    assert.deepEqual(entryIds(appliedState), ["session-current", "session-copy"]);
     assert.equal(appliedState.playback.positionMs, 5_000);
     assert.equal(appliedState.playback.isPlaying, false);
 
-    await bridge.applyOperation({ type: "playback.setPlaying", isPlaying: true });
+    const playOutcome = await bridge.applyOperation({ type: "playback.setPlaying", isPlaying: true });
+    assert.deepEqual([...playOutcome.unavailableEntryIds], []);
     assert.equal(bridge.getState().playback.isPlaying, true);
 
     await bridge.dispose();
     assert.equal(bridge.ready, false);
-    assert.equal(observerDisconnected, true);
-    assert.equal(context.window.__MYJAM_BRIDGE_V1__, undefined);
-    assert.equal(context.window.bridge, undefined);
+    assert.equal(context.observerDisconnected, true);
+    assert.equal(window.__MYJAM_BRIDGE_V1__, undefined);
+    assert.equal(window.bridge, undefined);
+});
+
+test("TIDAL skips upcoming tracks it cannot find and reports them", async () => {
+    const { bridge } = await loadAdapter();
+
+    const outcome = await bridge.applySnapshot({
+        queue: [
+            { entryId: "session-current", track: repeatedTrack },
+            { entryId: "session-ghost", track: ghostTrack },
+            { entryId: "session-copy", track: repeatedTrack },
+        ],
+        currentEntryId: "session-current",
+        playback: playback(),
+    });
+
+    assert.deepEqual([...outcome.unavailableEntryIds], ["session-ghost"]);
+    assert.deepEqual(
+        entryIds(bridge.getState()),
+        ["session-current", "session-copy"],
+        "loaded entries keep their session IDs even after a skipped one",
+    );
+});
+
+test("TIDAL rejects an unplayable current track with a structured error and changes nothing", async () => {
+    const { bridge } = await loadAdapter();
+    const before = entryIds(bridge.getState());
+
+    await assert.rejects(
+        bridge.applySnapshot({
+            queue: [
+                { entryId: "session-ghost", track: ghostTrack },
+                { entryId: "session-wrong-isrc", track: { ...repeatedTrack, isrc: "ISRC-DIFFERENT" } },
+                { entryId: "session-ok", track: repeatedTrack },
+            ],
+            currentEntryId: "session-ghost",
+            playback: playback(),
+        }),
+        error => {
+            assert.equal(error.code, "trackUnavailable");
+            assert.deepEqual([...error.details.entryIds], ["session-ghost", "session-wrong-isrc"]);
+            assert.match(error.message, /No matching TIDAL recording found for "Ghost Song"/);
+            return true;
+        },
+    );
+    assert.deepEqual(entryIds(bridge.getState()), before, "TIDAL queue must be untouched");
+});
+
+test("TIDAL publishes local changes but not the effects of a remote apply", async () => {
+    const { bridge, store, events } = await loadAdapter();
+
+    // Positive control: a user pausing in TIDAL becomes a session operation.
+    store.dispatch({ type: "playbackControls/PAUSE" });
+    await sleep(STORE_EVENT_SETTLE_MS);
+    assert.deepEqual(
+        operations(events).map(event => event.data),
+        [{ type: "playback.setPlaying", isPlaying: false }],
+    );
+
+    // A remote apply changes the queue and play state, but must not echo.
+    events.length = 0;
+    await bridge.applySnapshot({
+        queue: [{ entryId: "session-current", track: repeatedTrack }],
+        currentEntryId: "session-current",
+        playback: playback(),
+    });
+    await sleep(STORE_EVENT_SETTLE_MS);
+    assert.deepEqual(operations(events), []);
 });

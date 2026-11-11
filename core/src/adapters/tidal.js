@@ -147,6 +147,26 @@
     // Track metadata and matching
     // ---------------------------------------------------------------------
 
+    // A recording could not be identified (no match, ambiguous, search timed
+    // out). Unlike other failures this is expected and per-track: the rest of
+    // the queue can still be loaded.
+    class TrackLookupError extends Error {
+        constructor(message) {
+            super(message);
+            this.name = "TrackLookupError";
+        }
+    }
+
+    // Structured bridge error understood by Rust (Error::TrackUnavailable).
+    function trackUnavailableError(failures) {
+        const error = new Error(
+            "Track unavailable on TIDAL: " + failures.map(failure => failure.error.message).join("; "),
+        );
+        error.code = "trackUnavailable";
+        error.details = { entryIds: failures.map(failure => failure.entry.entryId) };
+        return error;
+    }
+
     function normalize(value) {
         return String(value ?? "")
             .normalize("NFKC")
@@ -251,7 +271,7 @@
             await new Promise(resolve => setTimeout(resolve, 100));
         }
 
-        throw new Error(`TIDAL search timed out for "${query}"`);
+        throw new TrackLookupError(`TIDAL search timed out for "${query}"`);
     }
 
     async function resolveTrack(track) {
@@ -301,16 +321,29 @@
             .sort((a, b) => b.score - a.score);
 
         if (!ranked.length) {
-            throw new Error(`No matching TIDAL recording found for "${track.title}"`);
+            throw new TrackLookupError(`No matching TIDAL recording found for "${track.title}"`);
         }
         if (ranked.length > 1 && ranked[0].score === ranked[1].score) {
-            throw new Error(`TIDAL returned an ambiguous match for "${track.title}"; add an ISRC or album`);
+            throw new TrackLookupError(`TIDAL returned an ambiguous match for "${track.title}"; add an ISRC or album`);
         }
 
         const productId = ranked[0].productId;
         resolvedTrackCache.set(cacheKey, productId);
         trackCache.set(productId, ranked[0].track);
         return productId;
+    }
+
+    // Resolve every entry independently. Lookup failures are returned per
+    // entry; any other error (e.g. the store disappeared) is rethrown.
+    async function resolveEntries(entries) {
+        return Promise.all(entries.map(async entry => {
+            try {
+                return { entry, productId: await resolveTrack(entry.track) };
+            } catch (error) {
+                if (error instanceof TrackLookupError) return { entry, error };
+                throw error;
+            }
+        }));
     }
 
     // ---------------------------------------------------------------------
@@ -435,6 +468,14 @@
         });
     }
 
+    /**
+     * Load `entries` (from `currentEntryId` on) into TIDAL's play queue.
+     *
+     * Resolves to `{ unavailableEntryIds }`: upcoming entries with no TIDAL
+     * match are left out of TIDAL's queue and reported, the rest still plays.
+     * If the *current* entry has no match, nothing is changed and a
+     * `trackUnavailable` error is thrown.
+     */
     async function replaceQueue(entries, currentEntryId, playback) {
         if (!Array.isArray(entries)) {
             throw new TypeError("Queue entries must be an array");
@@ -448,7 +489,7 @@
                 throw new Error("TIDAL cannot safely unload the active track with the verified bridge actions");
             }
             setPlaying(false);
-            return;
+            return { unavailableEntryIds: [] };
         }
 
         const selectedIndex = currentEntryId == null
@@ -461,23 +502,28 @@
         // Entries before currentEntryId are history, not upcoming queue items.
         const orderedEntries = entries.slice(selectedIndex);
 
-        // Resolve every recording before replacing the active queue. A lookup
-        // failure therefore leaves the user's current queue intact.
-        const mediaItemIds = await Promise.all(
-            orderedEntries.map(entry => resolveTrack(entry.track))
-        );
+        // Resolve every recording before replacing the active queue, so an
+        // unplayable current track leaves the user's queue intact.
+        const resolved = await resolveEntries(orderedEntries);
+        const failures = resolved.filter(result => result.error);
+        if (resolved[0].error) {
+            throw trackUnavailableError(failures);
+        }
+        const loaded = resolved.filter(result => !result.error);
 
         setRemoteMutationWindow();
         dispatch("playQueue/ADD_MEDIA_ITEMS_TO_QUEUE", {
-            mediaItemIds,
+            mediaItemIds: loaded.map(result => result.productId),
             options: { overwritePlayQueue: true },
             position: "now",
             sourceContext: SOURCE_CONTEXT,
         });
-        rememberAppliedEntryIds(orderedEntries);
+        rememberAppliedEntryIds(loaded.map(result => result.entry));
 
         if (playback?.positionMs > 0) seek(playback.positionMs);
         if (playback) setPlaying(playback.isPlaying);
+
+        return { unavailableEntryIds: failures.map(failure => failure.entry.entryId) };
     }
 
     async function applyState(nextState) {
@@ -486,7 +532,7 @@
         }
 
         setRemoteMutationWindow();
-        await replaceQueue(
+        return replaceQueue(
             nextState.queue,
             nextState.currentEntryId ?? nextState.queue[0]?.entryId ?? null,
             nextState.playback,
@@ -528,8 +574,7 @@
                     playback.positionMs = 0;
                     playback.isPlaying = true;
                 }
-                await replaceQueue(operation.entries, currentEntryId, playback);
-                return;
+                return replaceQueue(operation.entries, currentEntryId, playback);
             }
 
             case "queue.insert": {
@@ -543,8 +588,7 @@
                     state.currentEntryId = operation.entry.entryId;
                     state.playback.positionMs = 0;
                 }
-                await replaceQueue(state.queue, state.currentEntryId, state.playback);
-                return;
+                return replaceQueue(state.queue, state.currentEntryId, state.playback);
             }
 
             case "queue.remove": {
@@ -556,8 +600,7 @@
                     state.currentEntryId = state.queue[0]?.entryId ?? null;
                     state.playback.positionMs = 0;
                 }
-                await replaceQueue(state.queue, state.currentEntryId, state.playback);
-                return;
+                return replaceQueue(state.queue, state.currentEntryId, state.playback);
             }
 
             case "queue.move": {
@@ -572,8 +615,7 @@
                     state.currentEntryId = operation.entryId;
                     state.playback.positionMs = 0;
                 }
-                await replaceQueue(state.queue, state.currentEntryId, state.playback);
-                return;
+                return replaceQueue(state.queue, state.currentEntryId, state.playback);
             }
 
             case "playback.select":
@@ -588,8 +630,7 @@
                 state.currentEntryId = targetId;
                 state.playback.positionMs = operation.positionMs ?? 0;
                 state.playback.isPlaying = operation.isPlaying ?? true;
-                await replaceQueue(state.queue, targetId, state.playback);
-                return;
+                return replaceQueue(state.queue, targetId, state.playback);
             }
 
             case "playback.seek": {
@@ -598,12 +639,12 @@
                     throw new Error("Cannot seek a track that is not currently playing");
                 }
                 seek(operation.positionMs);
-                return;
+                return { unavailableEntryIds: [] };
             }
 
             case "playback.setPlaying":
                 setPlaying(Boolean(operation.isPlaying));
-                return;
+                return { unavailableEntryIds: [] };
 
             default:
                 throw new Error(`Unsupported MyJam operation: ${operation.type}`);

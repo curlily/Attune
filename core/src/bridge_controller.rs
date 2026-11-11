@@ -17,7 +17,7 @@ use chromiumoxide::cdp::{
 };
 use chromiumoxide::{Browser, Page, cdp::browser_protocol::target::TargetInfo};
 use futures_util::StreamExt;
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sysinfo::System;
 use tokio::sync::broadcast;
@@ -33,6 +33,15 @@ use crate::{
 /// Attach a static context to a chromiumoxide failure.
 fn cdp(context: &'static str) -> impl FnOnce(chromiumoxide::error::CdpError) -> Error {
     move |source| Error::Cdp { context, source }
+}
+
+/// Result of applying session state or an operation to the provider.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyOutcome {
+    /// Upcoming entries the provider could not find. They were left out of the
+    /// provider's queue but remain in the session.
+    pub unavailable_entry_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -419,8 +428,10 @@ impl BridgeController {
         let args_json = serde_json::to_string(args)?;
         // Return an explicit envelope so a JS exception is never confused
         // with a successful `undefined` return value from a void method.
+        // Adapters may attach a string `code` and JSON `details` to an error
+        // to report an expected, structured failure (see `bridge_failure`).
         let expression = format!(
-            "(async () => {{ try {{ const api = {api_expression}; if (!api) throw new Error('Bridge API is unavailable'); const fn = api[{method_json}]; if (typeof fn !== 'function') throw new Error('Bridge method is unavailable: ' + {method_json}); const value = await fn.apply(api, {args_json}); return {{ __myjamBridgeResult: true, ok: true, value: value === undefined ? null : value }}; }} catch (error) {{ return {{ __myjamBridgeResult: true, ok: false, error: String(error?.stack ?? error) }}; }} }})()"
+            "(async () => {{ try {{ const api = {api_expression}; if (!api) throw new Error('Bridge API is unavailable'); const fn = api[{method_json}]; if (typeof fn !== 'function') throw new Error('Bridge method is unavailable: ' + {method_json}); const value = await fn.apply(api, {args_json}); return {{ __myjamBridgeResult: true, ok: true, value: value === undefined ? null : value }}; }} catch (error) {{ return {{ __myjamBridgeResult: true, ok: false, error: String(error?.stack ?? error), message: String(error?.message ?? error), code: typeof error?.code === 'string' ? error.code : null, details: error?.details ?? null }}; }} }})()"
         );
         let invalid = || Error::InvalidBridgeResponse {
             method,
@@ -432,11 +443,7 @@ impl BridgeController {
             return Err(invalid());
         }
         if result["ok"] != true {
-            let message = result["error"]
-                .as_str()
-                .unwrap_or("unknown JavaScript error")
-                .to_owned();
-            return Err(Error::BridgeCallFailed { method, message });
+            return Err(bridge_failure(method, result));
         }
 
         Ok(result["value"].take())
@@ -457,22 +464,25 @@ impl BridgeController {
     }
 
     /// Apply an authoritative session snapshot to the connected music client.
-    pub async fn apply_snapshot(&self, snapshot: &SessionSnapshot) -> Result<()> {
+    ///
+    /// Upcoming entries the provider cannot find are skipped and reported in
+    /// the outcome. If the *current* entry cannot be found, nothing changes
+    /// and [`Error::TrackUnavailable`] is returned.
+    pub async fn apply_snapshot(&self, snapshot: &SessionSnapshot) -> Result<ApplyOutcome> {
         if snapshot.protocol_version != crate::protocol::PROTOCOL_VERSION {
             return Err(Error::UnsupportedProtocolVersion {
                 found: snapshot.protocol_version,
             });
         }
-        self.call_protocol("applySnapshot", &[serde_json::to_value(&snapshot.state)?])
-            .await?;
-        Ok(())
+        self.call_protocol_value("applySnapshot", &[serde_json::to_value(&snapshot.state)?])
+            .await
     }
 
-    /// Apply one accepted provider-independent session operation.
-    pub async fn apply_operation(&self, operation: &SessionOperation) -> Result<()> {
-        self.call_protocol("applyOperation", &[serde_json::to_value(operation)?])
-            .await?;
-        Ok(())
+    /// Apply one accepted provider-independent session operation. Reports
+    /// unavailable entries the same way as [`Self::apply_snapshot`].
+    pub async fn apply_operation(&self, operation: &SessionOperation) -> Result<ApplyOutcome> {
+        self.call_protocol_value("applyOperation", &[serde_json::to_value(operation)?])
+            .await
     }
 
     /// Dispose the renderer adapter. This does not terminate the music client.
@@ -550,6 +560,28 @@ impl BridgeController {
 
         Ok(())
     }
+}
+
+/// Map a failed bridge envelope to a typed error. Adapter error codes are the
+/// JS→Rust equivalent of enum variants; unknown codes are plain failures.
+fn bridge_failure(method: &'static str, mut result: Value) -> Error {
+    fn text(value: &Value, key: &str) -> Option<String> {
+        value[key].as_str().map(str::to_owned)
+    }
+
+    if result["code"] == "trackUnavailable" {
+        let message = text(&result, "message").unwrap_or_else(|| "track unavailable".to_owned());
+        return match serde_json::from_value(result["details"]["entryIds"].take()) {
+            Ok(entry_ids) => Error::TrackUnavailable { entry_ids, message },
+            Err(source) => Error::InvalidBridgeResponse {
+                method,
+                source: Some(source),
+            },
+        };
+    }
+
+    let message = text(&result, "error").unwrap_or_else(|| "unknown JavaScript error".to_owned());
+    Error::BridgeCallFailed { method, message }
 }
 
 fn parse_bridge_value<T: DeserializeOwned>(method: &'static str, value: Value) -> Result<T> {
@@ -682,5 +714,71 @@ impl Drop for BridgeController {
         if let Some(task) = self.handler_task.take() {
             task.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn failed_envelope(code: Value, details: Value) -> Value {
+        json!({
+            "__myjamBridgeResult": true,
+            "ok": false,
+            "error": "Error: boom\n    at adapter.js:1:1",
+            "message": "boom",
+            "code": code,
+            "details": details,
+        })
+    }
+
+    #[test]
+    fn track_unavailable_code_maps_to_typed_error() {
+        let envelope = failed_envelope(
+            json!("trackUnavailable"),
+            json!({ "entryIds": ["current", "later"] }),
+        );
+        match bridge_failure("applySnapshot", envelope) {
+            Error::TrackUnavailable { entry_ids, message } => {
+                assert_eq!(entry_ids, ["current", "later"]);
+                assert_eq!(message, "boom", "uses the message, not the stack");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn malformed_track_unavailable_details_are_an_invalid_response() {
+        let envelope = failed_envelope(json!("trackUnavailable"), json!({ "entryIds": "nope" }));
+        assert!(matches!(
+            bridge_failure("applySnapshot", envelope),
+            Error::InvalidBridgeResponse {
+                method: "applySnapshot",
+                source: Some(_)
+            }
+        ));
+    }
+
+    #[test]
+    fn uncoded_and_unknown_codes_are_plain_call_failures() {
+        for code in [Value::Null, json!("somethingElse")] {
+            match bridge_failure("applyOperation", failed_envelope(code, Value::Null)) {
+                Error::BridgeCallFailed { method, message } => {
+                    assert_eq!(method, "applyOperation");
+                    assert!(
+                        message.contains("adapter.js"),
+                        "keeps the stack for debugging"
+                    );
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn apply_outcome_uses_camel_case() {
+        let outcome: ApplyOutcome =
+            serde_json::from_value(json!({ "unavailableEntryIds": ["x"] })).expect("deserialize");
+        assert_eq!(outcome.unavailable_entry_ids, ["x"]);
     }
 }

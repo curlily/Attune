@@ -2,6 +2,25 @@
     window.__jamBootstrap = true;
     window.bridge = {};
 
+    // A recording could not be identified. Unlike other failures this is
+    // expected and per-track: the rest of the queue can still be loaded.
+    class TrackLookupError extends Error {
+        constructor(message) {
+            super(message);
+            this.name = "TrackLookupError";
+        }
+    }
+
+    // Structured bridge error understood by Rust (Error::TrackUnavailable).
+    function trackUnavailableError(failures) {
+        const error = new Error(
+            "Track unavailable on Spotify: " + failures.map(failure => failure.error.message).join("; "),
+        );
+        error.code = "trackUnavailable";
+        error.details = { entryIds: failures.map(failure => failure.entry.entryId) };
+        return error;
+    }
+
     const bridge = {
         // ---------------------------------------------------------------------
         // Cached Spotify objects
@@ -767,9 +786,9 @@
                 }
             }
 
-            throw new Error(
-                "Failed to find track"
-            )
+            throw new TrackLookupError(
+                `No matching Spotify recording found for "${trackRef.title}"`
+            );
         },
 
         normalize(value) {
@@ -906,6 +925,27 @@
             this.suppressSessionEventsUntil = Date.now() + 1200;
         },
 
+        // Resolve every entry independently. Lookup failures are returned per
+        // entry; any other error (e.g. search unavailable) is rethrown.
+        async resolveEntries(entries) {
+            return Promise.all(entries.map(async entry => {
+                try {
+                    return { entry, uri: await this.getTrackUri(entry.track) };
+                } catch (error) {
+                    if (error instanceof TrackLookupError) return { entry, error };
+                    throw error;
+                }
+            }));
+        },
+
+        /**
+         * Load the session queue (from currentEntryId on) into Spotify.
+         *
+         * Resolves to `{ unavailableEntryIds }`: upcoming entries with no
+         * Spotify match are left out and reported, the rest still plays. If the
+         * *current* entry has no match, nothing is changed and a
+         * `trackUnavailable` error is thrown.
+         */
         async replaceSessionQueue(nextState) {
             if (!Array.isArray(nextState.queue)) {
                 throw new TypeError("Queue entries must be an array");
@@ -922,9 +962,15 @@
             // Entries before the selected item are history, not upcoming queue items.
             const ordered = entries.slice(startIndex);
 
-            // Resolve the complete queue first. A search failure must not clear
-            // the user's currently playing queue as a side effect.
-            const uris = await Promise.all(ordered.map(entry => this.getTrackUri(entry.track)));
+            // Resolve the complete queue first, so an unplayable current track
+            // never clears the user's currently playing queue as a side effect.
+            const resolved = await this.resolveEntries(ordered);
+            const failures = resolved.filter(result => result.error);
+            if (resolved[0]?.error) {
+                throw trackUnavailableError(failures);
+            }
+            const loaded = resolved.filter(result => !result.error);
+            const uris = loaded.map(result => result.uri);
 
             if (!uris.length && this.getPlayerAPI().getState()?.item) {
                 // PlayerAPI.clearQueue() removes upcoming entries, but we have
@@ -965,12 +1011,12 @@
                     const currentKey = currentItem.uid != null
                         ? `uid:${currentItem.uid}`
                         : `current:${currentItem.uri ?? currentItem.id}:0`;
-                    this.sessionEntryIds.set(currentKey, ordered[0]?.entryId);
+                    this.sessionEntryIds.set(currentKey, loaded[0]?.entry.entryId);
                 }
 
                 const liveQueue = await this.getQueue();
                 (liveQueue?.queued ?? []).forEach((item, index) => {
-                    const entry = ordered[index + 1];
+                    const entry = loaded[index + 1]?.entry;
                     if (entry && item.uid != null) {
                         this.sessionEntryIds.set(`uid:${item.uid}`, entry.entryId);
                     }
@@ -978,6 +1024,8 @@
             } catch (error) {
                 console.warn("[MyJam] Could not refresh Spotify queue entry IDs", error);
             }
+
+            return { unavailableEntryIds: failures.map(failure => failure.entry.entryId) };
         },
 
         async applySnapshot(nextState) {
@@ -1071,11 +1119,13 @@
                         throw new Error("Cannot seek a track that is not currently playing");
                     }
                     this.setRemoteMutationWindow();
-                    return this.seek(operation.positionMs);
+                    await this.seek(operation.positionMs);
+                    return { unavailableEntryIds: [] };
 
                 case "playback.setPlaying":
                     this.setRemoteMutationWindow();
-                    return operation.isPlaying ? this.resume() : this.pause();
+                    await (operation.isPlaying ? this.resume() : this.pause());
+                    return { unavailableEntryIds: [] };
 
                 default:
                     throw new Error(`Unsupported MyJam operation: ${operation.type}`);

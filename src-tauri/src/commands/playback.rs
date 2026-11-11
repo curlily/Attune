@@ -1,6 +1,6 @@
 use crate::{error::AppError, state::AppState};
 use jam_core::{
-    bridge_controller::BridgeController,
+    bridge_controller::{ApplyOutcome, BridgeController},
     protocol::{SessionOperation, SessionSnapshot},
     providers,
     structs::{PlayState, ProviderConfig},
@@ -55,26 +55,24 @@ pub async fn get_session_state(
 pub async fn apply_session_snapshot(
     state: State<'_, AppState>,
     snapshot: SessionSnapshot,
-) -> Result<(), AppError> {
+) -> Result<ApplyOutcome, AppError> {
     let controller_slot = state.controller.lock().await;
     let controller = controller_slot
         .as_ref()
         .ok_or(jam_core::Error::NotConnected)?;
-    controller.apply_snapshot(&snapshot).await?;
-    Ok(())
+    Ok(controller.apply_snapshot(&snapshot).await?)
 }
 
 #[tauri::command]
 pub async fn apply_session_operation(
     state: State<'_, AppState>,
     operation: SessionOperation,
-) -> Result<(), AppError> {
+) -> Result<ApplyOutcome, AppError> {
     let controller_slot = state.controller.lock().await;
     let controller = controller_slot
         .as_ref()
         .ok_or(jam_core::Error::NotConnected)?;
-    controller.apply_operation(&operation).await?;
-    Ok(())
+    Ok(controller.apply_operation(&operation).await?)
 }
 
 #[tauri::command]

@@ -69,6 +69,14 @@ pub enum Error {
     #[error("provider bridge reported an error: {message}")]
     BridgeReported { message: String },
 
+    /// The provider could not find the current track. Nothing was changed.
+    /// `entry_ids` lists every session entry it could not find, current first.
+    #[error("{message}")]
+    TrackUnavailable {
+        entry_ids: Vec<String>,
+        message: String,
+    },
+
     #[error("provider bridge call {method} failed: {message}")]
     BridgeCallFailed {
         method: &'static str,

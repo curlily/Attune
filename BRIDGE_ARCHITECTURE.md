@@ -29,11 +29,22 @@ Each adapter installs `window.__MYJAM_BRIDGE_V1__` and the compatibility alias `
 
 - `version`: numeric protocol version (`1`)
 - `getState()`: returns `SessionMusicState`
-- `applySnapshot(state)`: applies a canonical session state
-- `applyOperation(operation)`: applies one provider-independent operation
+- `applySnapshot(state)`: applies a canonical session state; resolves to `{ unavailableEntryIds }`
+- `applyOperation(operation)`: applies one provider-independent operation; resolves to `{ unavailableEntryIds }`
 - `dispose()`: removes listeners and adapter state
 
 The controller invokes these methods through CDP. Calls return an explicit success/error envelope so JavaScript exceptions and rejected promises are not mistaken for a successful `undefined` return.
+
+### Tracks a provider cannot find
+
+Each queue entry is looked up separately. A lookup failure (no match, ambiguous match, search timeout) affects only that entry:
+
+- **Upcoming entry not found:** it is left out of the provider's queue, everything else is loaded, and its ID is returned in `unavailableEntryIds`. It stays in the session for everyone else.
+- **Current entry not found:** nothing is changed and the adapter throws an error with `code: "trackUnavailable"` and `details: { entryIds }` (every unfound entry). Rust maps it to `Error::TrackUnavailable`.
+
+Every entry is resolved before the provider's queue is touched. Other failures (renderer internals missing, search unavailable) are still thrown as plain errors and become `Error::BridgeCallFailed`.
+
+An error may carry a string `code` and JSON `details`; the envelope passes both to Rust. Codes are the JS→Rust equivalent of error variants, and unknown codes are treated as plain failures.
 
 Renderer events are sent through the CDP binding as JSON:
 
@@ -86,4 +97,4 @@ Run:
 npm test
 ```
 
-This runs the mocked TIDAL adapter test and JavaScript syntax checks for both provider scripts. It does not replace a live test against installed desktop clients. Rust compilation (`cargo check` / `cargo test`) must still be run in a Rust toolchain environment.
+This runs the mocked TIDAL and Spotify adapter tests (shared API, skipping tracks the provider can't find, the structured `trackUnavailable` error, and that remote applies are not echoed as local operations) plus JavaScript syntax checks for both scripts. The mocks stand in for the providers' private renderer interfaces, so they do not replace a live test against the installed desktop clients. Run `cargo test --workspace` for the Rust side.
