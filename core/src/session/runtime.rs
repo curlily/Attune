@@ -78,16 +78,19 @@ fn queue_ids(state: &SessionMusicState) -> Vec<&str> {
         .collect()
 }
 
-/// Wait until the provider's queue stops changing (and isn't empty, unless
-/// the timeout passes), then return it.
+/// Wait until the provider's queue and play state stop changing (and the
+/// queue isn't empty, unless the timeout passes), then return it. After a
+/// reload TIDAL restores its queue and then resumes playback by itself
+/// (verified live); both must be over before its state is used.
 async fn settled_state<B: ProviderBridge>(bridge: &B) -> Result<SessionMusicState> {
     let deadline = Instant::now() + SETTLE_TIMEOUT;
-    let mut previous: Option<(Vec<String>, Option<String>)> = None;
+    let mut previous: Option<(Vec<String>, Option<String>, bool)> = None;
     loop {
         let current = bridge.get_state().await?;
         let key = (
             queue_ids(&current).into_iter().map(str::to_owned).collect(),
             current.current_entry_id.clone(),
+            current.playback.is_playing,
         );
         let stable = previous.as_ref() == Some(&key);
         if (stable && !current.queue.is_empty()) || Instant::now() >= deadline {
@@ -718,19 +721,47 @@ impl<B: ProviderBridge> Worker<B> {
                 None
             }
             SessionOperation::QueueInsert { entry, .. } if unavailable(&entry.entry_id) => None,
-            // Index-based changes would land in the wrong place in a queue
-            // with entries missing: send the resulting queue instead.
-            SessionOperation::QueueInsert { .. } | SessionOperation::QueueMove { .. }
-                if !self.unavailable.is_empty() =>
-            {
-                Some(self.provider_queue_replace())
-            }
+            // Session indices count entries the provider doesn't have.
+            // Translate to the provider's queue rather than replacing it,
+            // which would restart the current track (verified live on TIDAL).
+            SessionOperation::QueueInsert { entry, .. } if !self.unavailable.is_empty() => Some(
+                self.provider_index(&entry.entry_id)
+                    .map(|index| SessionOperation::QueueInsert {
+                        entry: entry.clone(),
+                        index,
+                    })
+                    .unwrap_or_else(|| self.provider_queue_replace()),
+            ),
+            SessionOperation::QueueMove { entry_id, .. } if !self.unavailable.is_empty() => Some(
+                self.provider_index(entry_id)
+                    .map(|to_index| SessionOperation::QueueMove {
+                        entry_id: entry_id.clone(),
+                        to_index,
+                    })
+                    .unwrap_or_else(|| self.provider_queue_replace()),
+            ),
             // Don't make the provider search again for entries it can't find.
             SessionOperation::QueueReplace { .. } if !self.unavailable.is_empty() => {
                 Some(self.provider_queue_replace())
             }
             other => Some(other.clone()),
         }
+    }
+
+    /// Position of `entry_id` in the provider's queue: the number of entries
+    /// before it in the (already updated) mirror that the provider has.
+    fn provider_index(&self, entry_id: &str) -> Option<usize> {
+        let position = self
+            .mirror
+            .queue
+            .iter()
+            .position(|entry| entry.entry_id == entry_id)?;
+        Some(
+            self.mirror.queue[..position]
+                .iter()
+                .filter(|entry| !self.unavailable.contains(&entry.entry_id))
+                .count(),
+        )
     }
 
     fn provider_queue_replace(&self) -> SessionOperation {
@@ -764,11 +795,14 @@ impl<B: ProviderBridge> Worker<B> {
         if self.sync != SyncState::Synced {
             return; // not following: local changes stay local
         }
+        // Translate first: the provider's view lacks the entries it couldn't
+        // find, so its echo of a remote change only matches the session once
+        // they are put back (verified live).
+        let operation = self.session_operation(operation);
         if state::is_noop(&self.mirror, &operation, now_ms()) {
             debug!("Dropping a local change that matches the session (echo)");
             return;
         }
-        let operation = self.session_operation(operation);
 
         let outcome = self
             .client()

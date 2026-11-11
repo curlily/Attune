@@ -15,7 +15,11 @@
     const STORE_TIMEOUT_MS = 15_000;
     const SEARCH_TIMEOUT_MS = 12_000;
     const STORE_EVENT_DEBOUNCE_MS = 180;
-    const REMOTE_CHANGE_SUPPRESSION_MS = 1_200;
+    // Local changes are ignored this long after applying a remote change, to
+    // cover its immediate store updates (one debounced event). Keep it short:
+    // a 1.2 s window swallowed real song-end advances (verified live). Later
+    // echoes match the session and are dropped by the Rust runtime.
+    const REMOTE_CHANGE_SUPPRESSION_MS = 300;
     const SOURCE_CONTEXT = { id: null, type: "UNKNOWN" };
 
     // A page can be reloaded or the init script can be evaluated more than
@@ -417,6 +421,19 @@
     // receivers extrapolate from the right moment.
     const MAX_SYNC_SKEW_MS = 24 * 60 * 60 * 1000;
 
+    // Verified live: `playbackState` leaves PLAYING while a track loads, and
+    // `desiredPlaybackState` stays PLAYING after a PAUSE action. Neither alone
+    // is reliable. Trust the explicit states and fall back to the intended
+    // state only in between (loading, stalled).
+    function isPlaying(controls) {
+        if (controls.playbackState === "PLAYING") return true;
+        if (controls.playbackState === "PAUSED") return false;
+        if (typeof controls.desiredPlaybackState === "string") {
+            return controls.desiredPlaybackState === "PLAYING";
+        }
+        return false;
+    }
+
     function getPlayback(state) {
         const controls = state?.playbackControls ?? {};
         const positionSeconds = Number(controls.latestCurrentTime ?? 0);
@@ -425,7 +442,7 @@
         // Guard against a different unit or a missing value in other builds.
         const plausible = Number.isFinite(syncedAt) && Math.abs(now - syncedAt) < MAX_SYNC_SKEW_MS;
         return {
-            isPlaying: controls.playbackState === "PLAYING",
+            isPlaying: isPlaying(controls),
             positionMs: Number.isFinite(positionSeconds)
                 ? Math.max(0, Math.round(positionSeconds * 1000))
                 : 0,
@@ -481,6 +498,85 @@
             const uid = currentEntries[index]?.uid;
             if (uid != null) entryIdByQueueUid.set(String(uid), entry.entryId);
         });
+    }
+
+    // ---------------------------------------------------------------------
+    // Incremental queue edits (the current track keeps playing)
+    // ---------------------------------------------------------------------
+    //
+    // Verified live on TIDAL Desktop (playQueue.type "local"):
+    // - ADD_AT_INDEX {context, index, mediaItemIds} inserts before an absolute
+    //   element index (history included) without moving currentIndex.
+    // - REMOVE_ELEMENT {uid} removes a non-current element.
+    // - MOVE_TRACK {fromIndex, toIndex} inserts at toIndex, then removes the
+    //   original, and may give the moved element a new uid.
+    // Replacing the whole queue instead restarts the current track.
+
+    // The MyJam queue as positions in TIDAL's element list, or null when it
+    // isn't a direct view (another queue type, or a track playing outside
+    // the queue). Callers then fall back to replacing the queue.
+    function directQueue() {
+        const reduxState = store.getState();
+        const queue = reduxState?.playQueue;
+        if (queue?.type !== "local" || !Number.isInteger(queue.currentIndex)) return null;
+        const elements = queueElements(reduxState);
+        if (currentQueueElements(reduxState).length !== elements.length) return null;
+        return { base: queue.currentIndex, elements };
+    }
+
+    function positionOf(view, entryId) {
+        return view.elements.findIndex(
+            (element, index) => makeEntryId(element, mediaItemId(element), index) === entryId,
+        );
+    }
+
+    function rememberElementAt(absoluteIndex, entryId) {
+        const uid = store.getState()?.playQueue?.elements?.[absoluteIndex]?.uid;
+        if (uid != null) entryIdByQueueUid.set(String(uid), entryId);
+    }
+
+    /** Insert one entry after the current track. Null if not possible here. */
+    async function insertUpcoming(entry, index) {
+        const view = directQueue();
+        if (!view || index < 1 || index > view.elements.length) return null;
+        const [resolved] = await resolveEntries([entry], loadedProductIds());
+        if (resolved.error) return { unavailableEntryIds: [entry.entryId] };
+        setRemoteMutationWindow();
+        dispatch("playQueue/ADD_AT_INDEX", {
+            context: SOURCE_CONTEXT,
+            index: view.base + index,
+            mediaItemIds: [resolved.productId],
+        });
+        rememberElementAt(view.base + index, entry.entryId);
+        return { unavailableEntryIds: [] };
+    }
+
+    /** Remove an upcoming entry. Null if not possible here. */
+    function removeUpcoming(entryId) {
+        const view = directQueue();
+        const position = view ? positionOf(view, entryId) : -1;
+        const uid = position >= 1 ? view.elements[position].uid : null;
+        if (uid == null) return null;
+        dispatch("playQueue/REMOVE_ELEMENT", { uid });
+        return { unavailableEntryIds: [] };
+    }
+
+    /** Move an upcoming entry to another upcoming position. Null if not possible here. */
+    function moveUpcoming(entryId, toIndex) {
+        const view = directQueue();
+        const from = view ? positionOf(view, entryId) : -1;
+        if (from < 1 || toIndex < 1 || toIndex >= view.elements.length) return null;
+        if (from !== toIndex) {
+            const target = view.base + toIndex;
+            // MOVE_TRACK inserts before removing, so a forward move targets
+            // one past the final position.
+            dispatch("playQueue/MOVE_TRACK", {
+                fromIndex: view.base + from,
+                toIndex: from < toIndex ? target + 1 : target,
+            });
+            rememberElementAt(target, entryId);
+        }
+        return { unavailableEntryIds: [] };
     }
 
     // ---------------------------------------------------------------------
@@ -625,6 +721,8 @@
             }
 
             case "queue.insert": {
+                const incremental = await insertUpcoming(operation.entry, operation.index);
+                if (incremental) return incremental;
                 const state = cloneState(getState());
                 const index = Math.max(0, Math.min(operation.index, state.queue.length));
                 state.queue.splice(index, 0, {
@@ -639,6 +737,8 @@
             }
 
             case "queue.remove": {
+                const incremental = removeUpcoming(operation.entryId);
+                if (incremental) return incremental;
                 const state = cloneState(getState());
                 const index = state.queue.findIndex(entry => entry.entryId === operation.entryId);
                 if (index < 0) throw new Error(`Queue entry not found: ${operation.entryId}`);
@@ -651,6 +751,8 @@
             }
 
             case "queue.move": {
+                const incremental = moveUpcoming(operation.entryId, operation.toIndex);
+                if (incremental) return incremental;
                 const state = cloneState(getState());
                 const fromIndex = state.queue.findIndex(entry => entry.entryId === operation.entryId);
                 if (fromIndex < 0) throw new Error(`Queue entry not found: ${operation.entryId}`);
@@ -707,9 +809,30 @@
             left.every((entry, index) => entry.entryId === right[index].entryId);
     }
 
+    // When a track starts, TIDAL resets its position sync point to 0 a moment
+    // after the track was requested (verified live). That looks like a seek
+    // back to the start; ignore such jumps shortly after a track change.
+    const TRACK_START_GRACE_MS = 10_000;
+    const TRACK_START_POSITION_MS = 1_500;
+    let activeTrackReference = null;
+    let activeTrackChangedAt = 0;
+
+    function noteActiveTrack(reduxState) {
+        const product = reduxState?.playbackControls?.mediaProduct;
+        const reference = product ? String(product.referenceId ?? product.productId) : null;
+        if (reference !== activeTrackReference) {
+            activeTrackReference = reference;
+            activeTrackChangedAt = Date.now();
+        }
+    }
+
     function positionWasSought(before, after) {
         if (before.currentEntryId !== after.currentEntryId) return false;
         if (before.playback.isPlaying !== after.playback.isPlaying) return false;
+        if (after.playback.positionMs <= TRACK_START_POSITION_MS &&
+            Date.now() - activeTrackChangedAt < TRACK_START_GRACE_MS) {
+            return false;
+        }
 
         const actualDelta = after.playback.positionMs - before.playback.positionMs;
         const elapsed = after.playback.positionCapturedAtMs - before.playback.positionCapturedAtMs;
@@ -780,6 +903,9 @@
             const nextState = store.getState();
             if (!nextState?.view?.appReady) return;
 
+            // On every change, before debouncing or suppression, so remote
+            // track changes count too.
+            noteActiveTrack(nextState);
             pendingStoreState = nextState;
             clearTimeout(storeEventTimer);
             storeEventTimer = setTimeout(() => {

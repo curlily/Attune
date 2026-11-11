@@ -71,6 +71,8 @@ struct FakeProvider {
     fail_next: AtomicBool,
     events: broadcast::Sender<BridgeEvent>,
     loads: Mutex<usize>,
+    /// Operation types applied from the session, in order.
+    applied: Mutex<Vec<String>>,
 }
 
 impl FakeProvider {
@@ -81,6 +83,7 @@ impl FakeProvider {
             fail_next: AtomicBool::new(false),
             events: broadcast::channel(64).0,
             loads: Mutex::new(0),
+            applied: Mutex::default(),
         })
     }
 
@@ -178,6 +181,11 @@ impl ProviderBridge for FakeProvider {
 
     async fn apply_operation(&self, operation: &Op) -> Result<ApplyOutcome> {
         self.take_failure("applyOperation")?;
+        let kind = serde_json::to_value(operation)
+            .ok()
+            .and_then(|value| value["type"].as_str().map(str::to_owned))
+            .unwrap_or_default();
+        self.applied.lock().unwrap().push(kind);
         let next = state::apply(&self.snapshot(), operation, now_ms()).map_err(|error| {
             Error::BridgeCallFailed {
                 method: "applyOperation",
@@ -514,4 +522,57 @@ async fn leaving_ends_the_runtime_but_not_the_provider() {
     eventually("A sees B gone", || s.a.status().participants.len() == 1).await;
     // The provider is still usable by whoever owns it.
     assert!(s.b_provider.get_state().await.is_ok());
+}
+
+#[tokio::test]
+async fn index_changes_are_translated_for_a_provider_missing_songs() {
+    let s = session(&["s2"]).await; // B has [s1, s3]
+
+    // Session [s1, s2, s3]: insert n1 at 3, which is position 2 for B.
+    s.a_provider.local(Op::QueueInsert {
+        entry: entry("n1"),
+        index: 3,
+    });
+    eventually("B has n1 at the end", || {
+        s.b_provider.ids() == ["s1", "s3", "n1"]
+    })
+    .await;
+
+    // Session [s1, s2, s3, n1]: move n1 to 1, which is position 1 for B.
+    s.a_provider.local(Op::QueueMove {
+        entry_id: "n1".to_owned(),
+        to_index: 1,
+    });
+    eventually("B moved n1 forward", || {
+        s.b_provider.ids() == ["s1", "n1", "s3"]
+    })
+    .await;
+
+    let applied = s.b_provider.applied.lock().unwrap().clone();
+    assert_eq!(
+        applied,
+        ["queue.insert", "queue.move"],
+        "no queue replacement (it restarts the song)"
+    );
+}
+
+#[tokio::test]
+async fn echoes_from_a_provider_missing_songs_are_recognised() {
+    let s = session(&["s2"]).await; // B has [s1, s3]
+    let session_id = s.a.credentials().session_id.clone();
+    let sequence = s.server.sequence(&session_id);
+
+    // B's provider reports its own queue, which lacks s2: that is the
+    // session's queue, not an edit.
+    s.b_provider.emit(Op::QueueReplace {
+        entries: vec![entry("s1"), entry("s3")],
+        current_entry_id: Some("s1".to_owned()),
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        s.server.sequence(&session_id),
+        sequence,
+        "nothing was published"
+    );
+    assert_eq!(s.a_provider.ids(), ["s1", "s2", "s3"]);
 }

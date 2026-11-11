@@ -922,7 +922,9 @@
         },
 
         setRemoteMutationWindow() {
-            this.suppressSessionEventsUntil = Date.now() + 1200;
+            // Short on purpose (see the TIDAL adapter): a long window swallows
+            // real song-end advances; later echoes are dropped by the runtime.
+            this.suppressSessionEventsUntil = Date.now() + 300;
         },
 
         // Resolve every entry independently. Lookup failures are returned per

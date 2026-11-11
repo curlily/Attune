@@ -8,8 +8,11 @@ use crate::state::AppState;
 pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "warn,jam_core=debug".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                // chromiumoxide 0.9 warns on every CDP message it cannot
+                // parse from newer Chromium builds; those are harmless.
+                "warn,jam_core=debug,chromiumoxide::handler=error".into()
+            }),
         )
         .init();
 

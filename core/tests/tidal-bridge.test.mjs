@@ -39,6 +39,7 @@ function createStore() {
             trackLists: {},
         },
         playQueue: {
+            type: "local",
             currentIndex: 1,
             elements: [
                 { uid: "history", mediaItemId: "999" },
@@ -100,6 +101,7 @@ function createStore() {
                 }), 10);
             } else if (type === "playQueue/ADD_MEDIA_ITEMS_TO_QUEUE") {
                 state.playQueue = {
+                    type: "local",
                     currentIndex: 0,
                     elements: payload.mediaItemIds.map(id => ({
                         uid: `new-${++generatedUid}`,
@@ -111,6 +113,28 @@ function createStore() {
                     : null;
                 state.playbackControls.latestCurrentTime = 0;
                 state.playbackControls.playbackState = "PLAYING";
+            } else if (type === "playQueue/ADD_AT_INDEX") {
+                state.playQueue.elements.splice(payload.index, 0, ...payload.mediaItemIds.map(id => ({
+                    uid: `new-${++generatedUid}`,
+                    mediaItemId: String(id),
+                })));
+            } else if (type === "playQueue/REMOVE_ELEMENT") {
+                const queue = state.playQueue;
+                const index = queue.elements.findIndex(element => element.uid === payload.uid);
+                if (index >= 0 && index !== queue.currentIndex) {
+                    queue.elements.splice(index, 1);
+                    if (index < queue.currentIndex) queue.currentIndex -= 1;
+                }
+            } else if (type === "playQueue/MOVE_TRACK") {
+                // Like TIDAL: insert at toIndex, then remove the original;
+                // the moved element gets a new uid.
+                const elements = state.playQueue.elements;
+                const from = payload.fromIndex;
+                const to = Math.min(payload.toIndex, elements.length);
+                elements.splice(to, 0, { ...elements[from], uid: `moved-${++generatedUid}` });
+                elements.splice(from < to ? from : from + 1, 1);
+            } else if (type === "test/SET_PLAYBACK") {
+                Object.assign(state.playbackControls, payload);
             } else if (type === "playbackControls/SEEK") {
                 state.playbackControls.latestCurrentTime = payload;
             } else if (type === "playbackControls/PAUSE") {
@@ -328,4 +352,72 @@ test("TIDAL position is reported with the time it was captured, not the time it 
     store.getState().playbackControls.latestCurrentTimeSyncTimestamp = 123;
     const before = Date.now();
     assert.ok(bridge.getState().playback.positionCapturedAtMs >= before);
+});
+
+test("TIDAL play state: loading is not a pause, a pause is a pause", async () => {
+    const { bridge, store } = await loadAdapter();
+    const controls = store.getState().playbackControls;
+
+    // While the next track loads, playbackState leaves PLAYING but the
+    // intended state stays PLAYING.
+    controls.playbackState = "STALLED";
+    controls.desiredPlaybackState = "PLAYING";
+    assert.equal(bridge.getState().playback.isPlaying, true);
+
+    // After a PAUSE action TIDAL keeps desiredPlaybackState at PLAYING.
+    controls.playbackState = "PAUSED";
+    controls.desiredPlaybackState = "PLAYING";
+    assert.equal(bridge.getState().playback.isPlaying, false);
+});
+
+test("TIDAL edits upcoming entries in place without restarting the current track", async () => {
+    const { bridge, store } = await loadAdapter();
+    const dispatched = [];
+    const dispatch = store.dispatch.bind(store);
+    store.dispatch = action => { dispatched.push(action.type); dispatch(action); };
+
+    const [current, upcomingA, upcomingB] = bridge.getState().queue.map(entry => entry.entryId);
+    store.getState().playbackControls.latestCurrentTime = 42;
+
+    await bridge.applyOperation({ type: "queue.insert", index: 1, entry: { entryId: "session-third", track: thirdTrack } });
+    assert.deepEqual(entryIds(bridge.getState()), [current, "session-third", upcomingA, upcomingB]);
+
+    await bridge.applyOperation({ type: "queue.move", entryId: "session-third", toIndex: 3 });
+    assert.deepEqual(entryIds(bridge.getState()), [current, upcomingA, upcomingB, "session-third"]);
+
+    await bridge.applyOperation({ type: "queue.move", entryId: upcomingB, toIndex: 1 });
+    assert.deepEqual(entryIds(bridge.getState()), [current, upcomingB, upcomingA, "session-third"]);
+
+    await bridge.applyOperation({ type: "queue.remove", entryId: upcomingA });
+    assert.deepEqual(entryIds(bridge.getState()), [current, upcomingB, "session-third"]);
+
+    assert.ok(!dispatched.includes("playQueue/ADD_MEDIA_ITEMS_TO_QUEUE"), `queue was replaced: ${dispatched}`);
+    assert.equal(bridge.getState().playback.positionMs, 42_000, "current track kept its position");
+});
+
+test("TIDAL reports an unfindable inserted song without changing the queue", async () => {
+    const { bridge } = await loadAdapter();
+    const before = entryIds(bridge.getState());
+    const outcome = await bridge.applyOperation({ type: "queue.insert", index: 1, entry: { entryId: "session-ghost", track: ghostTrack } });
+    assert.deepEqual([...outcome.unavailableEntryIds], ["session-ghost"]);
+    assert.deepEqual(entryIds(bridge.getState()), before);
+});
+
+test("TIDAL resetting the position when a track starts is not a seek", async () => {
+    const { store, events } = await loadAdapter();
+    const set = payload => store.dispatch({ type: "test/SET_PLAYBACK", payload });
+
+    // The next track is requested: position 0 as of now...
+    set({ mediaProduct: { productId: "202", referenceId: "upcoming-a" }, latestCurrentTime: 0, latestCurrentTimeSyncTimestamp: Date.now() - 3_000 });
+    await sleep(STORE_EVENT_SETTLE_MS);
+    events.length = 0;
+    // ...and only starts playing 3 s later, when TIDAL syncs to 0 again.
+    set({ latestCurrentTime: 0, latestCurrentTimeSyncTimestamp: Date.now() });
+    await sleep(STORE_EVENT_SETTLE_MS);
+    assert.deepEqual(operations(events).map(event => event.data.type), []);
+
+    // A real seek is still reported.
+    set({ latestCurrentTime: 90, latestCurrentTimeSyncTimestamp: Date.now() });
+    await sleep(STORE_EVENT_SETTLE_MS);
+    assert.deepEqual(operations(events).map(event => event.data.type), ["playback.seek"]);
 });
