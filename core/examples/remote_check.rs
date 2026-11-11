@@ -78,6 +78,16 @@ async fn main() -> Check {
         b_start.snapshot.revision
     );
 
+    // The client probes the clock right after connecting (one per second).
+    tokio::time::sleep(std::time::Duration::from_millis(4_500)).await;
+    match b.clock() {
+        Some(clock) => println!(
+            "ok  clock: server is {} ms ahead of this computer (round trip {} ms)",
+            clock.offset_ms, clock.round_trip_ms
+        ),
+        None => println!("FAIL no clock estimate"),
+    }
+
     let mut round_trips = Vec::new();
     let mut sequence = 0;
     for playing in [false, true, false, true, false] {
