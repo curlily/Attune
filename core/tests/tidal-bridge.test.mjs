@@ -6,6 +6,8 @@ import test from "node:test";
 
 const adapterPath = new URL("../src/adapters/tidal.js", import.meta.url);
 const STORE_EVENT_SETTLE_MS = 250; // > the adapter's 180ms debounce
+// Loading a queue: the first track loads this long, then starts playing.
+const TRACK_LOAD_MS = 60;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -59,6 +61,7 @@ function createStore() {
     const listeners = new Set();
     let generatedUid = 0;
     let pendingSearch = null;
+    let pendingStart = null;
     const searches = [];
 
     function notify() {
@@ -112,7 +115,19 @@ function createStore() {
                     ? { productId: String(payload.mediaItemIds[0]) }
                     : null;
                 state.playbackControls.latestCurrentTime = 0;
-                state.playbackControls.playbackState = "PLAYING";
+                // Like TIDAL (verified live): the previous track's PLAYING
+                // lingers for a moment, then the new track loads, then starts
+                // playing from 0, undoing a pause or seek made before that.
+                state.playbackControls.desiredPlaybackState = "PLAYING";
+                clearTimeout(pendingStart);
+                setTimeout(() => update(s => {
+                    s.playbackControls.playbackState = "STALLED";
+                }), TRACK_LOAD_MS / 3);
+                pendingStart = setTimeout(() => update(s => {
+                    s.playbackControls.playbackState = "PLAYING";
+                    s.playbackControls.latestCurrentTime = 0;
+                    s.playbackControls.latestCurrentTimeSyncTimestamp = Date.now();
+                }), TRACK_LOAD_MS);
             } else if (type === "playQueue/ADD_AT_INDEX") {
                 state.playQueue.elements.splice(payload.index, 0, ...payload.mediaItemIds.map(id => ({
                     uid: `new-${++generatedUid}`,
@@ -420,4 +435,40 @@ test("TIDAL resetting the position when a track starts is not a seek", async () 
     set({ latestCurrentTime: 90, latestCurrentTimeSyncTimestamp: Date.now() });
     await sleep(STORE_EVENT_SETTLE_MS);
     assert.deepEqual(operations(events).map(event => event.data.type), ["playback.seek"]);
+});
+
+test("TIDAL keeps a paused session paused, at its position, once the loaded track starts", async () => {
+    const { bridge, store, events } = await loadAdapter();
+    const controls = () => store.getState().playbackControls;
+
+    events.length = 0;
+    await bridge.applySnapshot({
+        queue: [
+            { entryId: "session-current", track: repeatedTrack },
+            { entryId: "session-next", track: thirdTrack },
+        ],
+        currentEntryId: "session-current",
+        playback: playback(false, 42_000),
+    });
+    // Long after TIDAL started the loaded track by itself.
+    await sleep(TRACK_LOAD_MS + STORE_EVENT_SETTLE_MS);
+    assert.equal(controls().playbackState, "PAUSED");
+    assert.equal(controls().latestCurrentTime, 42);
+    assert.deepEqual(operations(events), [], "the start and re-pause are not local changes");
+});
+
+test("TIDAL lands a playing session where it is by the time the track starts", async () => {
+    const { bridge, store } = await loadAdapter();
+    const before = Date.now();
+    await bridge.applySnapshot({
+        queue: [{ entryId: "session-current", track: repeatedTrack }],
+        currentEntryId: "session-current",
+        playback: playback(true, 30_000),
+    });
+    const controls = store.getState().playbackControls;
+    assert.equal(controls.playbackState, "PLAYING");
+    // 30 s plus the time spent loading, not 0 (TIDAL's own start position).
+    const waited = (Date.now() - before) / 1000;
+    assert.ok(controls.latestCurrentTime >= 30 + TRACK_LOAD_MS / 1000 - 0.01, `${controls.latestCurrentTime}`);
+    assert.ok(controls.latestCurrentTime <= 30 + waited + 0.01, `${controls.latestCurrentTime}`);
 });

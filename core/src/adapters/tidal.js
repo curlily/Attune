@@ -15,6 +15,15 @@
     const STORE_TIMEOUT_MS = 15_000;
     const SEARCH_TIMEOUT_MS = 12_000;
     const STORE_EVENT_DEBOUNCE_MS = 180;
+    // How long a loaded track may take to start before its position and
+    // play state are applied anyway.
+    const TRACK_START_TIMEOUT_MS = 5_000;
+    const TRACK_START_POLL_MS = 25;
+    // Holding a loaded track at the session's state: done once it matched
+    // this long; re-applied at most this often; this close counts as a match.
+    const TRACK_HOLD_STABLE_MS = 500;
+    const TRACK_HOLD_RETRY_MS = 250;
+    const TRACK_HOLD_TOLERANCE_MS = 1_000;
     // Local changes are ignored this long after applying a remote change, to
     // cover its immediate store updates (one debounced event). Keep it short:
     // a 1.2 s window swallowed real song-end advances (verified live). Later
@@ -620,6 +629,8 @@
         if (!Array.isArray(entries)) {
             throw new TypeError("Queue entries must be an array");
         }
+        // The session keeps playing while songs are looked up and loaded.
+        const calledAt = Date.now();
 
         if (entries.length === 0) {
             // We have verified queue replacement, but not a TIDAL action that
@@ -663,10 +674,54 @@
         });
         rememberAppliedEntryIds(loaded.map(result => result.entry));
 
-        if (playback?.positionMs > 0) seek(playback.positionMs);
-        if (playback) setPlaying(playback.isPlaying);
+        if (playback) await startLoadedTrack(current.productId, playback, calledAt);
 
         return { unavailableEntryIds: failures.map(failure => failure.entry.entryId) };
+    }
+
+    /**
+     * Bring a freshly loaded track to the session's position and play state,
+     * and keep it there until it stays put.
+     *
+     * Verified live: a queue loaded with position "now" starts its first track
+     * once it has loaded, from 0, undoing a pause or seek dispatched before
+     * that. Joining a paused jam therefore started playback. Which store
+     * states mark "loaded" isn't reliable (the previous track's PLAYING
+     * lingers), so instead of waiting for one signal, re-apply the position
+     * and play state whenever TIDAL differs, until it has matched for
+     * TRACK_HOLD_STABLE_MS. Local changes aren't reported meanwhile: none of
+     * this is the user's doing.
+     */
+    async function startLoadedTrack(productId, playback, calledAt) {
+        suppressLocalChangesUntil = Date.now() + TRACK_START_TIMEOUT_MS + REMOTE_CHANGE_SUPPRESSION_MS;
+        const deadline = Date.now() + TRACK_START_TIMEOUT_MS;
+        const target = () => (playback.positionMs ?? 0) + (playback.isPlaying ? Date.now() - calledAt : 0);
+        let matchingSince = null;
+        let lastApplied = 0;
+
+        while (Date.now() < deadline) {
+            const state = store.getState();
+            const sameTrack = String(state?.playbackControls?.mediaProduct?.productId) === String(productId);
+            const now = getPlayback(state);
+            const position = now.positionMs + (now.isPlaying ? Date.now() - now.positionCapturedAtMs : 0);
+            const matches = sameTrack &&
+                now.isPlaying === Boolean(playback.isPlaying) &&
+                Math.abs(position - target()) <= TRACK_HOLD_TOLERANCE_MS;
+
+            if (matches) {
+                matchingSince ??= Date.now();
+                if (Date.now() - matchingSince >= TRACK_HOLD_STABLE_MS) break;
+            } else {
+                matchingSince = null;
+                if (sameTrack && Date.now() - lastApplied >= TRACK_HOLD_RETRY_MS) {
+                    if (target() > TRACK_HOLD_TOLERANCE_MS) seek(target());
+                    setPlaying(Boolean(playback.isPlaying));
+                    lastApplied = Date.now();
+                }
+            }
+            await new Promise(resolve => setTimeout(resolve, TRACK_START_POLL_MS));
+        }
+        setRemoteMutationWindow();
     }
 
     async function applyState(nextState) {
