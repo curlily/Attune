@@ -21,9 +21,14 @@ pub fn run() {
             commands::playback::connect_tidal,
             commands::playback::connect_spotify,
             commands::playback::get_session_state,
-            commands::playback::apply_session_snapshot,
-            commands::playback::apply_session_operation,
             commands::playback::disconnect_provider,
+            commands::session::create_session,
+            commands::session::join_session,
+            commands::session::leave_session,
+            commands::session::step_out,
+            commands::session::resync,
+            commands::session::get_session_status,
+            commands::session::get_invite,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

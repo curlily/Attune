@@ -6,6 +6,10 @@ pub enum AppError {
     Core(#[from] jam_core::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error("already in a session; leave it first")]
+    SessionActive,
+    #[error("not in a session")]
+    NotInSession,
 }
 
 /// Join an error and all of its sources: "outer: middle: root cause".

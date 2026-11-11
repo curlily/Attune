@@ -8,6 +8,16 @@ pub enum ProviderId {
     Tidal,
 }
 
+impl ProviderId {
+    /// Display label shared with other participants.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Spotify => "spotify",
+            Self::Tidal => "tidal",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ProviderConfig {
     pub id: ProviderId,

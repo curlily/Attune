@@ -1,11 +1,26 @@
+use std::sync::Arc;
+
 use crate::{error::AppError, state::AppState};
 use jam_core::{
-    bridge_controller::{ApplyOutcome, BridgeController},
-    protocol::{SessionOperation, SessionSnapshot},
+    bridge_controller::BridgeController,
+    protocol::SessionMusicState,
     providers,
     structs::{PlayState, ProviderConfig},
 };
 use tauri::State;
+use tracing::warn;
+
+/// The connected provider, without holding the lock across provider calls.
+pub(crate) async fn connected_controller(
+    state: &AppState,
+) -> Result<Arc<BridgeController>, AppError> {
+    state
+        .controller
+        .lock()
+        .await
+        .clone()
+        .ok_or_else(|| jam_core::Error::NotConnected.into())
+}
 
 /// Connect one provider. Keep the same mutex guard through initialization so
 /// two concurrent connect requests cannot create competing controllers.
@@ -17,7 +32,7 @@ async fn connect_provider(state: &AppState, config: ProviderConfig) -> Result<()
     }
 
     let controller = BridgeController::initialise(config).await?;
-    *controller_slot = Some(controller);
+    *controller_slot = Some(Arc::new(controller));
     Ok(())
 }
 
@@ -33,53 +48,35 @@ pub async fn connect_spotify(state: State<'_, AppState>) -> Result<(), AppError>
 
 #[tauri::command]
 pub async fn get_playstate(state: State<'_, AppState>) -> Result<PlayState, AppError> {
-    let controller_slot = state.controller.lock().await;
-    let controller = controller_slot
-        .as_ref()
-        .ok_or(jam_core::Error::NotConnected)?;
-    Ok(controller.get_playstate().await?)
+    Ok(connected_controller(&state).await?.get_playstate().await?)
 }
 
 #[tauri::command]
-pub async fn get_session_state(
-    state: State<'_, AppState>,
-) -> Result<jam_core::protocol::SessionMusicState, AppError> {
-    let controller_slot = state.controller.lock().await;
-    let controller = controller_slot
-        .as_ref()
-        .ok_or(jam_core::Error::NotConnected)?;
-    Ok(controller.get_session_state().await?)
+pub async fn get_session_state(state: State<'_, AppState>) -> Result<SessionMusicState, AppError> {
+    Ok(connected_controller(&state)
+        .await?
+        .get_session_state()
+        .await?)
 }
 
-#[tauri::command]
-pub async fn apply_session_snapshot(
-    state: State<'_, AppState>,
-    snapshot: SessionSnapshot,
-) -> Result<ApplyOutcome, AppError> {
-    let controller_slot = state.controller.lock().await;
-    let controller = controller_slot
-        .as_ref()
-        .ok_or(jam_core::Error::NotConnected)?;
-    Ok(controller.apply_snapshot(&snapshot).await?)
-}
-
-#[tauri::command]
-pub async fn apply_session_operation(
-    state: State<'_, AppState>,
-    operation: SessionOperation,
-) -> Result<ApplyOutcome, AppError> {
-    let controller_slot = state.controller.lock().await;
-    let controller = controller_slot
-        .as_ref()
-        .ok_or(jam_core::Error::NotConnected)?;
-    Ok(controller.apply_operation(&operation).await?)
-}
-
+/// Disconnect the provider. Leaves the session first, since a session
+/// without a provider has nothing to follow.
 #[tauri::command]
 pub async fn disconnect_provider(state: State<'_, AppState>) -> Result<(), AppError> {
-    let mut controller_slot = state.controller.lock().await;
-    if let Some(mut controller) = controller_slot.take() {
-        controller.dispose().await?;
+    if let Some(runtime) = state.session.lock().await.take() {
+        if let Err(error) = runtime.leave().await {
+            warn!(%error, "Leaving the session before disconnecting failed");
+        }
+    }
+
+    let Some(controller) = state.controller.lock().await.take() else {
+        return Ok(());
+    };
+    match Arc::try_unwrap(controller) {
+        Ok(mut controller) => controller.dispose().await?,
+        // A command still holds a reference; its tasks stop when the last
+        // reference is dropped (BridgeController's Drop).
+        Err(_) => warn!("Provider still in use; it will be released when the last call finishes"),
     }
     Ok(())
 }

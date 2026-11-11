@@ -390,6 +390,11 @@ impl BridgeController {
         }
     }
 
+    /// Which provider this controller is attached to.
+    pub fn provider_id(&self) -> crate::structs::ProviderId {
+        self.config.id
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<BridgeEvent> {
         self.event_tx.subscribe()
     }
