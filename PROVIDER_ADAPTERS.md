@@ -106,12 +106,12 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
 
 ## 4. YouTube Music (planned)
 
+- **Client: the browser** (decided with the user). There's no official desktop app, and a Chromium browser on music.youtube.com is attached over CDP just like the Electron apps.
+  - **Profile:** Chrome 136+ ignores `--remote-debugging-port` on the user's *default* profile (a security change), so MyJam would launch the browser with its own `--user-data-dir`. The user signs in to YouTube there once. Check whether Edge behaves the same.
+  - **Launching:** detection and launching differ from desktop apps. MyJam would look for an installed Chromium browser (Chrome, Edge, Brave) and open a dedicated window on `music.youtube.com`, instead of starting a known exe.
+
 Open questions before writing any code:
 
-- **Which client:** there's no official desktop app.
-  - **music.youtube.com in a browser** started with a debug port: a dedicated profile launched by MyJam, or the user's own browser.
-  - **An unofficial Electron wrapper:** fits the current CDP design, but depends on a third-party app.
-  - Decide this first; it changes detection, launching and restarting.
 - **Internals:** YouTube Music is built with Polymer/Lit web components and has a player API on the `ytmusic-player-bar` / `#movie_player` elements (`getCurrentTime`, `seekTo`, `playVideo`, `pauseVideo`). The queue lives in the `ytmusic-player-queue` component's store. All unverified; study the client code first (5.4).
 - **Ads:** they interrupt playback for non-Premium users, so treat them like a temporary "waiting" state.
 - **Search:** song vs music video results, region locks.
@@ -137,4 +137,11 @@ Open questions before writing any code:
 6. **A shared "hold until stable" helper.** `startLoadedTrack`'s pattern (re-apply the target state until it holds) is likely needed by every provider. Move it into a small shared library injected with each adapter.
 7. **Capability flags per adapter.** For example: `incrementalQueue`, `canUnloadTrack`, `fullQueue`, `providerIds`. Then the runtime can choose operations, such as avoiding full replacements, instead of discovering failures at runtime.
 8. **Drift measurement (phase 7d).** Measuring each client's real position against the session shows timing problems (load delays, lost seeks) as numbers, not anecdotes.
-9. **Version awareness.** Record the client version (Electron/app version from CDP `Browser.getVersion` or the exe) with each live verification above, so a client update that breaks something is recognisable.
+9. **A neutral state after attaching** (proposed by the user; not implemented yet).
+    - **The idea:** right after the bridge attaches (which reloads the app), wait for the app's own restore to finish, then put it in a known state before MyJam relies on it.
+    - **Include:**
+      - **Pause.** This removes the auto-resume after the reload, which today is waited out by the runtime's settle step, and starts every jam from a deliberate state.
+      - **Shuffle off, repeat off, autoplay ("play similar") off.** None of them can be synced, and they reorder or extend the queue behind MyJam's back. Remember the user's settings and restore them on leave or disconnect.
+    - **Leave out: clearing the queue.** "Start a jam with your current queue" needs it, joining replaces it anyway, and TIDAL has no known safe way to unload the current track (TIDAL problem 4).
+    - **Adapter contract:** a `prepare()` method (and `restore()`), so every provider gets the same baseline.
+10. **Version awareness.** Record the client version (Electron/app version from CDP `Browser.getVersion` or the exe) with each live verification above, so a client update that breaks something is recognisable.
