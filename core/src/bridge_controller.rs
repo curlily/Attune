@@ -615,8 +615,13 @@ async fn wait_for_cdp(debugging_port: u16, page_url: &str, timeout: Duration) ->
 }
 
 fn launch_music_client(path: &Path, debugging_port: u16) -> Result<()> {
+    // Detach the music client from our stdio: it outlives us, and inherited
+    // handles kept our output pipes open after we exited (seen live).
     Command::new(path)
         .arg(format!("--remote-debugging-port={debugging_port}"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|source| Error::LaunchFailed {
             path: path.to_path_buf(),
