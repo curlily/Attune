@@ -67,8 +67,17 @@ impl BridgeController {
     pub async fn initialise(config: ProviderConfig) -> Result<Self> {
         let (event_tx, _) = broadcast::channel(64);
 
-        if !music_client_running(config.debugging_port, &config.page_url).await? {
-            // Relaunch music client with debugging port
+        if music_client_running(config.debugging_port, &config.page_url).await? {
+            // Ready to attach.
+        } else if debug_port_open(config.debugging_port).await {
+            // Started with the debug port, but its page is missing for the
+            // moment (e.g. mid-reload). It comes back by itself; restarting
+            // here killed the user's client for nothing (seen live).
+            info!(provider = %config.display_name, "Debug port open; waiting for the page");
+        } else {
+            // Not running, or running without the debug port: (re)start it
+            // with the port. Interrupts playback once, when MyJam first
+            // connects to a normally started client.
             let mut sys = System::default();
             kill_music_client(&mut sys, &config.executable_path).await?;
             launch_music_client(&config.executable_path, config.debugging_port)?;
@@ -634,6 +643,14 @@ fn launch_music_client(path: &Path, debugging_port: u16) -> Result<()> {
         .unwrap_or("music client");
     info!("Launching {executable_name} with remote debugging enabled");
     Ok(())
+}
+
+/// Whether something answers the CDP HTTP endpoint on `debugging_port`.
+async fn debug_port_open(debugging_port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{debugging_port}/json/version");
+    reqwest::get(&url)
+        .await
+        .is_ok_and(|response| response.status().is_success())
 }
 
 async fn music_client_running(debugging_port: u16, page_url: &str) -> Result<bool> {
