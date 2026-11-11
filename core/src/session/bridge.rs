@@ -2,6 +2,7 @@
 
 use std::future::Future;
 
+use serde_json::Value;
 use tokio::sync::broadcast;
 
 use crate::{
@@ -37,6 +38,19 @@ pub trait ProviderBridge: Send + Sync + 'static {
     /// Local provider events, including `BridgeEvent::Operation` for changes
     /// the user made in the music client.
     fn subscribe(&self) -> broadcast::Receiver<BridgeEvent>;
+
+    /// Switch off provider features a session can't follow (shuffle, repeat,
+    /// autoplay) and return the user's settings, for
+    /// [`ProviderBridge::restore_after_session`].
+    fn prepare_for_session(&self) -> impl Future<Output = Result<Value>> + Send {
+        async { Ok(Value::Null) }
+    }
+
+    /// Put back the settings [`ProviderBridge::prepare_for_session`] returned.
+    fn restore_after_session(&self, previous: &Value) -> impl Future<Output = Result<()>> + Send {
+        let _ = previous;
+        async { Ok(()) }
+    }
 }
 
 impl ProviderBridge for BridgeController {
@@ -60,5 +74,13 @@ impl ProviderBridge for BridgeController {
 
     fn subscribe(&self) -> broadcast::Receiver<BridgeEvent> {
         BridgeController::subscribe(self)
+    }
+
+    fn prepare_for_session(&self) -> impl Future<Output = Result<Value>> + Send {
+        BridgeController::prepare_for_session(self)
+    }
+
+    fn restore_after_session(&self, previous: &Value) -> impl Future<Output = Result<()>> + Send {
+        BridgeController::restore_after_session(self, previous)
     }
 }

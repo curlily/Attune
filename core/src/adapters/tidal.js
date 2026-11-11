@@ -24,6 +24,15 @@
     const TRACK_HOLD_STABLE_MS = 500;
     const TRACK_HOLD_RETRY_MS = 250;
     const TRACK_HOLD_TOLERANCE_MS = 1_000;
+    // Waiting for TIDAL's restore after attaching: done once its queue and play
+    // state stopped changing for this long (longer while the queue is empty).
+    const SETTLE_TIMEOUT_MS = 8_000;
+    const SETTLE_STABLE_MS = 1_000;
+    const SETTLE_EMPTY_MS = 3_000;
+    // A pause after the restore must hold this long (a late auto-resume).
+    const SETTLE_PAUSED_MS = 1_500;
+    // TIDAL's repeat modes: off, all, one.
+    const REPEAT_OFF = 0;
     // Local changes are ignored this long after applying a remote change, to
     // cover its immediate store updates (one debounced event). Keep it short:
     // a 1.2 s window swallowed real song-end advances (verified live). Later
@@ -693,35 +702,145 @@
      * this is the user's doing.
      */
     async function startLoadedTrack(productId, playback, calledAt) {
-        suppressLocalChangesUntil = Date.now() + TRACK_START_TIMEOUT_MS + REMOTE_CHANGE_SUPPRESSION_MS;
-        const deadline = Date.now() + TRACK_START_TIMEOUT_MS;
         const target = () => (playback.positionMs ?? 0) + (playback.isPlaying ? Date.now() - calledAt : 0);
-        let matchingSince = null;
-        let lastApplied = 0;
+        const sameTrack = state =>
+            String(state?.playbackControls?.mediaProduct?.productId) === String(productId);
 
+        await holdUntil({
+            timeoutMs: TRACK_START_TIMEOUT_MS,
+            stableMs: TRACK_HOLD_STABLE_MS,
+            matches(state) {
+                const now = getPlayback(state);
+                const position = now.positionMs + (now.isPlaying ? Date.now() - now.positionCapturedAtMs : 0);
+                return sameTrack(state) &&
+                    now.isPlaying === Boolean(playback.isPlaying) &&
+                    Math.abs(position - target()) <= TRACK_HOLD_TOLERANCE_MS;
+            },
+            correct(state) {
+                if (!sameTrack(state)) return; // still loading
+                if (target() > TRACK_HOLD_TOLERANCE_MS) seek(target());
+                setPlaying(Boolean(playback.isPlaying));
+            },
+        });
+    }
+
+    /**
+     * Keep correcting TIDAL toward a target until it has matched for
+     * `stableMs`, or `timeoutMs` passes. Its store states don't reliably say
+     * when an action has taken effect (a loading track can still undo a pause,
+     * a reload restores and resumes by itself), so instead of waiting for one
+     * signal, re-apply whenever it differs. Local changes aren't reported
+     * meanwhile: none of this is the user's doing.
+     */
+    async function holdUntil({ timeoutMs, stableMs, matches, correct }) {
+        suppressLocalChangesUntil = Date.now() + timeoutMs + REMOTE_CHANGE_SUPPRESSION_MS;
+        const deadline = Date.now() + timeoutMs;
+        let matchingSince = null;
+        let lastCorrected = 0;
+        try {
+            while (Date.now() < deadline) {
+                const state = store.getState();
+                if (matches(state)) {
+                    matchingSince ??= Date.now();
+                    if (Date.now() - matchingSince >= stableMs) return true;
+                } else {
+                    matchingSince = null;
+                    if (Date.now() - lastCorrected >= TRACK_HOLD_RETRY_MS) {
+                        correct(state);
+                        lastCorrected = Date.now();
+                    }
+                }
+                await new Promise(resolve => setTimeout(resolve, TRACK_START_POLL_MS));
+            }
+            return false;
+        } finally {
+            setRemoteMutationWindow();
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Neutral state
+    // ---------------------------------------------------------------------
+
+    // TIDAL's queue order and play state as one comparable value.
+    function restoreKey(state) {
+        const elements = state?.playQueue?.elements ?? [];
+        return JSON.stringify([
+            elements.map(element => element?.mediaItemId),
+            state?.playbackControls?.mediaProduct?.productId ?? null,
+            isPlaying(state?.playbackControls ?? {}),
+        ]);
+    }
+
+    /**
+     * After attaching (which reloads TIDAL), wait for TIDAL to finish
+     * restoring itself, then pause and keep it paused.
+     *
+     * Verified live: after the reload TIDAL reports an empty queue, restores
+     * its queue, then resumes playback by itself. All of that looks like the
+     * user's doing, and a resume would start any jam created from this state.
+     * Pausing gives every session a deliberate starting point; the reload has
+     * interrupted the music anyway.
+     */
+    async function settle({ pause = true } = {}) {
+        suppressLocalChangesUntil = Date.now() + SETTLE_TIMEOUT_MS + REMOTE_CHANGE_SUPPRESSION_MS;
+        const deadline = Date.now() + SETTLE_TIMEOUT_MS;
+        let previous = null;
+        let unchangedSince = Date.now();
         while (Date.now() < deadline) {
             const state = store.getState();
-            const sameTrack = String(state?.playbackControls?.mediaProduct?.productId) === String(productId);
-            const now = getPlayback(state);
-            const position = now.positionMs + (now.isPlaying ? Date.now() - now.positionCapturedAtMs : 0);
-            const matches = sameTrack &&
-                now.isPlaying === Boolean(playback.isPlaying) &&
-                Math.abs(position - target()) <= TRACK_HOLD_TOLERANCE_MS;
-
-            if (matches) {
-                matchingSince ??= Date.now();
-                if (Date.now() - matchingSince >= TRACK_HOLD_STABLE_MS) break;
-            } else {
-                matchingSince = null;
-                if (sameTrack && Date.now() - lastApplied >= TRACK_HOLD_RETRY_MS) {
-                    if (target() > TRACK_HOLD_TOLERANCE_MS) seek(target());
-                    setPlaying(Boolean(playback.isPlaying));
-                    lastApplied = Date.now();
-                }
+            const key = restoreKey(state);
+            if (key !== previous) {
+                previous = key;
+                unchangedSince = Date.now();
             }
+            // An empty queue may be all there is, but give a restore longer.
+            const empty = (state?.playQueue?.elements ?? []).length === 0;
+            if (Date.now() - unchangedSince >= (empty ? SETTLE_EMPTY_MS : SETTLE_STABLE_MS)) break;
             await new Promise(resolve => setTimeout(resolve, TRACK_START_POLL_MS));
         }
+        if (pause) {
+            await holdUntil({
+                timeoutMs: TRACK_START_TIMEOUT_MS,
+                stableMs: SETTLE_PAUSED_MS,
+                matches: state => !isPlaying(state?.playbackControls ?? {}),
+                correct: () => setPlaying(false),
+            });
+        } else {
+            setRemoteMutationWindow();
+        }
+    }
+
+    /**
+     * Turn off what a session can't follow: shuffle and repeat (they change
+     * what plays next behind MyJam's back) and autoplay (it appends similar
+     * tracks when the queue ends). Returns the user's settings, for
+     * `restoreAfterSession`. Shuffle is turned off without reordering the
+     * queue (TIDAL's own button also unshuffles it).
+     */
+    function prepareForSession() {
+        const state = store.getState();
+        const previous = {
+            shuffle: Boolean(state?.playQueue?.shuffleModeEnabled),
+            repeatMode: Number.isInteger(state?.playQueue?.repeatMode) ? state.playQueue.repeatMode : REPEAT_OFF,
+            autoPlay: typeof state?.settings?.autoPlay === "boolean" ? state.settings.autoPlay : null,
+        };
         setRemoteMutationWindow();
+        if (previous.shuffle) dispatch("playQueue/DISABLE_SHUFFLE_MODE");
+        if (previous.repeatMode !== REPEAT_OFF) dispatch("playQueue/SET_REPEAT_MODE", REPEAT_OFF);
+        if (previous.autoPlay === true) dispatch("settings/SET_AUTOPLAY", false);
+        return previous;
+    }
+
+    /** Put back the settings `prepareForSession` returned. */
+    function restoreAfterSession(previous) {
+        if (!previous || typeof previous !== "object") return;
+        setRemoteMutationWindow();
+        if (previous.shuffle === true) dispatch("playQueue/ENABLE_SHUFFLE_MODE");
+        if (Number.isInteger(previous.repeatMode) && previous.repeatMode !== REPEAT_OFF) {
+            dispatch("playQueue/SET_REPEAT_MODE", previous.repeatMode);
+        }
+        if (previous.autoPlay === true) dispatch("settings/SET_AUTOPLAY", true);
     }
 
     async function applyState(nextState) {
@@ -1067,6 +1186,9 @@
         getSnapshot: getState,
         applySnapshot: applyState,
         applyOperation,
+        settle,
+        prepareForSession,
+        restoreAfterSession,
 
         // Existing controller commands. Keeping these avoids breaking the
         // current Tauri UI while the session commands are integrated.

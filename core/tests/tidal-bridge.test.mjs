@@ -40,8 +40,11 @@ function createStore() {
             },
             trackLists: {},
         },
+        settings: { autoPlay: true },
         playQueue: {
             type: "local",
+            shuffleModeEnabled: false,
+            repeatMode: 0,
             currentIndex: 1,
             elements: [
                 { uid: "history", mediaItemId: "999" },
@@ -148,6 +151,20 @@ function createStore() {
                 const to = Math.min(payload.toIndex, elements.length);
                 elements.splice(to, 0, { ...elements[from], uid: `moved-${++generatedUid}` });
                 elements.splice(from < to ? from : from + 1, 1);
+            } else if (type === "playQueue/DISABLE_SHUFFLE_MODE") {
+                state.playQueue.shuffleModeEnabled = false;
+            } else if (type === "playQueue/ENABLE_SHUFFLE_MODE") {
+                state.playQueue.shuffleModeEnabled = true;
+            } else if (type === "playQueue/SET_REPEAT_MODE") {
+                state.playQueue.repeatMode = payload;
+            } else if (type === "settings/SET_AUTOPLAY") {
+                state.settings.autoPlay = payload;
+            } else if (type === "test/SET_QUEUE") {
+                state.playQueue.elements = payload.elements;
+                state.playQueue.currentIndex = 0;
+                state.playbackControls.mediaProduct = payload.elements.length
+                    ? { productId: payload.elements[0].mediaItemId }
+                    : null;
             } else if (type === "test/SET_PLAYBACK") {
                 Object.assign(state.playbackControls, payload);
             } else if (type === "playbackControls/SEEK") {
@@ -471,4 +488,53 @@ test("TIDAL lands a playing session where it is by the time the track starts", a
     const waited = (Date.now() - before) / 1000;
     assert.ok(controls.latestCurrentTime >= 30 + TRACK_LOAD_MS / 1000 - 0.01, `${controls.latestCurrentTime}`);
     assert.ok(controls.latestCurrentTime <= 30 + waited + 0.01, `${controls.latestCurrentTime}`);
+});
+
+test("TIDAL settles after attaching: waits for its restore, then stays paused", async () => {
+    const { bridge, store, events } = await loadAdapter();
+    const set = (type, payload) => store.dispatch({ type, payload });
+    const playing = () => store.getState().playbackControls.playbackState === "PLAYING";
+
+    // Like the reload (verified live): empty queue, restored queue, then
+    // TIDAL resumes by itself, and once more after MyJam has paused.
+    set("test/SET_QUEUE", { elements: [] });
+    events.length = 0;
+    const timers = [
+        setTimeout(() => set("test/SET_QUEUE", { elements: [{ uid: "r1", mediaItemId: "101" }, { uid: "r2", mediaItemId: "202" }] }), 100),
+        setTimeout(() => set("playbackControls/PLAY"), 400),
+        setTimeout(() => set("playbackControls/PLAY"), 1_900),
+    ];
+    const started = Date.now();
+    await bridge.settle({ pause: true });
+    timers.forEach(clearTimeout);
+
+    assert.ok(Date.now() - started >= 1_900, "waited past the late resume");
+    assert.equal(playing(), false);
+    assert.deepEqual(store.getState().playQueue.elements.map(e => e.uid), ["r1", "r2"], "queue kept");
+    await sleep(STORE_EVENT_SETTLE_MS);
+    assert.deepEqual(operations(events), [], "restore, resume and pause are not the user's doing");
+});
+
+test("TIDAL turns off shuffle, repeat and autoplay for a session and puts them back", async () => {
+    const { bridge, store, events } = await loadAdapter();
+    const queue = () => store.getState().playQueue;
+    store.dispatch({ type: "playQueue/ENABLE_SHUFFLE_MODE" });
+    store.dispatch({ type: "playQueue/SET_REPEAT_MODE", payload: 2 });
+    await sleep(STORE_EVENT_SETTLE_MS);
+    const order = queue().elements.map(e => e.uid);
+    events.length = 0;
+
+    const previous = await bridge.prepareForSession();
+    assert.deepEqual(JSON.parse(JSON.stringify(previous)), { shuffle: true, repeatMode: 2, autoPlay: true });
+    assert.equal(queue().shuffleModeEnabled, false);
+    assert.equal(queue().repeatMode, 0);
+    assert.equal(store.getState().settings.autoPlay, false);
+    assert.deepEqual(queue().elements.map(e => e.uid), order, "turning shuffle off keeps the order");
+
+    await bridge.restoreAfterSession(previous);
+    assert.equal(queue().shuffleModeEnabled, true);
+    assert.equal(queue().repeatMode, 2);
+    assert.equal(store.getState().settings.autoPlay, true);
+    await sleep(STORE_EVENT_SETTLE_MS);
+    assert.deepEqual(operations(events), []);
 });

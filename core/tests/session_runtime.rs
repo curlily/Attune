@@ -73,6 +73,8 @@ struct FakeProvider {
     loads: Mutex<usize>,
     /// Operation types applied from the session, in order.
     applied: Mutex<Vec<String>>,
+    /// prepare/restore calls, in order, with the settings passed around.
+    session_settings: Mutex<Vec<String>>,
 }
 
 impl FakeProvider {
@@ -84,6 +86,7 @@ impl FakeProvider {
             events: broadcast::channel(64).0,
             loads: Mutex::new(0),
             applied: Mutex::default(),
+            session_settings: Mutex::default(),
         })
     }
 
@@ -203,6 +206,22 @@ impl ProviderBridge for FakeProvider {
 
     fn subscribe(&self) -> broadcast::Receiver<BridgeEvent> {
         self.events.subscribe()
+    }
+
+    async fn prepare_for_session(&self) -> Result<serde_json::Value> {
+        self.session_settings
+            .lock()
+            .unwrap()
+            .push("prepare".to_owned());
+        Ok(serde_json::json!({ "shuffle": true }))
+    }
+
+    async fn restore_after_session(&self, previous: &serde_json::Value) -> Result<()> {
+        self.session_settings
+            .lock()
+            .unwrap()
+            .push(format!("restore {previous}"));
+        Ok(())
     }
 }
 
@@ -656,4 +675,44 @@ async fn an_edit_the_session_refuses_is_reported() {
         "unexpected {error}"
     );
     assert_eq!(status_ids(&s.b), ["s1", "s2", "s3"]);
+}
+
+fn settings_log(provider: &FakeProvider) -> Vec<String> {
+    provider.session_settings.lock().unwrap().clone()
+}
+
+#[tokio::test]
+async fn provider_settings_are_switched_off_for_a_session_and_restored_after() {
+    let s = session(&[]).await;
+    assert_eq!(settings_log(&s.a_provider), ["prepare"]);
+    assert_eq!(settings_log(&s.b_provider), ["prepare"]);
+
+    // Leaving restores what prepare returned.
+    s.b.leave().await.expect("leave");
+    assert_eq!(
+        settings_log(&s.b_provider),
+        ["prepare", r#"restore {"shuffle":true}"#]
+    );
+
+    // So does closing MyJam without leaving (the handle is dropped).
+    drop(s.a);
+    eventually("A restored after being dropped", || {
+        settings_log(&s.a_provider).len() == 2
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_failed_join_restores_the_settings_it_changed() {
+    let server = TestServer::start().await;
+    let provider = FakeProvider::new(&["s1"]);
+    let code = jam_core::network::JoinCredentials::from_code("ZZZZ").expect("code");
+    SessionRuntime::join(provider.clone(), config(&server, "b"), code)
+        .await
+        .err()
+        .expect("no such session");
+    assert_eq!(
+        settings_log(&provider),
+        ["prepare", r#"restore {"shuffle":true}"#]
+    );
 }

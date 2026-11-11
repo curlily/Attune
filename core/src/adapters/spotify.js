@@ -1037,6 +1037,16 @@
             return this.replaceSessionQueue(nextState);
         },
 
+        // Neutral state (see TIDAL's adapter). Not implemented for Spotify
+        // yet: part of the planned rework (PROVIDER_ADAPTERS.md, section 3).
+        async settle() {},
+
+        prepareForSession() {
+            return null;
+        },
+
+        restoreAfterSession() {},
+
         async applyOperation(operation) {
             if (!operation || typeof operation.type !== "string") {
                 throw new TypeError("Invalid MyJam operation");

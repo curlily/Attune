@@ -129,7 +129,36 @@ impl BridgeController {
             Err(error) => return Err(error),
         }
 
+        // Attaching reloaded the app: let it finish restoring itself, then
+        // pause, so nothing starts from an auto-resume. Not fatal: the
+        // runtime settles again before relying on the state.
+        if let Err(error) = controller.settle().await {
+            warn!(%error, "Settling the music client after attaching failed");
+        }
+
         Ok(controller)
+    }
+
+    /// Wait for the app to finish restoring itself after the attach reload,
+    /// then pause it and keep it paused (see the adapter's `settle`).
+    pub async fn settle(&self) -> Result<()> {
+        self.call_protocol("settle", &[json!({ "pause": true })])
+            .await
+            .map(drop)
+    }
+
+    /// Turn off what a session can't follow (shuffle, repeat, autoplay).
+    /// Returns the user's previous settings for
+    /// [`Self::restore_after_session`]; their shape is the adapter's business.
+    pub async fn prepare_for_session(&self) -> Result<Value> {
+        self.call_protocol("prepareForSession", &[]).await
+    }
+
+    /// Put back the settings [`Self::prepare_for_session`] returned.
+    pub async fn restore_after_session(&self, previous: &Value) -> Result<()> {
+        self.call_protocol("restoreAfterSession", std::slice::from_ref(previous))
+            .await
+            .map(drop)
     }
 
     /// Drop the CDP connection without calling into the page (which may not

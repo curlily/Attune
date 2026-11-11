@@ -36,6 +36,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use serde_json::Value;
 use tokio::{
     sync::{broadcast, mpsc, oneshot, watch},
     task::JoinHandle,
@@ -161,6 +162,24 @@ impl QueueEdit {
     }
 }
 
+/// Switch off what a session can't follow; failures only cost that.
+async fn prepare<B: ProviderBridge>(bridge: &B) -> Value {
+    bridge.prepare_for_session().await.unwrap_or_else(|error| {
+        warn!(%error, "Could not prepare the music client for the session");
+        Value::Null
+    })
+}
+
+/// Put the user's settings back after a session.
+async fn restore<B: ProviderBridge>(bridge: &B, settings: &Value) {
+    if settings.is_null() {
+        return;
+    }
+    if let Err(error) = bridge.restore_after_session(settings).await {
+        warn!(%error, "Could not restore the music client's settings");
+    }
+}
+
 enum Command {
     StepOut,
     Resync,
@@ -184,6 +203,21 @@ impl SessionRuntime {
         bridge: Arc<B>,
         config: SessionClientConfig,
     ) -> Result<Self> {
+        let settings = prepare(bridge.as_ref()).await;
+        match Self::create_prepared(bridge.clone(), config, settings.clone()).await {
+            Ok(runtime) => Ok(runtime),
+            Err(error) => {
+                restore(bridge.as_ref(), &settings).await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn create_prepared<B: ProviderBridge>(
+        bridge: Arc<B>,
+        config: SessionClientConfig,
+        settings: Value,
+    ) -> Result<Self> {
         let mut initial = settled_state(bridge.as_ref()).await?;
         initial.queue.truncate(state::MAX_QUEUE_ENTRIES);
         if initial.queue.is_empty() {
@@ -192,13 +226,14 @@ impl SessionRuntime {
             initial.playback.position_ms = 0;
         }
         let (client, start) = SessionClient::create(config, initial).await?;
-        let worker = Worker::new(
+        let mut worker = Worker::new(
             bridge,
             client,
             start.events,
             start.snapshot,
             SyncState::Synced,
         );
+        worker.provider_settings = settings;
         Ok(Self::spawn(worker, start.credentials))
     }
 
@@ -207,6 +242,22 @@ impl SessionRuntime {
         bridge: Arc<B>,
         config: SessionClientConfig,
         credentials: JoinCredentials,
+    ) -> Result<Self> {
+        let settings = prepare(bridge.as_ref()).await;
+        match Self::join_prepared(bridge.clone(), config, credentials, settings.clone()).await {
+            Ok(runtime) => Ok(runtime),
+            Err(error) => {
+                restore(bridge.as_ref(), &settings).await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn join_prepared<B: ProviderBridge>(
+        bridge: Arc<B>,
+        config: SessionClientConfig,
+        credentials: JoinCredentials,
+        settings: Value,
     ) -> Result<Self> {
         // Let a freshly attached provider finish restoring its own queue, so
         // that restore isn't published as a local edit later.
@@ -220,6 +271,7 @@ impl SessionRuntime {
             start.snapshot,
             SyncState::Resyncing,
         );
+        worker.provider_settings = settings;
         worker.apply_snapshot(snapshot).await;
         Ok(Self::spawn(worker, start.credentials))
     }
@@ -284,6 +336,14 @@ impl SessionRuntime {
         response.await.map_err(|_| Error::SessionClosed)?
     }
 
+    /// Stop without leaving (the seat is kept for a rejoin, e.g. when MyJam
+    /// quits). Waits until the provider's settings are restored and the
+    /// connection is closed.
+    pub async fn close(self) {
+        drop(self.commands);
+        let _ = self.task.await;
+    }
+
     /// Leave the session. The provider stays connected.
     pub async fn leave(self) -> Result<()> {
         let (reply, response) = oneshot::channel();
@@ -331,6 +391,9 @@ struct Worker<B> {
     reported_unavailable: Option<Vec<String>>,
     reported_status: Option<ParticipantStatus>,
     participants: Vec<Participant>,
+    /// The user's provider settings from before the session, restored when
+    /// it ends (however it ends).
+    provider_settings: Value,
 }
 
 impl<B: ProviderBridge> Worker<B> {
@@ -374,6 +437,7 @@ impl<B: ProviderBridge> Worker<B> {
             reported_unavailable: None,
             reported_status: sync.participant_status(),
             participants: Vec::new(),
+            provider_settings: Value::Null,
         };
         worker.publish();
         worker
@@ -464,6 +528,7 @@ impl<B: ProviderBridge> Worker<B> {
         };
 
         self.set_sync(SyncState::Ended).await;
+        restore(self.bridge.as_ref(), &self.provider_settings).await;
         let notices = self.notices.clone();
         let session_id = self.session_id.clone();
         let client = self.client; // the worker is done with everything else

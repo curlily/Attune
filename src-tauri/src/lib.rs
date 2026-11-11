@@ -3,7 +3,9 @@ mod error;
 mod settings;
 mod state;
 
-use tauri::Manager;
+use std::time::Duration;
+
+use tauri::{Manager, RunEvent};
 
 use crate::state::AppState;
 
@@ -52,6 +54,29 @@ pub fn run() {
             commands::session::get_session_status,
             commands::session::get_join_code,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building the tauri application")
+        .run(|app, event| {
+            if let RunEvent::Exit = event {
+                close_session(app);
+            }
+        });
+}
+
+/// On quit, stop the session without leaving (so it can be rejoined) and
+/// give the music client its shuffle/repeat/autoplay settings back. Bounded,
+/// so a stuck client can't keep MyJam from exiting.
+fn close_session(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    tauri::async_runtime::block_on(async {
+        let Some(runtime) = state.session.lock().await.take() else {
+            return;
+        };
+        if tokio::time::timeout(Duration::from_secs(3), runtime.close())
+            .await
+            .is_err()
+        {
+            tracing::warn!("Closing the session on exit timed out");
+        }
+    });
 }

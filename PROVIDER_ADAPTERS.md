@@ -72,6 +72,11 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
 - Fixed in `startLoadedTrack`: the adapter re-applies the position and play state until they hold for 500 ms.
 
 **Other details**
+- **Shuffle, repeat and autoplay** (verified live; found by reading the bundle):
+  - **Where the state lives:** `playQueue.shuffleModeEnabled`, `playQueue.repeatMode` (`REPEAT_OFF 0`, `REPEAT_ON 1`, `REPEAT_ONE 2`), and `settings.autoPlay` ("keep playing similar content when your queue ends").
+  - **Repeat and autoplay actions:** `playQueue/SET_REPEAT_MODE` with the mode number, and `settings/SET_AUTOPLAY` with a boolean.
+  - **Shuffle actions:** `playQueue/ENABLE_SHUFFLE_MODE` and `playQueue/DISABLE_SHUFFLE_MODE` only flip the flag, with no payload. TIDAL's own buttons use `…_AND_SHUFFLE_ITEMS` / `…_AND_UNSHUFFLE_ITEMS`, which reorder the queue.
+  - **Persistence:** all of them are saved by TIDAL (`LOAD_PLAYER_SETTINGS_FROM_LOCAL_STORAGE_SUCCESS`).
 - Covers: `mediaItem.album.cover` is a UUID; the image is `https://resources.tidal.com/images/<uuid with / for ->/320x320.jpg`. Assumed from the API format, and it showed correctly in the app.
 - An inactive subscription plays only 30-second previews, which limits testing positions past 30 s.
 
@@ -88,7 +93,7 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
 4. **No safe "unload the current track"** action is known, so an empty session queue can't be applied while something plays (an error is reported instead).
 5. **Some edits fall back to full replacement, which restarts the song.** This happens for moving the current song behind upcoming ones, seeking a track that isn't current, and queue types other than `"local"` (album, playlist or radio context?). Check which `playQueue.type` values exist.
 6. **The local-change suppression windows are time-based** (300 ms, and up to 5.5 s while holding a loaded track). A real user action inside a window is lost. Prevention: tag our own dispatches (5.3).
-7. **Autoplay, shuffle and repeat aren't synced.** TIDAL's "play similar tracks" can append songs at queue end, which then reach the session as local edits. Unverified.
+7. **Autoplay, shuffle and repeat aren't synced.** Mitigated: they're turned off for the length of a jam (see 5.9). Changing them in TIDAL during a jam isn't detected yet.
 
 ## 3. Spotify (needs a rework, after TIDAL is solid)
 
@@ -96,6 +101,7 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
 
 - [ ] **Full queue:** `getState` keeps only `nextItems` with `provider === "queue"`, dropping context, playlist, album and autoplay items. Spotify exposes all of them with a provider flag; report them like TIDAL's full play queue.
 - [ ] **Lookups:** one search at a time, if Spotify search has the same cancel behaviour (check). Look up the current song first and stop early if it's missing. Reuse IDs already in the queue instead of searching.
+- [ ] **Neutral state:** implement `settle`, `prepareForSession` and `restoreAfterSession` (stubs today). Spotify has shuffle, repeat and autoplay too.
 - [ ] **Loading:** hold a freshly loaded track at the session's position and play state, like TIDAL's `startLoadedTrack`. Spotify very likely also starts loaded tracks by itself.
 - [ ] **Edits:** use incremental queue edits (`insertIntoQueue`, `removeFromQueue`, `reorderQueue` exist on PlayerAPI) instead of replacements, and check whether they restart the current track.
 - [ ] **Play state and position:** verify `positionAsOfTimestamp` / `timestamp` semantics (like TIDAL's sync timestamp?), what `isPaused` does while loading, and the track-start position reset.
@@ -134,14 +140,15 @@ Open questions before writing any code:
    - track-start reset isn't a seek
    - lookups one at a time
    A new adapter is done when it passes the suite *and* a scripted live run.
-6. **A shared "hold until stable" helper.** `startLoadedTrack`'s pattern (re-apply the target state until it holds) is likely needed by every provider. Move it into a small shared library injected with each adapter.
+6. **A shared "hold until stable" helper.** TIDAL's adapter now has `holdUntil({matches, correct, stableMs, timeoutMs})`, used by `startLoadedTrack` and `settle`: it re-applies the target state until it holds. Every provider will likely need it, so move it into a small shared library injected with each adapter.
 7. **Capability flags per adapter.** For example: `incrementalQueue`, `canUnloadTrack`, `fullQueue`, `providerIds`. Then the runtime can choose operations, such as avoiding full replacements, instead of discovering failures at runtime.
 8. **Drift measurement (phase 7d).** Measuring each client's real position against the session shows timing problems (load delays, lost seeks) as numbers, not anecdotes.
-9. **A neutral state after attaching** (proposed by the user; not implemented yet).
-    - **The idea:** right after the bridge attaches (which reloads the app), wait for the app's own restore to finish, then put it in a known state before MyJam relies on it.
-    - **Include:**
-      - **Pause.** This removes the auto-resume after the reload, which today is waited out by the runtime's settle step, and starts every jam from a deliberate state.
-      - **Shuffle off, repeat off, autoplay ("play similar") off.** None of them can be synced, and they reorder or extend the queue behind MyJam's back. Remember the user's settings and restore them on leave or disconnect.
-    - **Leave out: clearing the queue.** "Start a jam with your current queue" needs it, joining replaces it anyway, and TIDAL has no known safe way to unload the current track (TIDAL problem 4).
-    - **Adapter contract:** a `prepare()` method (and `restore()`), so every provider gets the same baseline.
+9. **A neutral state.** Proposed by the user; **done for TIDAL**, stubs only for Spotify. Adapter contract:
+    - **`settle({pause})`** runs right after attaching. It waits until the app has finished restoring itself (queue and play state unchanged for 1 s, or 3 s while empty, at most 8 s), then pauses and holds the pause for 1.5 s, which catches a late auto-resume. The queue is kept. `BridgeController::initialise` calls it.
+    - **`prepareForSession()`** runs when entering a jam. It turns off shuffle (without reordering), repeat and autoplay, and returns the user's values.
+    - **`restoreAfterSession(previous)`** puts them back on every way out. Leaving, quitting MyJam (Tauri's exit event, at most 3 s) and a failed create or join were verified live or in tests; the runtime does this in `prepare`/`restore`.
+    - **Left out: clearing the queue.** "Start a jam with your current queue" needs it, joining replaces it anyway, and TIDAL can't safely unload the current track (TIDAL problem 4).
+    - **Caveats:**
+      - TIDAL saves these settings. If MyJam crashes mid-jam, they stay off until changed by hand. A fix would be to save `previous` in MyJam's settings and restore it on the next start.
+      - Turning shuffle back on *during* a jam isn't detected yet. Detect it and either re-disable it or tell the user.
 10. **Version awareness.** Record the client version (Electron/app version from CDP `Browser.getVersion` or the exe) with each live verification above, so a client update that breaks something is recognisable.
