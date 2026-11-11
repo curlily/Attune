@@ -928,13 +928,18 @@
         const productId = state.playbackControls?.mediaProduct?.productId;
         const track = productId != null ? getTrackDescriptor(productId, state) : null;
         const playback = getPlayback(state);
+        // TIDAL's API gives album covers as a UUID; its image server takes
+        // the UUID with slashes instead of dashes.
+        const cover = productId != null ? getMediaItem(state, productId)?.album?.cover : null;
 
         return {
             track: track ? {
                 ...track,
                 provider: "Tidal",
                 provider_track_id: String(productId),
-                cover_url: null,
+                cover_url: typeof cover === "string"
+                    ? `https://resources.tidal.com/images/${cover.replaceAll("-", "/")}/320x320.jpg`
+                    : null,
             } : null,
             position_ms: playback.positionMs,
             timestamp_ms: playback.positionCapturedAtMs,

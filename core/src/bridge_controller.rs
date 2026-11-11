@@ -15,7 +15,10 @@ use chromiumoxide::cdp::{
         EventConsoleApiCalled, EventExceptionThrown,
     },
 };
-use chromiumoxide::{Browser, Page, cdp::browser_protocol::target::TargetInfo};
+use chromiumoxide::{
+    Browser, Page,
+    cdp::browser_protocol::target::{SetAutoAttachParams, TargetInfo},
+};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -63,6 +66,11 @@ pub struct BridgeController {
     event_task: Option<tokio::task::JoinHandle<()>>,
 }
 
+/// Ready normally arrives within a second of the reload; the first attempt
+/// gives up early so the retry in [`BridgeController::initialise`] can start.
+const FIRST_READY_TIMEOUT: Duration = Duration::from_secs(10);
+const READY_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl BridgeController {
     pub async fn initialise(config: ProviderConfig) -> Result<Self> {
         let (event_tx, _) = broadcast::channel(64);
@@ -101,9 +109,40 @@ impl BridgeController {
         };
 
         controller.connect_cdp().await?;
-        controller.install_bridge().await?;
+        match controller.install_bridge(FIRST_READY_TIMEOUT).await {
+            Ok(()) => {}
+            // A reload can still hang (it did, before worker auto-attach was
+            // turned off); dropping the connection lets the page finish, so
+            // attach once more from scratch.
+            Err(Error::Timeout { .. }) => {
+                warn!("The bridge didn't start; reconnecting and trying once more");
+                controller.disconnect_cdp();
+                wait_for_cdp(
+                    controller.config.debugging_port,
+                    &controller.config.page_url,
+                    Duration::from_secs(30),
+                )
+                .await?;
+                controller.connect_cdp().await?;
+                controller.install_bridge(READY_TIMEOUT).await?;
+            }
+            Err(error) => return Err(error),
+        }
 
         Ok(controller)
+    }
+
+    /// Drop the CDP connection without calling into the page (which may not
+    /// respond).
+    fn disconnect_cdp(&mut self) {
+        self.page = None;
+        self.browser = None;
+        if let Some(task) = self.event_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.handler_task.take() {
+            task.abort();
+        }
     }
 
     pub async fn connect_cdp(&mut self) -> Result<()> {
@@ -210,7 +249,9 @@ impl BridgeController {
         self.page.as_ref().ok_or(Error::NotConnected)
     }
 
-    pub async fn install_bridge(&mut self) -> Result<()> {
+    /// Register the adapter, reload the page so it runs before the app's
+    /// own scripts, and wait up to `ready_timeout` for it to report Ready.
+    pub async fn install_bridge(&mut self, ready_timeout: Duration) -> Result<()> {
         let mut bridge_rx = self.event_tx.subscribe();
 
         let page = self.page()?;
@@ -226,6 +267,21 @@ impl BridgeController {
         page.execute(LogEnableParams::default())
             .await
             .map_err(cdp("enable the Log domain"))?;
+
+        // chromiumoxide auto-attaches to the page's workers with "wait for
+        // debugger on start". After the reload below, TIDAL's new workers
+        // then sat paused and its renderer froze for about two minutes, so
+        // the bridge never reported Ready (measured live: the same reload
+        // over raw CDP was ready in 0.3 s). MyJam doesn't use workers.
+        let no_auto_attach = SetAutoAttachParams::builder()
+            .auto_attach(false)
+            .wait_for_debugger_on_start(false)
+            .flatten(true)
+            .build()
+            .map_err(|message| Error::BridgeReported { message })?;
+        page.execute(no_auto_attach)
+            .await
+            .map_err(cdp("turn off worker auto-attach"))?;
 
         // Register listeners before reload.
         let mut binding_events = page
@@ -347,7 +403,7 @@ impl BridgeController {
         }
 
         info!("Reload requested; waiting for bridge Ready");
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let deadline = tokio::time::Instant::now() + ready_timeout;
 
         loop {
             tokio::select! {
@@ -355,6 +411,7 @@ impl BridgeController {
                     event_task.abort();
                     return Err(Error::Timeout { context: "receive the bridge Ready event" });
                 }
+
 
                 event = bridge_rx.recv() => {
                     match event {

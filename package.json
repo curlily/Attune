@@ -4,11 +4,23 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "tauri": "tauri",
+    "dev": "vite",
+    "build": "vite build",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
     "check:bridges": "node --check core/src/adapters/tidal.js && node --check core/src/adapters/spotify.js",
-    "test": "node --test core/tests/tidal-bridge.test.mjs core/tests/spotify-bridge.test.mjs && npm run check:bridges"
+    "test": "node --test core/tests/tidal-bridge.test.mjs core/tests/spotify-bridge.test.mjs && npm run check:bridges",
+    "tauri": "tauri"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@sveltejs/vite-plugin-svelte": "^6.2.4",
+    "@tauri-apps/cli": "^2",
+    "@tsconfig/svelte": "^5.0.8",
+    "svelte": "^5.57.3",
+    "svelte-check": "^4.7.8",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.8"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.4"
   }
 }
