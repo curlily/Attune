@@ -11,9 +11,11 @@ queue edits there and mirrors them to everyone else in the session.
 | `protocol/` (`jam-protocol`) | Provider-independent session protocol: data model, WebSocket messages, pure state transitions, and the per-session coordinator that decides what is accepted. No I/O. |
 | `core/` (`jam-core`) | Desktop library: `BridgeController` (CDP bridge into the music client), the JavaScript provider adapters, and `network::SessionClient` (WebSocket client). |
 | `server/` (`jam-server`) | The relay: a small in-memory WebSocket server around the coordinator. |
-| `src-tauri/`, `src/` | The Tauri desktop app (session runtime and widget UI are still to come). |
+| `src-tauri/`, `src/` | The Tauri desktop app: commands and settings (Rust), widget UI (Svelte 5 + Vite). |
 
-See [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCHITECTURE.md) for the provider bridge.
+See [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCHITECTURE.md) for the provider bridge, and
+[PROVIDER_ADAPTERS.md](PROVIDER_ADAPTERS.md) for what is known about each music app's
+internals, open adapter problems and plans (Spotify rework, YouTube Music).
 
 ## Checks
 

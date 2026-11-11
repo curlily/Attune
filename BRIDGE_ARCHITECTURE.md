@@ -69,6 +69,8 @@ The bridge layer does not implement session networking, server sequencing, confl
 
 ## TIDAL adapter notes
 
+Everything learned about the providers' behaviour, open problems, the Spotify rework checklist and YouTube Music plans are collected in [PROVIDER_ADAPTERS.md](PROVIDER_ADAPTERS.md).
+
 The adapter is self-contained because it is injected as one renderer script. It discovers the Redux store at runtime by scanning loaded script modules for the semantic `No global store set` accessor signature, rather than hard-coding minified bundle names. It validates the discovered store methods before using it.
 
 The current implementation uses these private TIDAL application interfaces observed and tested during reverse engineering:
