@@ -1,13 +1,21 @@
 mod commands;
 mod error;
+mod links;
 mod settings;
 mod state;
+mod tray;
+mod window;
 
 use std::time::Duration;
 
 use tauri::{Manager, RunEvent};
+use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_deep_link::DeepLinkExt;
 
 use crate::state::AppState;
+
+/// Passed when Windows starts MyJam: stay in the tray.
+const HIDDEN_ARG: &str = "--hidden";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -22,10 +30,42 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        // First, so a second launch (e.g. from a myjam:// link) is handed to
+        // the running copy before anything else starts.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            window::show(app);
+            links::handle(app, argv.iter().map(String::as_str));
+        }))
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec![HIDDEN_ARG]),
+        ))
         .plugin(tauri_plugin_opener::init())
+        .on_window_event(window::on_event)
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             app.manage(AppState::new(data_dir));
+            app.manage(window::WindowState::default());
+            app.manage(links::PendingJoin::default());
+            let tray = tray::create(app.handle())?;
+            if let Ok(Some(rect)) = tray.rect() {
+                window::remember_icon(app.handle(), rect);
+            }
+
+            // Links that reach the running app, and the one that started it.
+            let handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                let urls: Vec<String> = event.urls().iter().map(ToString::to_string).collect();
+                links::handle(&handle, urls.iter().map(String::as_str));
+            });
+            let args: Vec<String> = std::env::args().collect();
+            links::handle(app.handle(), args.iter().map(String::as_str));
+
+            if !args.iter().any(|arg| arg == HIDDEN_ARG) {
+                window::show(app.handle());
+            }
+
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = handle.state::<AppState>();
@@ -53,6 +93,11 @@ pub fn run() {
             commands::session::queue_remove,
             commands::session::get_session_status,
             commands::session::get_join_code,
+            window::set_window_pinned,
+            window::hide_window,
+            links::take_join_link,
+            links::get_autostart,
+            links::set_autostart,
         ])
         .build(tauri::generate_context!())
         .expect("error while building the tauri application")

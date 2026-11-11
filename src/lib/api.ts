@@ -117,11 +117,21 @@ interface PlayState {
   track: { cover_url: string | null } | null;
 }
 
-/** Commands reject with a plain message string. */
+// Server refusals people run into, in plain words. Commands reject with the
+// full technical cause chain, which names the error code.
+const FRIENDLY: [string, string][] = [
+  ["(InvalidCredentials)", "There's no jam with that code. Check the letters and try again."],
+  ["(RateLimited)", "Too many wrong codes. Try again in a minute."],
+  ["(SessionFull)", "That jam is full."],
+  ["(ServerBusy)", "The server is busy right now. Try again later."],
+  ["(UnsupportedVersion)", "This version of MyJam is too old or too new for the server."],
+];
+
+/** A message for the user from a rejected command. */
 export function errorText(error: unknown): string {
-  if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  return "Something went wrong.";
+  const text =
+    typeof error === "string" ? error : error instanceof Error ? error.message : "Something went wrong.";
+  return FRIENDLY.find(([code]) => text.includes(code))?.[1] ?? text;
 }
 
 export const api = {
@@ -146,6 +156,13 @@ export const api = {
   queueRemove: (entryId: string) => invoke<void>("queue_remove", { entryId }),
   getSessionStatus: () => invoke<RuntimeStatus | null>("get_session_status"),
   getJoinCode: () => invoke<string>("get_join_code"),
+
+  setPinned: (pinned: boolean) => invoke<void>("set_window_pinned", { pinned }),
+  hideWindow: () => invoke<void>("hide_window"),
+  /** A join code from a myjam:// link not handled yet. */
+  takeJoinLink: () => invoke<string | null>("take_join_link"),
+  getAutostart: () => invoke<boolean>("get_autostart"),
+  setAutostart: (enabled: boolean) => invoke<boolean>("set_autostart", { enabled }),
 };
 
 export const events = {
@@ -155,4 +172,8 @@ export const events = {
     listen<Notice>("session-notice", (event) => handler(event.payload)),
   onProviderChanged: (handler: (id: ProviderId | null) => void): Promise<UnlistenFn> =>
     listen<ProviderId | null>("provider-changed", (event) => handler(event.payload)),
+  onJoinLink: (handler: (code: string) => void): Promise<UnlistenFn> =>
+    listen<string>("join-link", (event) => handler(event.payload)),
+  onWindowShown: (handler: () => void): Promise<UnlistenFn> =>
+    listen("window-shown", () => handler()),
 };

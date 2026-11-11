@@ -3,7 +3,7 @@
   import { fade, fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
   import { app } from "./lib/app.svelte";
-  import { errorText } from "./lib/api";
+  import { api, errorText } from "./lib/api";
   import Icon from "./lib/Icon.svelte";
   import Toasts from "./lib/Toasts.svelte";
   import FirstRun from "./screens/FirstRun.svelte";
@@ -14,6 +14,21 @@
   import SettingsScreen from "./screens/Settings.svelte";
 
   let failure = $state<string | null>(null);
+  let windowElement: HTMLDivElement;
+
+  // Slide in each time the window is shown from the tray. Replayed on the
+  // same element, so nothing on the page (a half-typed code) is reset.
+  $effect(() => {
+    if (app.shown === 0 || !windowElement) return;
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    windowElement.animate(
+      [
+        { opacity: 0, transform: "translateY(10px) scale(0.985)" },
+        { opacity: 1, transform: "none" },
+      ],
+      { duration: 320, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" },
+    );
+  });
 
   onMount(() => {
     app.init().catch((error) => (failure = errorText(error)));
@@ -24,13 +39,15 @@
   );
 </script>
 
+<div class="window" bind:this={windowElement}>
 {#if app.mini && app.screen === "jam"}
   <Mini />
 {:else}
   <div class="shell">
-    <header>
-      <span class="mark" aria-hidden="true"></span>
-      <h1>{title}</h1>
+    <!-- No window frame: the header is where the window is dragged. -->
+    <header data-tauri-drag-region>
+      <span class="mark" aria-hidden="true" data-tauri-drag-region></span>
+      <h1 data-tauri-drag-region>{title}</h1>
       {#if app.screen === "jam" && app.code && !app.showSettings}
         <button
           class="code"
@@ -44,7 +61,7 @@
           <Icon name="copy" size={13} />
         </button>
       {/if}
-      <span class="spacer"></span>
+      <span class="spacer" data-tauri-drag-region></span>
       {#if app.screen === "jam" && !app.showSettings}
         <button class="icon-btn" title="Mini view" onclick={() => app.setMini(true)}>
           <Icon name="shrink" label="Mini view" />
@@ -60,6 +77,17 @@
           <Icon name="sliders" label="Settings" />
         </button>
       {/if}
+      <button
+        class="icon-btn"
+        title={app.pinned ? "Unpin: hide when clicking elsewhere" : "Pin: keep open and on top"}
+        aria-pressed={app.pinned}
+        onclick={() => app.setPinned(!app.pinned)}
+      >
+        <Icon name="pin" label="Pin" />
+      </button>
+      <button class="icon-btn" title="Hide to the tray" onclick={() => api.hideWindow()}>
+        <Icon name="x" label="Hide to the tray" />
+      </button>
     </header>
 
     <main>
@@ -91,10 +119,15 @@
     </main>
   </div>
 {/if}
+</div>
 
 <Toasts />
 
 <style>
+  .window {
+    height: 100%;
+  }
+
   .shell {
     display: grid;
     grid-template-rows: auto 1fr;
@@ -104,9 +137,9 @@
   header {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 4px;
     height: 44px;
-    padding: 0 8px 0 14px;
+    padding: 0 6px 0 14px;
     border-bottom: 1px solid var(--border);
   }
 
@@ -120,7 +153,7 @@
   }
 
   h1 {
-    margin: 0;
+    margin: 0 4px 0 4px;
     font-size: 13.5px;
     font-weight: 600;
   }

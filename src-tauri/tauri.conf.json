@@ -18,7 +18,13 @@
         "height": 640,
         "minWidth": 320,
         "minHeight": 96,
-        "backgroundColor": "#121316"
+        "backgroundColor": "#111215",
+        "decorations": false,
+        "visible": false,
+        "skipTaskbar": true,
+        "shadow": true,
+        "resizable": false,
+        "center": true
       }
     ],
     "security": {
@@ -35,5 +41,14 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "myjam"
+        ]
+      }
+    }
   }
 }

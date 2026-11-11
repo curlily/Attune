@@ -26,6 +26,15 @@
     }
   }
 
+  // A myjam:// link: fill in its code and join.
+  $effect(() => {
+    const linked = app.linkCode;
+    if (!linked || busy) return;
+    app.linkCode = null;
+    code = linked;
+    join();
+  });
+
   function join() {
     if (code.length !== 4) {
       error = "A join code has four letters.";

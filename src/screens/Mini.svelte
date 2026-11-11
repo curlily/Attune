@@ -10,8 +10,8 @@
 </script>
 
 {#if status}
-  <div class="mini" in:fade={{ duration: 200 }}>
-    <div class="song">
+  <div class="mini" in:fade={{ duration: 200 }} data-tauri-drag-region>
+    <div class="song" data-tauri-drag-region>
       <span class="title">{current?.track.title ?? "Nothing queued"}</span>
       <span class="artist">{current?.track.artists.join(", ") ?? ""}</span>
       <span class="dots">

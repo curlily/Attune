@@ -43,6 +43,11 @@ class App {
   toasts = $state<Toast[]>([]);
   showSettings = $state(false);
   mini = $state(false);
+  pinned = $state(false);
+  /** Join code from a myjam:// link, joined as soon as the lobby can. */
+  linkCode = $state<string | null>(null);
+  /** Bumped each time the window is shown, to replay the opening animation. */
+  shown = $state(0);
 
   #nextToast = 1;
   /** Counts status events, so a slower command result can't undo a newer one. */
@@ -68,6 +73,10 @@ class App {
       events.onProviderChanged((id) => {
         this.connected = id;
       }),
+      events.onJoinLink((code) => this.#onJoinLink(code)),
+      events.onWindowShown(() => {
+        this.shown++;
+      }),
     ]);
     const [settings, overview, status, rejoin] = await Promise.all([
       api.getSettings(),
@@ -82,6 +91,24 @@ class App {
     this.rejoinCode = rejoin;
     if (status) this.code = await api.getJoinCode().catch(() => null);
     this.loaded = true;
+    const link = await api.takeJoinLink().catch(() => null);
+    if (link) this.#onJoinLink(link);
+  }
+
+  async setPinned(pinned: boolean) {
+    this.pinned = pinned;
+    await api.setPinned(pinned).catch((error) => this.toast(errorText(error), "error"));
+  }
+
+  #onJoinLink(code: string) {
+    if (this.screen === "jam") {
+      if (this.code !== code) this.toast(`Leave this jam first to join ${code}.`, "warning");
+      return;
+    }
+    this.linkCode = code;
+    if (this.screen !== "lobby") {
+      this.toast(`MyJam joins ${code} once your music app is connected.`, "info");
+    }
   }
 
   async refreshProviders() {

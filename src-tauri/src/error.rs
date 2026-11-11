@@ -16,6 +16,8 @@ pub enum AppError {
     NoDisplayName,
     #[error("there is no saved session to rejoin")]
     NoSavedSession,
+    #[error("could not change starting with Windows: {0}")]
+    Autostart(String),
 }
 
 /// Join an error and all of its sources: "outer: middle: root cause".

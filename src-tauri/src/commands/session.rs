@@ -20,6 +20,7 @@ use crate::{
     error::AppError,
     settings::{RejoinInfo, Store},
     state::AppState,
+    tray,
 };
 use jam_core::{
     network::{JoinCredentials, SessionClientConfig},
@@ -47,11 +48,15 @@ fn forward_events(app: AppHandle, store: Store, runtime: &SessionRuntime) {
     let mut status = runtime.watch_status();
     let status_app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = status_app.emit("session-status-changed", status.borrow_and_update().clone());
+        let initial = status.borrow_and_update().clone();
+        tray::set_status(&status_app, Some(initial.sync));
+        let _ = status_app.emit("session-status-changed", initial);
         while status.changed().await.is_ok() {
             let current = status.borrow_and_update().clone();
+            tray::set_status(&status_app, Some(current.sync));
             let _ = status_app.emit("session-status-changed", current);
         }
+        tray::set_status(&status_app, None);
         debug!("Session status forwarding stopped");
     });
 
@@ -185,8 +190,7 @@ pub fn dismiss_rejoin(state: State<'_, AppState>) {
 }
 
 /// Leave the session; the provider stays connected.
-#[tauri::command]
-pub async fn leave_session(state: State<'_, AppState>) -> Result<(), AppError> {
+pub(crate) async fn leave(state: &AppState) -> Result<(), AppError> {
     let runtime = state
         .session
         .lock()
@@ -196,6 +200,23 @@ pub async fn leave_session(state: State<'_, AppState>) -> Result<(), AppError> {
     state.store.clear_rejoin();
     runtime.leave().await?;
     Ok(())
+}
+
+/// Step out, or resync if stepped out or out of sync (the tray menu's
+/// single entry for it).
+pub(crate) async fn toggle_following(state: &AppState) -> Result<(), AppError> {
+    let session = state.session.lock().await;
+    let runtime = session.as_ref().ok_or(AppError::NotInSession)?;
+    match runtime.status().sync {
+        SyncState::SteppedOut | SyncState::Error => runtime.resync().await?,
+        _ => runtime.step_out().await?,
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn leave_session(state: State<'_, AppState>) -> Result<(), AppError> {
+    leave(&state).await
 }
 
 /// Stop following without leaving.

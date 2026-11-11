@@ -8,6 +8,17 @@
   let name = $state(app.settings?.displayName ?? "");
   let serverUrl = $state(app.settings?.serverUrl ?? "");
   let error = $state<string | null>(null);
+  let autostart = $state<boolean | null>(null);
+  api.getAutostart().then((enabled) => (autostart = enabled), () => (autostart = null));
+
+  async function toggleAutostart() {
+    if (autostart === null) return;
+    try {
+      autostart = await api.setAutostart(!autostart);
+    } catch (failure) {
+      error = errorText(failure);
+    }
+  }
   let saved = $state(false);
   let savedTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -70,6 +81,22 @@
 
   <div class="divider"></div>
 
+  <button
+    class="switch-row"
+    role="switch"
+    aria-checked={autostart === true}
+    disabled={autostart === null}
+    onclick={toggleAutostart}
+  >
+    <span>
+      <span class="switch-label">Start with Windows</span>
+      <span class="hint">MyJam waits in the tray until you need it.</span>
+    </span>
+    <span class="switch" class:on={autostart === true}><span></span></span>
+  </button>
+
+  <div class="divider"></div>
+
   <p class="section-title">Music app</p>
   <div class="app-row">
     {#if app.connected}
@@ -122,6 +149,57 @@
     height: 1px;
     margin: 18px 0 14px;
     background: var(--border);
+  }
+
+  .switch-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    text-align: left;
+  }
+  .switch-row > span:first-child {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  .switch-row:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .switch-label {
+    font-weight: 600;
+  }
+  .switch {
+    position: relative;
+    flex: none;
+    width: 34px;
+    height: 20px;
+    border-radius: 10px;
+    background: var(--surface-3);
+    transition: background var(--base);
+  }
+  .switch > span {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--text-2);
+    transition:
+      transform var(--base) var(--ease-spring),
+      background var(--base);
+  }
+  .switch.on {
+    background: var(--accent-strong);
+  }
+  .switch.on > span {
+    transform: translateX(14px);
+    background: var(--on-accent);
   }
 
   .app-row {
