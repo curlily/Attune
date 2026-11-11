@@ -558,9 +558,9 @@ fn connection_changes_and_removal_update_participants() {
     );
     assert!(session.set_connected("b", false).is_empty());
 
-    let out = session.remove("b");
+    let out = session.remove("b", T0);
     assert_eq!(participants(&out).len(), 1);
-    assert!(session.remove("b").is_empty());
+    assert!(session.remove("b", T0).is_empty());
 }
 
 #[test]
@@ -717,4 +717,237 @@ fn client_mirrors_match_server_state() {
     assert_eq!(&mirror_b, session.state());
     assert_eq!(seq, [5, 5]);
     assert_eq!(ids(session.state()), ["s3", "n1", "s2"]);
+}
+
+// ---------------------------------------------------------------------------
+// Song availability
+// ---------------------------------------------------------------------------
+
+fn report(session: &mut SessionCoordinator, client: &str, entries: &[&str]) -> Vec<Outbound> {
+    session.handle(
+        client,
+        ClientMessage::SetUnavailable {
+            entry_ids: entries.iter().map(|id| (*id).to_owned()).collect(),
+        },
+        T0,
+    )
+}
+
+fn advance_to(target: &str) -> Op {
+    Op::PlaybackAdvance {
+        target_entry_id: target.to_owned(),
+        position_ms: 0,
+        is_playing: true,
+    }
+}
+
+fn unavailable_of(out: &[Outbound], client: &str) -> Vec<String> {
+    out.iter()
+        .rev()
+        .find_map(|o| match &o.message {
+            ServerMessage::Participants { participants } => participants
+                .iter()
+                .find(|p| p.client_id == client)
+                .map(|p| p.unavailable_entry_ids.clone()),
+            _ => None,
+        })
+        .expect("participants update")
+}
+
+/// The server-issued operation in `out`, if any.
+fn server_operation(out: &[Outbound]) -> Option<(u64, Op)> {
+    out.iter().find_map(|o| match &o.message {
+        ServerMessage::OperationAccepted {
+            sequence,
+            origin_client_id: None,
+            operation,
+            ..
+        } => {
+            assert_eq!(o.to, Recipient::All, "server operations go to everyone");
+            Some((*sequence, operation.clone()))
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn reports_are_deduplicated_limited_to_the_queue_and_broadcast_once() {
+    let mut session = create();
+    let out = report(&mut session, "a", &["s3", "gone", "s3", "s2"]);
+    assert_eq!(unavailable_of(&out, "a"), ["s3", "s2"]);
+    assert!(
+        report(&mut session, "a", &["s3", "s2"]).is_empty(),
+        "unchanged report"
+    );
+
+    // A full report replaces the previous one.
+    let out = report(&mut session, "a", &["s2"]);
+    assert_eq!(unavailable_of(&out, "a"), ["s2"]);
+}
+
+#[test]
+fn invalid_reports_are_rejected() {
+    let mut session = create();
+    let out = report(&mut session, "a", &[&"x".repeat(65)]);
+    assert!(matches!(
+        only_to(&out, "a"),
+        ServerMessage::Error {
+            code: ErrorCode::InvalidMessage,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn reports_are_pruned_when_entries_leave_the_queue() {
+    let mut session = create();
+    report(&mut session, "a", &["s3"]);
+    let out = session.handle(
+        "a",
+        op(
+            "a-1",
+            0,
+            Op::QueueRemove {
+                entry_id: "s3".to_owned(),
+            },
+        ),
+        T0,
+    );
+    assert!(unavailable_of(&out, "a").is_empty());
+}
+
+#[test]
+fn song_nobody_can_play_is_skipped_when_it_becomes_current() {
+    let mut session = create();
+    join(&mut session, "b");
+    report(&mut session, "a", &["s2"]);
+    report(&mut session, "b", &["s2"]);
+
+    let out = session.handle("a", op("a-1", 0, advance_to("s2")), T0);
+
+    // Ack and broadcast of A's advance, then the server's own skip.
+    assert!(matches!(
+        out[0].message,
+        ServerMessage::OperationAck { sequence: 1, .. }
+    ));
+    assert_eq!(server_operation(&out), Some((2, advance_to("s3"))));
+    assert_eq!(session.state().current_entry_id.as_deref(), Some("s3"));
+    assert_eq!(session.sequence(), 2);
+    // The skipped entry left the queue, so the reports were pruned.
+    assert!(unavailable_of(&out, "a").is_empty());
+}
+
+#[test]
+fn song_is_kept_if_any_listener_can_play_it() {
+    let mut session = create();
+    join(&mut session, "b");
+    report(&mut session, "a", &["s2"]);
+
+    let out = session.handle("a", op("a-1", 0, advance_to("s2")), T0);
+    assert_eq!(server_operation(&out), None);
+    assert_eq!(session.state().current_entry_id.as_deref(), Some("s2"));
+}
+
+#[test]
+fn participant_without_a_report_counts_as_able_to_play() {
+    let mut session = create();
+    join(&mut session, "b"); // never reports
+    let out = report(&mut session, "a", &["s1"]);
+    assert_eq!(server_operation(&out), None);
+}
+
+#[test]
+fn reporting_the_current_song_skips_it_immediately() {
+    let mut session = create();
+    let out = report(&mut session, "a", &["s1"]);
+    assert_eq!(server_operation(&out), Some((1, advance_to("s2"))));
+}
+
+#[test]
+fn stepped_out_participants_do_not_keep_a_song_alive() {
+    let mut session = create();
+    join(&mut session, "b");
+    session.handle(
+        "b",
+        ClientMessage::SetStatus {
+            status: ParticipantStatus::Detached,
+        },
+        T0,
+    );
+    let out = report(&mut session, "a", &["s1"]);
+    assert_eq!(server_operation(&out), Some((1, advance_to("s2"))));
+}
+
+#[test]
+fn nothing_is_skipped_while_everyone_has_stepped_out() {
+    let mut session = create();
+    report(&mut session, "a", &["s2"]);
+    session.handle(
+        "a",
+        ClientMessage::SetStatus {
+            status: ParticipantStatus::Detached,
+        },
+        T0,
+    );
+    let out = report(&mut session, "a", &["s1", "s2"]);
+    assert_eq!(server_operation(&out), None);
+    assert_eq!(session.sequence(), 0);
+}
+
+#[test]
+fn stepping_out_can_trigger_a_skip() {
+    let mut session = create();
+    join(&mut session, "b");
+    report(&mut session, "a", &["s1"]); // B can still play s1
+    let out = session.handle(
+        "b",
+        ClientMessage::SetStatus {
+            status: ParticipantStatus::Detached,
+        },
+        T0,
+    );
+    assert_eq!(server_operation(&out), Some((1, advance_to("s2"))));
+}
+
+#[test]
+fn briefly_disconnected_listeners_still_count() {
+    let mut session = create();
+    join(&mut session, "b");
+    session.set_connected("b", false);
+    let out = report(&mut session, "a", &["s1"]);
+    assert_eq!(
+        server_operation(&out),
+        None,
+        "B may come back within the grace period"
+    );
+
+    // Once B is removed, nobody left can play s1.
+    let out = session.remove("b", T0);
+    assert_eq!(server_operation(&out), Some((1, advance_to("s2"))));
+}
+
+#[test]
+fn leaving_can_trigger_a_skip() {
+    let mut session = create();
+    join(&mut session, "b");
+    report(&mut session, "a", &["s1"]);
+    let out = session.handle("b", ClientMessage::Leave, T0);
+    assert_eq!(server_operation(&out), Some((1, advance_to("s2"))));
+}
+
+#[test]
+fn skip_jumps_over_every_unplayable_song_and_pauses_at_the_end() {
+    let mut session = create();
+    report(&mut session, "a", &["s2"]);
+    // s1 unplayable too: skip straight past s2 to s3.
+    let out = report(&mut session, "a", &["s1", "s2"]);
+    assert_eq!(server_operation(&out), Some((1, advance_to("s3"))));
+    assert_eq!(ids(session.state()), ["s3"]);
+
+    // Nothing playable remains: pause instead of advancing.
+    let out = report(&mut session, "a", &["s3"]);
+    assert_eq!(server_operation(&out), Some((2, pause())));
+    assert!(!session.state().playback.is_playing);
+    // Already paused: no further server operations.
+    assert_eq!(server_operation(&report(&mut session, "a", &["s3"])), None);
 }

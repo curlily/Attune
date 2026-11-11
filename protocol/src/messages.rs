@@ -31,6 +31,10 @@ pub enum ClientMessage {
     Operation(OperationRequest),
     #[serde(rename = "participant.setStatus")]
     SetStatus { status: ParticipantStatus },
+    /// The client's *complete* set of queue entries its provider could not
+    /// find. Replaces its previous report, so resending is always safe.
+    #[serde(rename = "participant.setUnavailable")]
+    SetUnavailable { entry_ids: Vec<String> },
     #[serde(rename = "session.snapshot.request")]
     SnapshotRequest { request_id: String },
     #[serde(rename = "session.leave")]
@@ -110,6 +114,10 @@ pub struct Participant {
     pub status: ParticipantStatus,
     /// Maintained by the server: false while the socket is gone (grace period).
     pub connected: bool,
+    /// Entries still in the queue that this participant's provider could not
+    /// find, as last reported. Empty until the participant reports.
+    #[serde(default)]
+    pub unavailable_entry_ids: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------

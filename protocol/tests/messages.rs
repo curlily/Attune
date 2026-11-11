@@ -157,6 +157,12 @@ fn every_client_message_round_trips() {
             "participant.setStatus",
         ),
         (
+            ClientMessage::SetUnavailable {
+                entry_ids: vec!["e1".to_owned(), "e2".to_owned()],
+            },
+            "participant.setUnavailable",
+        ),
+        (
             ClientMessage::SnapshotRequest {
                 request_id: "r1".to_owned(),
             },
@@ -228,6 +234,7 @@ fn every_server_message_round_trips() {
                     provider: Some("spotify".to_owned()),
                     status: ParticipantStatus::Detached,
                     connected: false,
+                    unavailable_entry_ids: vec!["e1".to_owned()],
                 }],
             },
             "session.participants",

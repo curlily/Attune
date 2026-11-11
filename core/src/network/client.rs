@@ -253,8 +253,9 @@ enum Command {
     Snapshot {
         reply: oneshot::Sender<Result<SessionSnapshot>>,
     },
-    SetStatus {
-        status: ParticipantStatus,
+    /// A message with no reply from the server (status, availability).
+    Notify {
+        message: ClientMessage,
         reply: oneshot::Sender<Result<()>>,
     },
     Leave {
@@ -269,7 +270,7 @@ impl Command {
         match self {
             Self::Submit { reply, .. } => drop(reply.send(Err(error()))),
             Self::Snapshot { reply } => drop(reply.send(Err(error()))),
-            Self::SetStatus { reply, .. } | Self::Leave { reply } => drop(reply.send(Err(error()))),
+            Self::Notify { reply, .. } | Self::Leave { reply } => drop(reply.send(Err(error()))),
             Self::Close => {}
         }
     }
@@ -432,7 +433,16 @@ impl SessionClient {
 
     /// Report this client's sync status to the other participants.
     pub async fn set_status(&self, status: ParticipantStatus) -> Result<()> {
-        self.request(|reply| Command::SetStatus { status, reply })
+        let message = ClientMessage::SetStatus { status };
+        self.request(|reply| Command::Notify { message, reply })
+            .await
+    }
+
+    /// Report the *complete* set of queue entries this client's provider
+    /// could not find. Replaces the previous report; resend after rejoining.
+    pub async fn set_unavailable(&self, entry_ids: Vec<String>) -> Result<()> {
+        let message = ClientMessage::SetUnavailable { entry_ids };
+        self.request(|reply| Command::Notify { message, reply })
             .await
     }
 
@@ -760,14 +770,14 @@ impl Actor {
                 }
                 self.pending_snapshots.insert(request_id, reply);
             }
-            Command::SetStatus { status, reply } => {
-                let result = send(socket, &ClientMessage::SetStatus { status }, max).await;
-                let failed = result.is_err();
-                let _ = reply.send(result.map_err(|_| Error::TransportClosed));
-                if failed {
-                    return Err(Error::TransportClosed);
+            Command::Notify { message, reply } => match send(socket, &message, max).await {
+                Ok(()) => drop(reply.send(Ok(()))),
+                Err(error @ Error::MessageTooLarge { .. }) => drop(reply.send(Err(error))),
+                Err(error) => {
+                    let _ = reply.send(Err(Error::TransportClosed));
+                    return Err(error);
                 }
-            }
+            },
             Command::Leave { .. } | Command::Close => {} // handled by `drive`
         }
         Ok(())

@@ -1,5 +1,5 @@
 [workspace]
-members = ["protocol", "core", "src-tauri"]
+members = ["protocol", "core", "server", "src-tauri"]
 resolver = "2"
 
 [workspace.dependencies]

@@ -18,6 +18,19 @@
 //!
 //! Accepted operations are acked to the sender and broadcast to everyone
 //! else, so the sender never receives its own operation back.
+//!
+//! # Songs nobody can play
+//!
+//! Participants report which queue entries their provider could not find
+//! (`participant.setUnavailable`). *Listeners* are participants who haven't
+//! stepped out, including ones briefly disconnected. If there is at least one
+//! listener and none of them can play the current entry, the coordinator
+//! issues its own `playback.advance` to the next entry someone can play (or
+//! pauses if there is none). Server-issued operations go to everyone with
+//! `originClientId: null`. The check runs after every change that could
+//! matter: queue changes, reports, status changes, and participants leaving.
+
+use std::collections::HashSet;
 
 use crate::{
     PROTOCOL_VERSION,
@@ -282,10 +295,14 @@ impl SessionCoordinator {
                     .participant_mut(client_id)
                     .is_some_and(|p| std::mem::replace(&mut p.status, status) != status);
                 if changed {
-                    vec![self.participants_update()]
+                    // Stepping out can leave nobody able to play the song.
+                    self.after_change(now_ms, true)
                 } else {
                     Vec::new()
                 }
+            }
+            ClientMessage::SetUnavailable { entry_ids } => {
+                self.set_unavailable(client_id, entry_ids, now_ms)
             }
             ClientMessage::SnapshotRequest { request_id } => {
                 if !valid_id(&request_id) {
@@ -305,10 +322,9 @@ impl SessionCoordinator {
             }
             ClientMessage::Leave => {
                 self.participants.retain(|p| p.client_id != client_id);
-                vec![
-                    Outbound::to_client(client_id, ServerMessage::Left),
-                    self.participants_update(),
-                ]
+                let mut outbound = vec![Outbound::to_client(client_id, ServerMessage::Left)];
+                outbound.extend(self.after_change(now_ms, true));
+                outbound
             }
         }
     }
@@ -376,14 +392,15 @@ impl SessionCoordinator {
             }
         };
 
+        let changes_queue = operation.changes_queue();
         self.sequence += 1;
-        if operation.changes_queue() {
+        if changes_queue {
             self.last_queue_change_seq = self.sequence;
         }
         self.state = next;
         self.updated_at_ms = now_ms;
 
-        vec![
+        let mut outbound = vec![
             Outbound::to_client(
                 client_id,
                 ServerMessage::OperationAck {
@@ -402,7 +419,137 @@ impl SessionCoordinator {
                     accepted_at_ms: now_ms,
                 },
             },
-        ]
+        ];
+        if changes_queue {
+            outbound.extend(self.after_change(now_ms, false));
+        }
+        outbound
+    }
+
+    /// Store a participant's complete unavailable set (deduplicated and
+    /// limited to entries currently in the queue).
+    fn set_unavailable(
+        &mut self,
+        client_id: &str,
+        entry_ids: Vec<String>,
+        now_ms: u64,
+    ) -> Vec<Outbound> {
+        if entry_ids.len() > state::MAX_QUEUE_ENTRIES || !entry_ids.iter().all(|id| valid_id(id)) {
+            return vec![error_to(
+                client_id,
+                ErrorCode::InvalidMessage,
+                "invalid unavailable entry list",
+            )];
+        }
+        let in_queue: HashSet<&str> = self
+            .state
+            .queue
+            .iter()
+            .map(|e| e.entry_id.as_str())
+            .collect();
+        let mut seen = HashSet::new();
+        let reported: Vec<String> = entry_ids
+            .into_iter()
+            .filter(|id| in_queue.contains(id.as_str()) && seen.insert(id.clone()))
+            .collect();
+
+        let changed = self.participant_mut(client_id).is_some_and(|p| {
+            std::mem::replace(&mut p.unavailable_entry_ids, reported) != p.unavailable_entry_ids
+        });
+        self.after_change(now_ms, changed)
+    }
+
+    /// Follow-up after anything that may affect who can play what: skip a
+    /// current song nobody can play, drop reports for entries that left the
+    /// queue, and publish the participant list if it changed.
+    fn after_change(&mut self, now_ms: u64, participants_changed: bool) -> Vec<Outbound> {
+        let mut outbound = self.skip_unplayable(now_ms);
+        let pruned = self.prune_unavailable();
+        if participants_changed || pruned {
+            outbound.push(self.participants_update());
+        }
+        outbound
+    }
+
+    fn prune_unavailable(&mut self) -> bool {
+        let in_queue: HashSet<&str> = self
+            .state
+            .queue
+            .iter()
+            .map(|e| e.entry_id.as_str())
+            .collect();
+        let mut changed = false;
+        for participant in &mut self.participants {
+            let before = participant.unavailable_entry_ids.len();
+            participant
+                .unavailable_entry_ids
+                .retain(|id| in_queue.contains(id.as_str()));
+            changed |= participant.unavailable_entry_ids.len() != before;
+        }
+        changed
+    }
+
+    /// If no listener can play the current entry, advance to the next one
+    /// someone can play, or pause when there is none.
+    fn skip_unplayable(&mut self, now_ms: u64) -> Vec<Outbound> {
+        let listeners: Vec<HashSet<&str>> = self
+            .participants
+            .iter()
+            .filter(|p| p.status != ParticipantStatus::Detached)
+            .map(|p| p.unavailable_entry_ids.iter().map(String::as_str).collect())
+            .collect();
+        if listeners.is_empty() {
+            return Vec::new();
+        }
+        let unplayable =
+            |entry_id: &str| listeners.iter().all(|missing| missing.contains(entry_id));
+
+        let Some(current) = self.state.current_entry_id.as_deref() else {
+            return Vec::new();
+        };
+        if !unplayable(current) {
+            return Vec::new();
+        }
+
+        let next = self
+            .state
+            .queue
+            .iter()
+            .skip(1)
+            .find(|entry| !unplayable(&entry.entry_id))
+            .map(|entry| entry.entry_id.clone());
+        let operation = match next {
+            Some(target_entry_id) => SessionOperation::PlaybackAdvance {
+                target_entry_id,
+                position_ms: 0,
+                is_playing: self.state.playback.is_playing,
+            },
+            None if self.state.playback.is_playing => {
+                SessionOperation::PlaybackSetPlaying { is_playing: false }
+            }
+            None => return Vec::new(),
+        };
+        drop(listeners);
+
+        let Ok(next_state) = state::apply(&self.state, &operation, now_ms) else {
+            return Vec::new();
+        };
+        self.sequence += 1;
+        if operation.changes_queue() {
+            self.last_queue_change_seq = self.sequence;
+        }
+        self.state = next_state;
+        self.updated_at_ms = now_ms;
+
+        vec![Outbound {
+            to: Recipient::All,
+            message: ServerMessage::OperationAccepted {
+                sequence: self.sequence,
+                origin_client_id: None,
+                operation,
+                accepted_at_ms: now_ms,
+            },
+        }]
     }
 
     fn reject(
@@ -437,11 +584,11 @@ impl SessionCoordinator {
     }
 
     /// Remove a participant whose reconnect grace period expired.
-    pub fn remove(&mut self, client_id: &str) -> Vec<Outbound> {
+    pub fn remove(&mut self, client_id: &str, now_ms: u64) -> Vec<Outbound> {
         let before = self.participants.len();
         self.participants.retain(|p| p.client_id != client_id);
         if self.participants.len() != before {
-            vec![self.participants_update()]
+            self.after_change(now_ms, true)
         } else {
             Vec::new()
         }
@@ -504,6 +651,7 @@ fn participant(hello: ClientHello, status: ParticipantStatus) -> Participant {
         provider: hello.provider,
         status,
         connected: true,
+        unavailable_entry_ids: Vec::new(),
     }
 }
 
