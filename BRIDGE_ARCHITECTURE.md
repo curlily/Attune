@@ -87,9 +87,17 @@ An important deliberate limitation: a TIDAL action that safely unloads an active
 
 ## Spotify adapter notes
 
-Spotify's existing renderer integration remains in `core/src/adapters/spotify.js`; it now also implements the same v1 state and operation methods. Spotify-specific platform/PlayerAPI discovery and URI lookup remain in JavaScript. The legacy playback API is retained for the existing Tauri commands.
+`core/src/adapters/spotify.js` finds Spotify's platform object on a React fiber prop and takes `PlayerAPI`, `SettingsAPI` and `GraphQLLoader` from its service registry. It depends on these private interfaces (all verified live, details in [PROVIDER_ADAPTERS.md](PROVIDER_ADAPTERS.md)):
 
-An empty shared queue is applied only when Spotify has no active item. `PlayerAPI.clearQueue()` removes upcoming items, but an action to unload the active item has not been verified. When playback is active, the adapter reports an error rather than claiming the empty queue was applied.
+- `PlayerAPI.getState()` and its `update` / `queue_update` events for observing playback.
+- `PlayerAPI._contextPlayer.play` to start a track at a position, playing or paused, in one request.
+- `PlayerAPI._contextPlayer.setQueue` to write the whole upcoming list against a revision. Every queue edit goes through it, so edits never restart the current track.
+- `PlayerAPI._queue.getInternalQueue()` for the full queue (the state lists at most 50 upcoming items).
+- `PlayerAPI._contextPlayer.stop` to unload the current track for an empty session queue.
+- The `searchTracks` GraphQL query, including `isrc:` search terms.
+- `SettingsAPI.autoPlay`, `PlayerAPI.setShuffle` and `setRepeat` for the neutral state.
+
+The session queue is the current track plus Spotify's queued and playlist ("context") items. Recommendations ("autoplay") are left out, and autoplay is switched off during a session.
 
 ## Validation
 
@@ -99,4 +107,4 @@ Run:
 npm test
 ```
 
-This runs the mocked TIDAL and Spotify adapter tests (shared API, skipping tracks the provider can't find, the structured `trackUnavailable` error, and that remote applies are not echoed as local operations) plus JavaScript syntax checks for both scripts. The mocks stand in for the providers' private renderer interfaces, so they do not replace a live test against the installed desktop clients. Run `cargo test --workspace` for the Rust side.
+This runs the mocked TIDAL and Spotify adapter tests (shared API, skipping tracks the provider can't find, the structured `trackUnavailable` error, paused joins, queue edits that keep the song playing, and that remote applies are not echoed as local operations) plus JavaScript syntax checks for both scripts. The mocks stand in for the providers' private renderer interfaces, so they do not replace a live test against the installed desktop clients. Run `cargo test --workspace` for the Rust side.

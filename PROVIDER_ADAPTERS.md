@@ -95,20 +95,79 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
 6. **The local-change suppression windows are time-based** (300 ms, and up to 5.5 s while holding a loaded track). A real user action inside a window is lost. Prevention: tag our own dispatches (5.3).
 7. **Autoplay, shuffle and repeat aren't synced.** Mitigated: they're turned off for the length of a jam (see 5.9). Changing them in TIDAL during a jam isn't detected yet.
 
-## 3. Spotify (needs a rework, after TIDAL is solid)
+## 3. Spotify
 
-**Current state:** implements the v1 contract and passes its mock tests, but has **never been tested live** with sessions. Known gaps compared with TIDAL:
+Reworked and tested live against Spotify 1.3.8.620 (Chrome 151), by attaching over CDP,
+reading its code and recording its events. Not yet run through `SessionRuntime`
+(the `live_session` example) or in a two-person jam.
 
-- [ ] **Full queue:** `getState` keeps only `nextItems` with `provider === "queue"`, dropping context, playlist, album and autoplay items. Spotify exposes all of them with a provider flag; report them like TIDAL's full play queue.
-- [ ] **Lookups:** one search at a time, if Spotify search has the same cancel behaviour (check). Look up the current song first and stop early if it's missing. Reuse IDs already in the queue instead of searching.
-- [ ] **Neutral state:** implement `settle`, `prepareForSession` and `restoreAfterSession` (stubs today). Spotify has shuffle, repeat and autoplay too.
-- [ ] **Loading:** hold a freshly loaded track at the session's position and play state, like TIDAL's `startLoadedTrack`. Spotify very likely also starts loaded tracks by itself.
-- [ ] **Edits:** use incremental queue edits (`insertIntoQueue`, `removeFromQueue`, `reorderQueue` exist on PlayerAPI) instead of replacements, and check whether they restart the current track.
-- [ ] **Play state and position:** verify `positionAsOfTimestamp` / `timestamp` semantics (like TIDAL's sync timestamp?), what `isPaused` does while loading, and the track-start position reset.
-- [ ] **Echoes:** check the 300 ms suppression and debounce against real event timing.
-- [ ] **Recorded traces:** record real PlayerAPI event and state traces (5.2) and rebuild the mock from them.
-- [ ] **Live test:** run the `live_session` example and a two-person jam (TIDAL + Spotify), with a missing song on each side.
-- [ ] **Store version:** check whether it can be launched with `--remote-debugging-port`.
+### Verified behaviour
+
+**Services and where things live**
+- The platform object (service registry) is a prop on React fibers: `props.platform.getRegistry()._map`, keyed by symbols (`PlayerAPI`, `SettingsAPI`, `GraphQLLoader`, …).
+  - Some components get `props.playerAPI` directly. Taking the first of either found the PlayerAPI without the platform, so search and settings were missing. The adapter prefers the platform.
+  - `SettingsAPI` and `GraphQLLoader` are created lazily: they don't exist yet when the adapter becomes ready (0.3 s after the reload). They are looked up when used.
+- `PlayerAPI` is a wrapper around the native player, which it reaches through `_contextPlayer` (protobuf RPCs: `play`, `setQueue`, `stop`, `seekTo`, …). RPCs answer `{ error, reasons }` instead of throwing.
+- `PlayerAPI.getEvents()` emits `update` (the new state), `queue_update`, `action` / `command` (a PlayerAPI call is about to run) and `queue_action`.
+- The state changes **only** with an `update` event, some 10–300 ms after a call resolves. `queue_update` can follow up to 500 ms after its `update`.
+- One change produces a burst of updates (2–6 within 100 ms).
+
+**The queue**
+- Upcoming items have a `provider`: `"queue"` (added by the user), `"context"` (rest of the playlist or album), `"autoplay"` (recommendations).
+- The state's `nextItems` is cut off at **50** items (`getCapabilities().maxNextTracks`). The full list is `_queue.getInternalQueue().nextTracks` (60 queued items were all there). It carries only string metadata (`title`, `artist_name`, `artist_name:1`, `album_title`, `duration`).
+- A playlist shows a window of its remaining tracks, not all of them.
+- Every item has a `uid`. Queue uids start with `q`. A queued item keeps its uid when it becomes the current track.
+- **uids are reused:** playing the same single track twice gives the same uid. A current track that didn't come from the queue is treated as a new occurrence.
+- **The queue is written as a whole:** `_contextPlayer.setQueue({ nextTracks, prevTracks, queueRevision })`. PlayerAPI's own `addToQueue`, `removeFromQueue`, `reorderQueue`, `insertIntoQueue` and `clearQueue` all do this.
+  - It never touches the current track.
+  - Existing items are kept by passing them back unchanged. New ones need only `{ contextTrack: { uri, uid: "", metadata: { is_queued: "true" } }, provider: "queue" }` and get a uid.
+  - An outdated `queueRevision` is refused with error code 3 (returned, not thrown).
+  - Playlist items can be removed, reordered and inserted between. A queue item placed behind playlist items becomes a `"context"` item and keeps its uid; marking a playlist item as queued gives it a new uid.
+  - Autoplay items can't be edited: Spotify regenerates that list about a second later.
+- Clicking a later item in Spotify's queue drops the queued items before it.
+
+**Loading and play state**
+- `PlayerAPI.play({ uri: track }, origin, { seekTo })` starts at the position, but **drops `initiallyPaused`**. `_contextPlayer.play` with `preparePlayRequest.options.initiallyPaused` and `seekTo` loads the track paused at the position (verified at 45 s). So no correcting afterwards is needed, unlike TIDAL.
+- Playlists go through another service that ignores both options.
+- A custom play origin (`featureIdentifier: "myjam"`) is accepted.
+- Playing a single track makes that track the whole context. Nothing follows it except queued items, and queued items survive the play.
+- A track loads in about 200 ms: `isBuffering` true, then false. `isPaused` is false meanwhile.
+- **A paused track often reports `isBuffering: true`** for as long as it is paused. Ignoring buffering states (as the old adapter did) loses pauses.
+- `positionAsOfTimestamp` is the position at `timestamp` (epoch ms), like TIDAL's sync pair. No late reset to 0 after a track starts was seen.
+- `pause()` while paused and `resume()` while playing throw (`not_paused`).
+- `_contextPlayer.stop({})` unloads the current track and empties the queue. So an empty session queue can be applied (TIDAL can't).
+- **End of the queue** (autoplay off): Spotify returns to the track its context started with, paused at 0. With a queue loaded by MyJam that is the song the jam was on when this client joined. The adapter reports only a pause and keeps the finished entry current until the user does something.
+- **Attaching:** a page reload doesn't interrupt playback (the player is native) and the state is there immediately. `settle` pauses anyway, as the contract says.
+
+**Shuffle, repeat, autoplay**
+- State: `shuffle`, `repeat` (0 off, 1 context, 2 track). Actions: `setShuffle(bool)`, `setRepeat(n)`.
+- Autoplay: `SettingsAPI.autoPlay.getValue()` / `setValue(bool)`. After switching it off, the recommendations leave the queue within about a second.
+- Spotify refuses to change shuffle and repeat while it plays recommendations (`restrictions.disallowTogglingShuffleReasons: ["autoplay"]`).
+- Shuffle is remembered per playlist: playing a playlist turns its shuffle setting on.
+- Repeat-context fills the upcoming list up to 50 by repeating the playlist.
+
+**Search**
+- GraphQL through `GraphQLLoader(operation, variables)`; operations are `{ name, operation: "query", sha256Hash }`. `searchTracks` takes `{ searchTerm, offset, limit, numberOfTopResults, … }` and returns title, artists, album, duration and playability.
+- The hash is in `xpui-routes-search.js`. The adapter reads it from the loaded modules, else fetches that script, else uses the 1.3.8 hash. The old "type into the search box" warm-up is gone.
+- **`isrc:<code>` works as a search term.**
+- Searches are independent: four at once took as long as one (about 350 ms).
+- The same recording appears several times (single, album, deluxe) with equal title, artist and duration. The adapter takes Spotify's first.
+- Titles differ between services: "Shoong!" is "Shoong! (feat. LISA of BLACKPINK)" here. Featured-artist suffixes are ignored when comparing.
+
+**Timings measured:** adapter ready 0.3 s after the reload; a 5-song snapshot 1.0–1.3 s; 72 songs (12 different ones) 2.0 s; a queue edit 130 ms; a skip 50 ms.
+
+### Open problems
+
+1. **No ISRC.** Spotify's player doesn't carry ISRCs, so tracks it puts into a session have none. Other providers then fall back to title and artist. A metadata lookup (a track GraphQL query or the metadata extension service) could fill it in.
+2. **After the queue ended,** a remote insert or play makes Spotify load the finished song again from the start, while the session thinks it is at its end. Rare, and the next song change fixes it.
+3. **Podcasts, local files and advertisements** aren't tracks. While one plays, nothing is reported. Assumed, not seen live: the test account didn't get ads.
+4. **Changes from another device** (Spotify Connect) haven't been tested.
+5. **Starting a jam from a playlist** publishes the window of upcoming playlist tracks Spotify shows (about 15–50). As it moves on and shows more, those are published as inserts. Not tested with a session server.
+6. **The local-change suppression is still partly time-based:** 300 ms after a remote change, though the change itself is now waited for. A user action in that window is lost.
+7. **Changing shuffle, repeat or autoplay during a jam** isn't detected (same as TIDAL).
+8. **Debug port:** MyJam's config expects Spotify on 9223. `--remote-debugging-port=<port>` needs the `=`; with a space Spotify ignores it without a word.
+9. **Store version:** still unchecked.
+10. **Not done yet:** the `live_session` example and a two-person jam (TIDAL + Spotify), with a missing song on each side.
 
 ## 4. YouTube Music (planned)
 
@@ -143,7 +202,7 @@ Open questions before writing any code:
 6. **A shared "hold until stable" helper.** TIDAL's adapter now has `holdUntil({matches, correct, stableMs, timeoutMs})`, used by `startLoadedTrack` and `settle`: it re-applies the target state until it holds. Every provider will likely need it, so move it into a small shared library injected with each adapter.
 7. **Capability flags per adapter.** For example: `incrementalQueue`, `canUnloadTrack`, `fullQueue`, `providerIds`. Then the runtime can choose operations, such as avoiding full replacements, instead of discovering failures at runtime.
 8. **Drift measurement (phase 7d).** Measuring each client's real position against the session shows timing problems (load delays, lost seeks) as numbers, not anecdotes.
-9. **A neutral state.** Proposed by the user; **done for TIDAL**, stubs only for Spotify. Adapter contract:
+9. **A neutral state.** Proposed by the user; **done for TIDAL and Spotify**. Adapter contract:
     - **`settle({pause})`** runs right after attaching. It waits until the app has finished restoring itself (queue and play state unchanged for 1 s, or 3 s while empty, at most 8 s), then pauses and holds the pause for 1.5 s, which catches a late auto-resume. The queue is kept. `BridgeController::initialise` calls it.
     - **`prepareForSession()`** runs when entering a jam. It turns off shuffle (without reordering), repeat and autoplay, and returns the user's values.
     - **`restoreAfterSession(previous)`** puts them back on every way out. Leaving, quitting MyJam (Tauri's exit event, at most 3 s) and a failed create or join were verified live or in tests; the runtime does this in `prepare`/`restore`.
