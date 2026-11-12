@@ -14,6 +14,8 @@ const CATALOG = {
     "spotify:track:c": { title: "Song C", artist: "Artist C", isrc: "ISRC000000C" },
     // Found only by its ISRC: the title differs from what other services call it.
     "spotify:track:feat": { title: "Duet (feat. Guest)", artist: "Artist D", isrc: "ISRC000000D" },
+    // Spotify's own names carry remaster tags; other services' don't.
+    "spotify:track:hotel": { title: "Hotel California - 2013 Remaster", artist: "Eagles", isrc: "ISRC00000HC" },
 };
 const DURATION_MS = 180_000;
 
@@ -213,7 +215,8 @@ function createSpotify() {
         searches.push(variables.searchTerm);
         const isrc = variables.searchTerm.match(/^isrc:(.+)$/)?.[1];
         const items = Object.entries(CATALOG)
-            .filter(([, track]) => isrc ? track.isrc === isrc : variables.searchTerm.includes(track.title))
+            // Like the real search, the title without its " - …" tag is enough.
+            .filter(([, track]) => isrc ? track.isrc === isrc : variables.searchTerm.includes(track.title.split(" - ")[0]))
             .map(([uri, track]) => ({
                 item: {
                     data: {
@@ -787,4 +790,20 @@ test("A replace with a new song starts it where the replace says (protocol 2)", 
     assert.equal(state.currentEntryId, "session-c");
     assert.equal(state.playback.isPlaying, false);
     assert.equal(state.playback.positionMs, 48_000);
+});
+
+test("A title without Spotify's remaster tag still finds the remaster", async () => {
+    const { bridge } = await loadAdapter();
+    const outcome = await bridge.applySnapshot({
+        queue: [
+            { entryId: "session-a", track: { title: "Song A", artists: ["Artist A"] } },
+            // From YouTube Music: no tag, no ISRC.
+            { entryId: "session-hotel", track: { title: "Hotel California", artists: ["Eagles"] } },
+            { entryId: "session-live", track: { title: "Hotel California (Live)", artists: ["Eagles"] } },
+        ],
+        currentEntryId: "session-a",
+        playback: playback(),
+    });
+    assert.deepEqual([...outcome.unavailableEntryIds], ["session-live"]);
+    assert.deepEqual(entryIds(bridge.getState()), ["session-a", "session-hotel"]);
 });

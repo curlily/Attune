@@ -14,6 +14,10 @@ const CATALOG = {
     c: { title: "Song C", artists: ["Artist C"], album: "Album C", length: "3:00" },
     // A music video: its byline has no links.
     video: { title: "Video Song", artists: ["Band X", "Band Y"], album: null, length: "2:30", plain: true },
+    // Named without Spotify's remaster tags, or credited to a band name.
+    hotel: { title: "Hotel California", artists: ["Eagles"], album: "Legacy", length: "6:32" },
+    lotta: { title: "Whole Lotta Love (Remaster)", artists: ["Led Zeppelin"], album: "Led Zeppelin II", length: "5:35" },
+    purple: { title: "Purple Rain", artists: ["Prince & The Revolution"], album: "Purple Rain", length: "8:42" },
 };
 const PLAYER = { UNSTARTED: -1, ENDED: 0, PLAYING: 1, PAUSED: 2 };
 
@@ -221,7 +225,8 @@ function createYouTubeMusic() {
                 return { queueDatas: params.videoIds.filter(id => CATALOG[id]).map(id => ({ content: queueItem(id) })) };
             }
             const rows = Object.entries(CATALOG)
-                .filter(([, song]) => params.query.includes(song.title))
+                // Like the real search, the title without a trailing "(…)" is enough.
+                .filter(([, song]) => params.query.includes(song.title.replace(/\s*\([^)]*\)$/, "")))
                 .map(([videoId, song]) => ({
                     musicResponsiveListItemRenderer: {
                         playlistItemData: { videoId },
@@ -746,4 +751,22 @@ test("A replace with a new song starts it where the replace says (protocol 2)", 
     assert.equal(state.currentEntryId, "session-c");
     assert.equal(state.playback.isPlaying, false);
     assert.ok(Math.abs(state.playback.positionMs - 48_000) < 500, `position ${state.playback.positionMs}`);
+}));
+
+test("Remaster tags and a band credit still match the same recording", () => withAdapter(async ({ bridge }) => {
+    // Verified live: 16 of 81 songs of a Spotify rock playlist went missing.
+    const track = (title, artists) => ({ title, artists });
+    const outcome = await bridge.applySnapshot({
+        queue: [
+            { entryId: "e-hotel", track: track("Hotel California - 2013 Remaster", ["Eagles"]) },
+            { entryId: "e-lotta", track: track("Whole Lotta Love - 1990 Remaster", ["Led Zeppelin"]) },
+            { entryId: "e-purple", track: track("Purple Rain", ["Prince"]) },
+            // A live recording is a different one: no match.
+            { entryId: "e-live", track: track("Hotel California - Live", ["Eagles"]) },
+        ],
+        currentEntryId: "e-hotel",
+        playback: playback(),
+    });
+    assert.deepEqual([...outcome.unavailableEntryIds], ["e-live"]);
+    assert.deepEqual(entryIds(bridge.getState()), ["e-hotel", "e-lotta", "e-purple"]);
 }));

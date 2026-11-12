@@ -192,9 +192,28 @@
     // Services disagree on where featured artists go: "Shoong!" on one is
     // "Shoong! (feat. LISA of BLACKPINK)" on another (verified live).
     function normalizeTitle(value) {
-        return normalize(String(value ?? "")
-            .replace(/[([][^)\]]*\b(feat|ft|featuring|with)\b[^)\]]*[)\]]/gi, " ")
-            .replace(/\s[-–]\s*(feat|ft|featuring)\b.*$/i, " "));
+        return normalize(stripSameRecordingTags(value));
+    }
+
+    /**
+     * A title without the tags that still name the same recording: a
+     * featured artist (services disagree on where it goes) and a remaster.
+     * Verified live: Spotify's "Hotel California - 2013 Remaster", "Enter
+     * Sandman - Remastered 2021" and "Whole Lotta Love - 1990 Remaster" are
+     * "Hotel California", "Enter Sandman" and "Whole Lotta Love (Remaster)"
+     * on YouTube Music. Remixes, live and other versions are different
+     * recordings and keep their tags.
+     */
+    function stripSameRecordingTags(value) {
+        return String(value ?? "")
+            .replace(/\s*[([][^)\]]*\b(feat|ft|featuring|with)\b[^)\]]*[)\]]/gi, " ")
+            .replace(/\s*[([][^)\]]*\bremaster(ed)?\b[^)\]]*[)\]]/gi, " ")
+            .replace(/\s[-–]\s*[^-–]*\bremaster(ed)?\b[^-–]*$/i, " ")
+            // "Rock You Like a Hurricane - 2015 - Remaster": the year is left.
+            .replace(/\s[-–]\s*\d{4}\s*$/, " ")
+            .replace(/\s[-–]\s*(feat|ft|featuring)\b.*$/i, " ")
+            .replace(/\s+/g, " ")
+            .trim();
     }
 
     function isTrackUri(uri) {
@@ -332,9 +351,22 @@
         }).filter(Boolean);
     }
 
+    /**
+     * Whether two normalized artist names are the same act. A name that
+     * starts with the other one, as whole words, counts: YouTube Music
+     * credits "Purple Rain" to "Prince & The Revolution", Spotify to
+     * "Prince" (verified live). Very short names must match exactly.
+     */
+    function sameArtist(a, b) {
+        if (a === b) return true;
+        const [short, long] = a.length < b.length ? [a, b] : [b, a];
+        return short.length >= 4 && long.startsWith(`${short} `);
+    }
+
     function artistOverlap(trackA, trackB) {
-        const artistsA = new Set((trackA.artists ?? []).map(normalize).filter(Boolean));
-        return (trackB.artists ?? []).map(normalize).some(name => artistsA.has(name));
+        const artistsA = (trackA.artists ?? []).map(normalize).filter(Boolean);
+        return (trackB.artists ?? []).map(normalize).filter(Boolean)
+            .some(name => artistsA.some(other => sameArtist(name, other)));
     }
 
     function scoreCandidate(source, candidate) {
