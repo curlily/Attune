@@ -20,4 +20,6 @@ pub use messages::*;
 pub use model::*;
 
 /// Wire protocol version spoken by this crate.
-pub const PROTOCOL_VERSION: u16 = 1;
+///
+/// 2: `queue.replace` may carry the new current song's `playback`.
+pub const PROTOCOL_VERSION: u16 = 2;

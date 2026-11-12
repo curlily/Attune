@@ -1,8 +1,8 @@
 mod common;
 
 use attune_protocol::{
-    ClientMessage, CreateSession, ErrorCode, JoinSession, OperationRequest, ParticipantStatus,
-    RejectCode, ServerMessage, SessionMusicState, SessionOperation as Op,
+    ClientMessage, CreateSession, ErrorCode, JoinSession, OperationRequest, PROTOCOL_VERSION,
+    ParticipantStatus, RejectCode, ServerMessage, SessionMusicState, SessionOperation as Op,
     coordinator::{Outbound, Recipient, SessionCoordinator},
     state,
 };
@@ -110,7 +110,7 @@ fn create_returns_invite_and_snapshot_at_sequence_zero() {
             assert_eq!(session_id, SESSION);
             assert_eq!(rejoin_secret, SECRET_A);
             assert_eq!(snapshot.revision, 0);
-            assert_eq!(snapshot.protocol_version, 1);
+            assert_eq!(snapshot.protocol_version, PROTOCOL_VERSION);
             // Position kept, capture time restamped with the server clock.
             assert_eq!(snapshot.state.playback.position_ms, 4_000);
             assert_eq!(snapshot.state.playback.position_captured_at_ms, T0);
@@ -142,7 +142,7 @@ fn create_rejects_bad_version_identity_and_state() {
     };
 
     let mut old = hello("a");
-    old.protocol_version = 2;
+    old.protocol_version = PROTOCOL_VERSION - 1;
     assert_eq!(
         attempt(old, state(&[], false, 0, 0)),
         Err(ErrorCode::UnsupportedVersion)
@@ -457,6 +457,7 @@ fn stale_queue_replace_is_rejected() {
     let replace = Op::QueueReplace {
         entries: vec![entry("s1"), entry("new")],
         current_entry_id: Some("s1".to_owned()),
+        playback: None,
     };
     let out = session.handle("a", op("a-1", 0, replace), T0);
     assert_eq!(
@@ -492,6 +493,7 @@ fn playback_changes_by_others_do_not_make_queue_edits_stale() {
     let replace = Op::QueueReplace {
         entries: vec![entry("s1"), entry("new")],
         current_entry_id: Some("s1".to_owned()),
+        playback: None,
     };
     let out = session.handle("a", op("a-1", 0, replace), T0);
     assert!(matches!(
@@ -1098,6 +1100,7 @@ fn queued_entries_carry_their_senders_name() {
             Op::QueueReplace {
                 entries,
                 current_entry_id,
+                playback: None,
             },
         ),
         T0 + 1,

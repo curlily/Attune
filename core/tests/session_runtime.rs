@@ -440,6 +440,7 @@ async fn local_queue_edits_keep_songs_this_provider_lacks() {
     s.b_provider.local(Op::QueueReplace {
         entries: vec![entry("s1"), entry("s3"), entry("n1")],
         current_entry_id: Some("s1".to_owned()),
+        playback: None,
     });
     eventually("A has the new song and still s2", || {
         s.a_provider.ids() == ["s1", "s2", "s3", "n1"]
@@ -628,6 +629,7 @@ async fn echoes_from_a_provider_missing_songs_are_recognised() {
     s.b_provider.emit(Op::QueueReplace {
         entries: vec![entry("s1"), entry("s3")],
         current_entry_id: Some("s1".to_owned()),
+        playback: None,
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(
@@ -772,6 +774,7 @@ async fn a_new_song_resumed_part_way_is_published_at_its_position() {
     s.a_provider.emit(Op::QueueReplace {
         entries: resumed.queue.clone(),
         current_entry_id: Some("n1".to_owned()),
+        playback: None,
     });
 
     let near = |position: u64| position.abs_diff(48_000) < 5_000;

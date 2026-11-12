@@ -751,20 +751,40 @@ test("A removal counts once the state shows it, not when the queue's revision ch
 
 test("A new queue starts its current song before the rest is looked up", async () => {
     // Songs from other providers have no ISRC: one search each, four at a time.
-    const searchedAfter = new Map();
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
     const { bridge, spotify } = await loadAdapter(spotify => {
         const search = spotify.graphql;
-        spotify.graphql = (operation, variables) => {
-            searchedAfter.set(variables.searchTerm, spotify.calls.length);
+        spotify.graphql = async (operation, variables) => {
+            if (!variables.searchTerm.startsWith("Song A")) await held;
             return search(operation, variables);
         };
     });
 
-    await loadSession(bridge, ["a", "b", "c"]);
-
-    assert.equal(spotify.calls[0]?.play, "spotify:track:a");
-    for (const term of ["Song B Artist B", "Song C Artist C"]) {
-        assert.ok(searchedAfter.get(term) >= 1, `"${term}" is looked up after the current song started`);
-    }
+    const loading = loadSession(bridge, ["a", "b", "c"]);
+    const deadline = Date.now() + 2_000;
+    while (!spotify.calls.some(call => call.play) && Date.now() < deadline) await sleep(10);
+    assert.equal(spotify.calls[0]?.play, "spotify:track:a", "the current song started while the rest was still being looked up");
+    release();
+    await loading;
     assert.deepEqual(entryIds(bridge.getState()), ["session-a", "session-b", "session-c"]);
+});
+
+test("A replace with a new song starts it where the replace says (protocol 2)", async () => {
+    const { bridge, spotify } = await loadAdapter();
+    await loadSession(bridge, ["a", "b"]);
+    spotify.calls.length = 0;
+
+    await bridge.applyOperation({
+        type: "queue.replace",
+        entries: [entry("session-c", "spotify:track:c"), entry("session-a2", "spotify:track:a")],
+        currentEntryId: "session-c",
+        playback: { positionMs: 48_000, isPlaying: false },
+    });
+
+    assert.deepEqual(spotify.calls[0], { play: "spotify:track:c", paused: true, seekTo: 48_000 });
+    const state = bridge.getState();
+    assert.equal(state.currentEntryId, "session-c");
+    assert.equal(state.playback.isPlaying, false);
+    assert.equal(state.playback.positionMs, 48_000);
 });

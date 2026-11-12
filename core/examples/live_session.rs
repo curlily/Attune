@@ -64,6 +64,7 @@ impl Peer {
                         SessionOperation::QueueReplace {
                             entries,
                             current_entry_id,
+                            ..
                         } => format!(
                             "queue.replace current={current_entry_id:?} [{}]",
                             entries

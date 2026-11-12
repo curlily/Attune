@@ -962,6 +962,11 @@
         const [current] = await resolveEntries([entries[0]], known);
         if (current.error) throw trackUnavailableError([current]);
 
+        // Look the rest up while the song starts; the lookups don't touch
+        // the queue.
+        const lookups = resolveEntries(entries.slice(1), known);
+        lookups.catch(() => {}); // awaited below; don't report it twice
+
         const now = readPlayer();
         const alreadyCurrent = now.current && !queueEndApplies(now) &&
             entryIdFor(now.current.uid) === current.entry.entryId;
@@ -975,7 +980,7 @@
         }
         await alignPlayback(playback, calledAt);
 
-        const upcoming = await resolveEntries(entries.slice(1), known);
+        const upcoming = await lookups;
         const failures = upcoming.filter(result => result.error);
         const wanted = upcoming
             .filter(result => !result.error)
@@ -1049,7 +1054,12 @@
                     : entries.findIndex(entry => entry.entryId === currentEntryId);
                 if (start < 0) throw new Error(`Current queue entry was not found: ${currentEntryId}`);
                 const sameCurrent = currentEntryId != null && currentEntryId === state.currentEntryId;
-                return loadQueue(entries.slice(start), sameCurrent ? null : fromStart, calledAt);
+                // Protocol 2: where the new current song is (a list may be
+                // resumed part-way); without it, from 0, playing.
+                const startAt = operation.playback
+                    ? { isPlaying: Boolean(operation.playback.isPlaying), positionMs: operation.playback.positionMs ?? 0 }
+                    : fromStart;
+                return loadQueue(entries.slice(start), sameCurrent ? null : startAt, calledAt);
             }
 
             case "queue.insert": {

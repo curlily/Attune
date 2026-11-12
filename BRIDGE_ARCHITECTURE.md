@@ -17,7 +17,7 @@ Rust owns the CDP connection, bridge lifecycle, JSON transport, and event delive
 5. Finds the page target by the configured URL and attaches a `Page` handle.
 6. Enables the Page, Runtime, and Log CDP domains; subscribes to binding, console, exception, and log events.
 7. Registers the `__jamEvent` CDP binding and the adapter through `evaluate_on_new_document`.
-8. Issues a raw CDP page reload so the adapter executes at document start, then waits for its `Ready` event and verifies protocol version 1. A "Leave site?" dialog the page raises against the reload is confirmed.
+8. Issues a raw CDP page reload so the adapter executes at document start, then waits for its `Ready` event and verifies bridge version 1. If no navigation starts within 2 s (TIDAL sometimes ignores `Page.reload`), it reloads from the page with `location.reload()`. A "Leave site?" dialog the page raises against the reload is confirmed.
 
 Calls into the page are evaluated as user gestures, because browsers refuse to start playback from a script otherwise.
 
@@ -65,7 +65,9 @@ The operation set is absolute rather than toggle-based:
 - `queue.replace`, `queue.insert`, `queue.remove`, `queue.move`
 - `playback.select`, `playback.advance`, `playback.seek`, `playback.setPlaying`
 
-Serde serializes the operation variant as `type` and all variant fields in `camelCase`, matching both JavaScript adapters. `SessionSnapshot` includes the protocol version and session revision metadata; adapters receive only its `state` after Rust validates version 1.
+Since protocol 2, `queue.replace` may carry `playback: { positionMs, isPlaying }` for its new current song (a provider may resume a list part-way); without it the new song starts at 0, playing. Adapters start the song there.
+
+Serde serializes the operation variant as `type` and all variant fields in `camelCase`, matching both JavaScript adapters. `SessionSnapshot` includes the protocol version and session revision metadata; adapters receive only its `state` after Rust validates the protocol version (2).
 
 The bridge layer does not implement session networking, server sequencing, conflict resolution, voting, or reconnect/replay policy. Those belong above `BridgeController`. The current Tauri commands expose connect/disconnect, read state, and apply snapshot/operation primitives.
 

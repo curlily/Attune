@@ -3,7 +3,7 @@ mod common;
 use std::collections::HashSet;
 
 use attune_protocol::{
-    SessionOperation as Op,
+    ReplacePlayback, SessionOperation as Op,
     state::{
         MAX_QUEUE_ENTRIES, StateError, apply, is_noop, position_at, reinsert_unavailable,
         validate_state,
@@ -161,6 +161,7 @@ fn replace_with_same_current_keeps_playback() {
         &Op::QueueReplace {
             entries: vec![entry("a"), entry("c"), entry("b")],
             current_entry_id: Some(id("a")),
+            playback: None,
         },
         NOW,
     )
@@ -178,6 +179,7 @@ fn replace_with_new_current_drops_history_and_restarts_playing() {
         &Op::QueueReplace {
             entries: vec![entry("x"), entry("y"), entry("z")],
             current_entry_id: Some(id("y")),
+            playback: None,
         },
         NOW,
     )
@@ -189,12 +191,49 @@ fn replace_with_new_current_drops_history_and_restarts_playing() {
 }
 
 #[test]
+fn replace_with_new_current_takes_the_given_playback() {
+    let before = state(&["a"], true, 1_000, 0);
+    let playback = Some(ReplacePlayback {
+        position_ms: 48_000,
+        is_playing: false,
+    });
+    let after = apply(
+        &before,
+        &Op::QueueReplace {
+            entries: vec![entry("x"), entry("y")],
+            current_entry_id: Some(id("x")),
+            playback,
+        },
+        NOW,
+    )
+    .expect("apply");
+    assert_eq!(after.current_entry_id.as_deref(), Some("x"));
+    assert_eq!(after.playback.position_ms, 48_000);
+    assert!(!after.playback.is_playing);
+
+    // Only a change of song uses it: the same song keeps its own playback.
+    let same = apply(
+        &before,
+        &Op::QueueReplace {
+            entries: vec![entry("a"), entry("y")],
+            current_entry_id: Some(id("a")),
+            playback,
+        },
+        NOW,
+    )
+    .expect("apply");
+    assert_eq!(same.playback.position_ms, 1_000 + NOW);
+    assert!(same.playback.is_playing);
+}
+
+#[test]
 fn replace_without_current_uses_first_entry() {
     let after = apply(
         &empty(0),
         &Op::QueueReplace {
             entries: vec![entry("x"), entry("y")],
             current_entry_id: None,
+            playback: None,
         },
         NOW,
     )
@@ -209,6 +248,7 @@ fn replace_with_empty_entries_yields_empty_state() {
         &Op::QueueReplace {
             entries: vec![],
             current_entry_id: None,
+            playback: None,
         },
         NOW,
     )
@@ -225,6 +265,7 @@ fn replace_rejects_unknown_current_and_duplicates() {
             &Op::QueueReplace {
                 entries: vec![entry("x")],
                 current_entry_id: Some(id("nope")),
+                playback: None,
             },
             NOW
         ),
@@ -238,6 +279,7 @@ fn replace_rejects_unknown_current_and_duplicates() {
             &Op::QueueReplace {
                 entries: vec![entry("x"), entry("x")],
                 current_entry_id: None,
+                playback: None,
             },
             NOW
         ),
@@ -653,11 +695,13 @@ fn noop_detection() {
     let replace_same = Op::QueueReplace {
         entries: vec![entry("a"), entry("b")],
         current_entry_id: Some(id("a")),
+        playback: None,
     };
     assert!(is_noop(&s, &replace_same, NOW));
     let replace_other = Op::QueueReplace {
         entries: vec![entry("a")],
         current_entry_id: Some(id("a")),
+        playback: None,
     };
     assert!(!is_noop(&s, &replace_other, NOW));
 

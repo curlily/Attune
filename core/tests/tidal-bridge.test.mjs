@@ -833,16 +833,23 @@ test("TIDAL starts the current song before looking up the rest of a new queue", 
     // Text searches run one at a time; a long playlist used to wait for all of them.
     const store = createStore();
     const order = [];
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
     const dispatch = store.dispatch;
     store.dispatch = action => {
-        if (action?.type === "search/SEARCH_FOR") order.push(`search:${action.payload.query}`);
+        if (action?.type === "search/SEARCH_FOR" && action.payload.query.startsWith("Third Track")) {
+            order.push("search:third");
+            // The results arrive only once the test lets them.
+            held.then(() => dispatch(action));
+            return undefined;
+        }
         if (action?.type === "playQueue/RESET") order.push(`reset:${action.payload.elements.length}`);
         if (action?.type === "playQueue/APPEND_ELEMENTS") order.push(`append:${action.payload.elements.length}`);
         return dispatch(action);
     };
     const { bridge } = await loadAdapter({ store });
 
-    const outcome = await bridge.applySnapshot({
+    const loading = bridge.applySnapshot({
         queue: [
             { entryId: "session-current", track: repeatedTrack },
             { entryId: "session-third", track: thirdTrack },
@@ -851,11 +858,104 @@ test("TIDAL starts the current song before looking up the rest of a new queue", 
         currentEntryId: "session-current",
         playback: playback(),
     });
+    const deadline = Date.now() + 2_000;
+    while (!order.includes("reset:1") && Date.now() < deadline) await sleep(10);
+    assert.ok(order.includes("reset:1"), `the current song was loaded while the rest was still being looked up: ${order}`);
+    release();
+    const outcome = await loading;
 
-    const reset = order.indexOf("reset:1");
-    const thirdSearch = order.findIndex(step => step.startsWith("search:Third Track"));
-    assert.ok(reset >= 0 && thirdSearch > reset, `the current song is loaded first: ${order}`);
     assert.equal(order.at(-1), "append:1", `the rest is appended behind it: ${order}`);
     assert.deepEqual([...outcome.unavailableEntryIds], ["session-ghost"]);
     assert.deepEqual(entryIds(bridge.getState()), ["session-current", "session-third"]);
+});
+
+test("TIDAL starts a replace's new song where the replace says (protocol 2)", async () => {
+    const { bridge, store } = await loadAdapter();
+    await bridge.applySnapshot({
+        queue: [{ entryId: "session-current", track: repeatedTrack }],
+        currentEntryId: "session-current",
+        playback: playback(true, 0),
+    });
+
+    await bridge.applyOperation({
+        type: "queue.replace",
+        entries: [{ entryId: "session-third", track: thirdTrack }],
+        currentEntryId: "session-third",
+        playback: { positionMs: 48_000, isPlaying: false },
+    });
+    await sleep(TRACK_LOAD_MS * 2 + STORE_EVENT_SETTLE_MS);
+
+    const state = bridge.getState();
+    assert.equal(state.currentEntryId, "session-third");
+    assert.equal(state.playback.isPlaying, false);
+    assert.equal(store.getState().playbackControls.latestCurrentTime, 48);
+});
+
+test("TIDAL searches through its open API in parallel, not one at a time", async () => {
+    // Verified live: `search/SEARCH_FOR` cancels a search still in flight,
+    // while the open API's /searchResults answered 20 at once in 670 ms.
+    const store = createStore();
+    let running = 0;
+    let most = 0;
+    const queries = [];
+    store.openApi.endpoints.getSearchResults = {
+        initiate: args => async () => {
+            queries.push(args.filter.query);
+            running += 1;
+            most = Math.max(most, running);
+            await sleep(30);
+            running -= 1;
+            const query = args.filter.query.toLowerCase();
+            const hits = Object.entries(store.getState().content.mediaItems)
+                .filter(([, item]) => query.includes(item.title.toLowerCase()));
+            const track = ([id, item]) => ({
+                id,
+                type: "tracks",
+                attributes: {
+                    title: item.title,
+                    isrc: item.isrc ?? null,
+                    duration: `PT${Math.floor(item.duration / 60)}M${item.duration % 60}S`,
+                    availability: ["STREAM"],
+                },
+                relationships: {
+                    artists: { data: item.artists.map((_, index) => ({ id: `${id}-artist-${index}`, type: "artists" })) },
+                    albums: { data: [{ id: `${id}-album`, type: "albums" }] },
+                },
+            });
+            return {
+                data: {
+                    data: [{
+                        id: "search-id",
+                        type: "searchResults",
+                        relationships: { tracks: { data: hits.map(([id]) => ({ id, type: "tracks" })) } },
+                    }],
+                    included: hits.flatMap(([id, item]) => [
+                        track([id, item]),
+                        ...item.artists.map((artist, index) => ({ id: `${id}-artist-${index}`, type: "artists", attributes: { name: artist.name } })),
+                        { id: `${id}-album`, type: "albums", attributes: { title: item.album.title } },
+                    ]),
+                },
+            };
+        },
+    };
+    const { bridge } = await loadAdapter({ store });
+    // No ISRCs, as from another provider: every song is a text search.
+    const plain = ({ isrc, ...track }) => track;
+
+    const outcome = await bridge.applySnapshot({
+        queue: [
+            { entryId: "session-third", track: thirdTrack },
+            { entryId: "session-repeat", track: plain(repeatedTrack) },
+            { entryId: "session-current", track: { title: "Current Track", artists: ["Artist One"] } },
+            { entryId: "session-ghost", track: ghostTrack },
+        ],
+        currentEntryId: "session-third",
+        playback: playback(),
+    });
+
+    assert.deepEqual([...outcome.unavailableEntryIds], ["session-ghost"]);
+    assert.deepEqual(entryIds(bridge.getState()), ["session-third", "session-repeat", "session-current"]);
+    assert.deepEqual([...store.searches], [], "the app's one-at-a-time search wasn't used");
+    assert.ok(most >= 3, `the upcoming songs were searched at the same time (at most ${most} at once)`);
+    assert.ok(queries.includes("Ghost Song Nobody"));
 });

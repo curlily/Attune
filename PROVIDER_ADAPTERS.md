@@ -22,6 +22,7 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
 | Topic | What happens | Status | Where it's handled |
 |---|---|---|---|
 | Worker auto-attach | chromiumoxide auto-attaches to the page's workers with "wait for debugger on start". After our reload, TIDAL's renderer froze for about 2 minutes, so the bridge never became ready. A raw CDP reload was ready in 0.3 s. | Verified live, fixed | `install_bridge` turns auto-attach off on the page |
+| Reload ignored | TIDAL 2.48 ignored CDP's `Page.reload` completely after a while (no navigation within 90 s, no dialog, neither `beforeunload` handler cancels), so the bridge never got injected and attaching timed out twice. `location.reload()` from the page reloaded it at once | Verified live, fixed | `install_bridge` reloads from the page if no navigation has started 2 s after `Page.reload` (ready 0.4 s later) |
 | Hung reload fallback | If the bridge still isn't ready after 10 s, drop the CDP connection (which lets the page finish) and attach again once | Verified live (before the fix above) | `BridgeController::initialise` |
 | Attaching reloads the page | The adapter must run before the app's own scripts (store discovery), so attaching reloads the app. Playback is interrupted once. | Verified live | Runtime settles before using state |
 | After the reload | TIDAL first reports an empty queue, then restores its queue, then resumes playback by itself. All three look like local changes. | Verified live | `settled_state` waits until queue, current song and play state are stable |
@@ -35,10 +36,10 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
 | Leave dialog | A page that is playing can block its reload with a "Leave site?" dialog | Verified live (YouTube Music) | `install_bridge` confirms `beforeunload` dialogs |
 | Interruptions | Advertisements take over playback for a while | Verified live (YouTube Music) | Adapter sends `Interruption`; the runtime steps out and rejoins after |
 | Background timers | While the app's window is hidden and nothing plays, Chromium runs the page's timers once a second (a 25 ms timeout took 1000 ms). Polling loops slow down exactly while a track loads paused. | Verified live (TIDAL; Spotify, **also while playing**, as its sound is native; YouTube Music, where sound from the page lifts it, and selecting a song always starts sound). Hidden for more than 5 minutes, chained timers run **once a minute** (verified live, YouTube Music) | Waits react to the app's own signals, with a 250 ms fallback check: TIDAL store changes (`waitFor`, `holdUntil`); Spotify `update`/`queue_update` events (`watchPlayer`); YouTube Music store changes and `<video>` media events, caught in the capture phase (`watchPage`). Timers remain only for timeouts and stable periods, and the 150–180 ms debounce of local changes |
-| Resuming a new list part-way | A new current song starts at 0 in the session (`queue.replace`), but **Spotify resumes an album or playlist where it was left** (seen 48 s, 164 s and 176 s in). The others then played that far behind, and the next resync (a stale queue edit, a rejoin) threw Spotify back to the session's position: heard as the song restarting, again on every resync | Verified live (Spotify + YouTube Music session), fixed | After a local replace that changes the current song, the runtime compares the provider's position with the session's and publishes a seek, and its play state if that differs (`publish_actual_playback`). Covers any provider |
+| Resuming a new list part-way | A new current song starts at 0 in the session (`queue.replace`), but **Spotify resumes an album or playlist where it was left** (seen 48 s, 164 s and 176 s in). The others then played that far behind, and the next resync (a stale queue edit, a rejoin) threw Spotify back to the session's position: heard as the song restarting, again on every resync | Verified live (Spotify + YouTube Music session), fixed | After a local replace that changes the current song, the runtime compares the provider's position with the session's and attaches where the provider really is to the replace (protocol 2 `playback`, `with_actual_playback`). Covers any provider. Live: Spotify resumed at 1:33, YouTube Music started at 1:34.5, within 20 ms of it |
 | Joining an empty session | A provider that joins a session with an empty queue keeps its own queue. Its later changes (inserts, a play) refer to songs the session doesn't have: the server refused each, each refusal resynced to the empty session, and that **pauses**. Spotify starting a playlist was paused five times in a row and nothing was shared | Verified live (YouTube Music hosting after a reload, Spotify joining), fixed | While the session queue is empty, a local change publishes the provider's whole queue instead (`for_empty_session`), then its position and play state; inserts of entries the session already has are dropped |
-| Long new queues | Every adapter used to look up all songs of a new queue before starting the current one. Songs from another provider carry no ISRC, so each is a text search: four at a time (Spotify, YouTube Music) or **one at a time** (TIDAL) | Verified live, fixed | All three start the current song first and look up the rest after it. Live: YouTube Music in sync after 1.5 s (81 songs, the rest 15 s later), Spotify playing after 0.9 s (49 songs, the rest 5 s later), TIDAL playing after 2 s (81 songs, the rest 38 s later) |
-| Following a replace, then its seek | A follower applies session changes one at a time. When a provider shares a new list resumed part-way, the seek that follows the replace waits until the follower has looked up the whole list: YouTube Music played the 50-song list from 0 for 8 s, then jumped to Spotify's 1:35 | Verified live, open | Would need the replace to carry its position (protocol v2) |
+| Long new queues | Every adapter used to look up all songs of a new queue before starting the current one. Songs from another provider carry no ISRC, so each is a text search: four at a time (Spotify, YouTube Music) or **one at a time** (TIDAL) | Verified live, fixed | All three start the current song first and look up the rest meanwhile (the lookups don't touch the queue, so they run alongside the start and its hold), then add the rest. Live: YouTube Music in sync after 1.5 s (81 songs, the rest 15 s later), Spotify playing after 0.9 s (49 songs, the rest 5 s later), TIDAL playing after 2 s; TIDAL's whole 51-song rejoin now takes 6.8 s (was about 23 s), see TIDAL search |
+| Following a replace, then its seek | A follower applies session changes one at a time. When a provider shares a new list resumed part-way, the seek that follows the replace waits until the follower has looked up the whole list: YouTube Music played the 50-song list from 0 for 8 s, then jumped to Spotify's 1:35 | Verified live, fixed | Protocol 2: `queue.replace` carries the new current song's `playback` (position, play state), so no seek follows it |
 | Comparing after a remote change | The app's state keeps changing for about a second after an action, which can push a debounce past a fixed suppression window; the delayed comparison then sees our own change as the user's. **With throttled timers it always happens:** the debounce takes a second, so it always fires after the 300 ms window | Verified live (TIDAL, Spotify, YouTube Music) | Every adapter resets the comparison base to the state the remote change produced: TIDAL `rebaseLocalChanges`, Spotify and YouTube Music `rebase()` at the end of `asRemoteChange`. Removing it makes both new tests publish an echo. **The rebase is only as good as the wait before it:** Spotify's queue write used to count as done while the old items still showed, and an echo followed (verified live, fixed) |
 
 ## 2. TIDAL
@@ -119,6 +120,29 @@ The adapter was injected into the running app and driven directly, not through
   the state is less than 15 s old.
 
 **Search and lookups**
+- **Text search through the open API** (verified live, 2026-11-12): `getSearchResults`
+  of the open-API client, `GET /v2/searchResults?filter[query]=…&include=tracks,
+  tracks.artists,tracks.albums&explicitFilter=INCLUDE`, answers with TIDAL's ranking
+  (the `tracks` relationship, 20 per page) and every track's title, ISRC, length,
+  availability, artists and albums in one response, about 400 ms. **They run in
+  parallel:** 20 at once took 670 ms, and the right song ranked first for 19 of 20 (the
+  20th isn't on TIDAL). The adapter uses it, six at a time, and falls back to
+  `search/SEARCH_FOR` without it. `/searchResults/{id}/relationships/tracks` wants the
+  opaque ID `/searchResults` returns, not the query (400 `INVALID_RESOURCE_ID`).
+- **TIDAL's own UI doesn't use that endpoint**; its search page goes through
+  `search/SEARCH_FOR`.
+- **Metadata for the player** (`content/LOAD_SINGLE_MEDIA_ITEM`, `GET /v1/tracks/<id>`)
+  runs in parallel too: 20 in 267 ms. Not a bottleneck.
+- **How TIDAL plays a playlist** (from the sagas): `playQueue/ADD_TRACK_LIST_TO_PLAY_QUEUE`
+  `{ trackListName: "playlists/<id>", context, position: "now" }` uses the list's loaded
+  items if it has them (`ADD_ALREADY_LOADED_ITEMS_TO_QUEUE`), otherwise
+  `FETCH_FIRST_PAGE_AND_ADD_TO_QUEUE` loads one page (`content/LOAD_LIST_ITEMS_PAGE`)
+  and starts it, and `FETCH_REST_OF_THE_TRACKS_AND_ADD_TO_QUEUE` pages through the
+  rest in the background and appends it. That is the order the adapters now use. It
+  works on TIDAL IDs only, so it would help only with per-provider IDs (5.1).
+- **A hidden TIDAL's hold is the slow part now:** in a 51-song rejoin the lookups
+  waited 6.4 s for the current song's start and hold (timers run once a second while
+  hidden) before they ran alongside it. The rejoin took 6.8 s.
 - Only the latest `search/SEARCH_FOR` survives: a new search cancels one still in flight. Searches must run one at a time.
 - Results are at `content.trackLists["search/tracks/" + encodeURIComponent(query)].sorted.defaultSort.items`.
 - An empty result is `items: []` with `loading: false`. Anything else that's empty is still loading.
@@ -181,8 +205,10 @@ The adapter was injected into the running app and driven directly, not through
   after 2 s; the lookups took another 36 s. An empty session queue is CLEAR_QUEUE.
 - **Entry IDs live in the uids** (`pq__attune__<entryId>`). TIDAL saves its queue
   with them, so they survive a bridge reload.
-- **Lookups:** ISRCs in batches of 20 first (cached per ISRC), text search one at a
-  time for the rest. Titles are compared without "(feat. …)".
+- **Lookups:** ISRCs in batches of 20 first (cached per ISRC), then the open API's
+  text search six at a time (the title without "(feat. …)" and the main artist, then
+  the full title and all artists), or the app's search one at a time without it.
+  Titles are compared without "(feat. …)".
 - **No echoes, measured live:** after every remote change the comparison base for
   local changes is reset to the state that change produced (the store kept changing
   for about a second, which pushed the debounce past the 300 ms window). A position
@@ -199,8 +225,9 @@ The adapter was injected into the running app and driven directly, not through
    and duration. With an ISRC, TIDAL now finds the exact recording; without one (e.g.
    from Spotify, which has none) it falls back to text search. Per-provider IDs (5.1)
    would remove the lookup for same-provider groups.
-2. **Big queues without ISRCs** are still searched one song at a time (about 0.5 s
-   each while TIDAL plays, longer while it's hidden and silent).
+2. **Big queues without ISRCs** are searched six at a time through the open API (a
+   51-song rejoin took 6.8 s, most of it the current song's hold while hidden). Without
+   the open API (an older or newer TIDAL) it falls back to one at a time.
 3. **A paused join can be heard from 0 for a moment** when the session resumes, in
    the double-reload case above. Why the player sometimes loads twice isn't known.
 4. **Some edits still replace the whole queue:** inserting at the front, removing or
@@ -537,7 +564,7 @@ selecting another song 0.9–1.7 s.
 
 ## 5. Preventing these problems instead of patching them
 
-1. **Per-provider IDs in tracks.** Add an optional `providerIds: { tidal?: string, spotify?: string, youtube?: string }` to `TrackDescriptor` (protocol v2). Whoever has the track fills its own ID; same-provider clients skip search entirely, and others fill theirs in after a successful lookup. This fixes TIDAL problems 1 and 2 for same-provider groups and cuts search load in general. Unknown fields are dropped by v1 clients, hence v2.
+1. **Per-provider IDs in tracks.** Add an optional `providerIds: { tidal?: string, spotify?: string, youtube?: string }` to `TrackDescriptor` (a later protocol version; protocol 2 added only the replace's `playback`). Whoever has the track fills its own ID; same-provider clients skip search entirely, and others fill theirs in after a successful lookup. This fixes TIDAL problems 1 and 2 for same-provider groups and cuts search load in general. Unknown fields are dropped by v1 clients, hence v2.
 2. **Record real traces to build mocks.** A debug mode in the adapter that records every store action and state diff (or PlayerAPI event) with timestamps during a scripted live run (load a queue, pause, seek, skip, song end). Mocks built from these traces behave like the real app. The paused-join bug passed its first fix because the mock was "politer" than TIDAL.
 3. **Tag our own dispatches instead of time windows.** If the store lets us add a marker to actions (or we wrap `dispatch`), state changes caused by Attune can be told apart from the user's exactly, replacing the 300 ms and 5.5 s suppression windows. Partly done for TIDAL: the comparison base is reset after each remote change, and a position jump to where our last seek should land is recognised as ours. Wrapping `dispatch` alone can't do it there, as the app's sagas dispatch past it.
 4. **Read the clients' own code more.**

@@ -1,8 +1,9 @@
 mod common;
 
 use attune_protocol::{
-    ClientMessage, CreateSession, ErrorCode, JoinSession, OperationRequest, Participant,
-    ParticipantStatus, RejectCode, ServerMessage, SessionOperation, SessionSnapshot,
+    ClientMessage, CreateSession, ErrorCode, JoinSession, OperationRequest, PROTOCOL_VERSION,
+    Participant, ParticipantStatus, RejectCode, ReplacePlayback, ServerMessage, SessionOperation,
+    SessionSnapshot,
 };
 use common::{entry, hello, state};
 use serde::{Serialize, de::DeserializeOwned};
@@ -41,6 +42,7 @@ fn all_operations() -> Vec<(SessionOperation, &'static str)> {
             SessionOperation::QueueReplace {
                 entries: vec![entry("a"), entry("b")],
                 current_entry_id: Some("a".to_owned()),
+                playback: None,
             },
             "queue.replace",
         ),
@@ -278,7 +280,7 @@ fn handshake_identity_is_flattened_into_the_message() {
         serde_json::to_value(message).expect("serialize"),
         json!({
             "type": "session.join",
-            "protocolVersion": 1,
+            "protocolVersion": PROTOCOL_VERSION,
             "clientId": "b",
             "displayName": "User b",
             "provider": "tidal",
@@ -316,4 +318,38 @@ fn snapshot_has_no_client_origin_and_uses_revision() {
     assert!(json.get("originClientId").is_none());
     assert_eq!(json["state"]["currentEntryId"], "a");
     assert_eq!(json["state"]["playback"]["positionCapturedAtMs"], 1_000);
+}
+
+#[test]
+fn a_replace_carries_the_new_songs_playback_only_when_given() {
+    let with = SessionOperation::QueueReplace {
+        entries: vec![entry("e1")],
+        current_entry_id: Some("e1".to_owned()),
+        playback: Some(ReplacePlayback {
+            position_ms: 48_000,
+            is_playing: false,
+        }),
+    };
+    let value = serde_json::to_value(&with).expect("serialize");
+    assert_eq!(
+        value["playback"],
+        json!({ "positionMs": 48_000, "isPlaying": false })
+    );
+    assert_eq!(
+        serde_json::from_value::<SessionOperation>(value).expect("deserialize"),
+        with
+    );
+
+    // Without it (as protocol 1 sent it) the field is absent and reads back as None.
+    let without = json!({
+        "type": "queue.replace",
+        "entries": [serde_json::to_value(entry("e1")).unwrap()],
+        "currentEntryId": "e1",
+    });
+    let parsed: SessionOperation = serde_json::from_value(without.clone()).expect("deserialize");
+    assert!(matches!(
+        parsed,
+        SessionOperation::QueueReplace { playback: None, .. }
+    ));
+    assert_eq!(serde_json::to_value(parsed).unwrap(), without);
 }

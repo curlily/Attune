@@ -559,33 +559,15 @@
             return byIsrc.productId;
         }
 
-        const query = `${track.title} ${(track.artists ?? []).join(" ")}`.trim();
-        const ids = await searchTrackIds(query);
-        const state = store.getState();
-
-        const candidates = ids.map(value => {
-            const productId = typeof value === "object"
-                ? value.id ?? value.mediaItemId
-                : value;
-            if (productId == null) return null;
-
-            const item = getMediaItem(state, productId);
-            if (!item || item.streamReady === false) return null;
-
-            try {
-                return {
-                    productId: String(productId),
-                    track: toTrackDescriptor(item, productId),
-                };
-            } catch {
-                return null;
-            }
-        }).filter(Boolean);
-
-        const ranked = candidates
-            .map(candidate => ({ ...candidate, score: scoreCandidate(track, candidate) }))
-            .filter(candidate => candidate.score >= 0)
-            .sort((a, b) => b.score - a.score);
+        let ranked = [];
+        for (const query of searchQueries(track)) {
+            const candidates = await searchCandidates(query);
+            ranked = candidates
+                .map(candidate => ({ ...candidate, score: scoreCandidate(track, candidate) }))
+                .filter(candidate => candidate.score >= 0)
+                .sort((a, b) => b.score - a.score);
+            if (ranked.length) break;
+        }
 
         if (!ranked.length) {
             throw new TrackLookupError(`No matching TIDAL recording found for "${track.title}"`);
@@ -598,8 +580,126 @@
 
         const productId = ranked[0].productId;
         resolvedTrackCache.set(cacheKey, productId);
-        trackCache.set(productId, ranked[0].track);
+        // The open API's descriptor has no cover; the store's is read later.
+        if (ranked[0].fromStore) trackCache.set(productId, ranked[0].track);
         return productId;
+    }
+
+    /**
+     * Queries to try in turn: the title without "(feat. …)" and the main
+     * artist first, then the full title with every artist. Featured artists
+     * named twice threw YouTube Music's search off (verified live with "Get
+     * Lucky (feat. Pharrell Williams and Nile Rodgers)").
+     */
+    function searchQueries(track) {
+        const artists = (track.artists ?? []).filter(Boolean);
+        const bareTitle = String(track.title ?? "")
+            .replace(/\s*[([][^)\]]*\b(feat|ft|featuring|with)\b[^)\]]*[)\]]/gi, "")
+            .replace(/\s[-–]\s*(feat|ft|featuring)\b.*$/i, "")
+            .trim() || String(track.title ?? "");
+        return [...new Set([
+            `${bareTitle} ${artists.slice(0, 1).join(" ")}`.trim(),
+            `${track.title} ${artists.join(" ")}`.trim(),
+        ])];
+    }
+
+    /** Ranked, playable candidates for a text query. */
+    async function searchCandidates(query) {
+        if (openApi?.endpoints?.getSearchResults?.initiate) {
+            try {
+                return await searchOpenApi(query);
+            } catch (error) {
+                if (error instanceof TrackLookupError) throw error;
+                console.warn("[Attune] TIDAL open API search failed; using the app's search", error?.message);
+            }
+        }
+        return searchStore(query);
+    }
+
+    // The app's own search (`search/SEARCH_FOR`), one at a time.
+    async function searchStore(query) {
+        const ids = await searchTrackIds(query);
+        const state = store.getState();
+        return ids.map(value => {
+            const productId = typeof value === "object"
+                ? value.id ?? value.mediaItemId
+                : value;
+            if (productId == null) return null;
+
+            const item = getMediaItem(state, productId);
+            if (!item || item.streamReady === false) return null;
+
+            try {
+                return {
+                    productId: String(productId),
+                    track: toTrackDescriptor(item, productId),
+                    fromStore: true,
+                };
+            } catch {
+                return null;
+            }
+        }).filter(Boolean);
+    }
+
+    // -----------------------------------------------------------------
+    // Text search through TIDAL's open API (verified live, TIDAL 2.48)
+    // -----------------------------------------------------------------
+    //
+    // `GET /searchResults?filter[query]=…&include=tracks,tracks.artists,
+    // tracks.albums` answers with TIDAL's ranking (the `tracks` relationship,
+    // 20 per page) and every track's title, ISRC, length, availability,
+    // artists and albums, in about 400 ms. Unlike `search/SEARCH_FOR`,
+    // which cancels a search still in flight, these run in parallel: 20 at
+    // once took 670 ms, and the right song ranked first for 19 of 20 (the
+    // 20th isn't on TIDAL). `/searchResults/{query}/relationships/tracks`
+    // wants an opaque search ID, not the query (400 INVALID_RESOURCE_ID).
+    const OPEN_SEARCH_CONCURRENCY = 6;
+    let openSearchesRunning = 0;
+    const openSearchWaiting = [];
+
+    async function withOpenSearchSlot(run) {
+        while (openSearchesRunning >= OPEN_SEARCH_CONCURRENCY) {
+            await new Promise(resolve => openSearchWaiting.push(resolve));
+        }
+        openSearchesRunning += 1;
+        try {
+            return await run();
+        } finally {
+            openSearchesRunning -= 1;
+            openSearchWaiting.shift()?.();
+        }
+    }
+
+    function searchOpenApi(query) {
+        return withOpenSearchSlot(async () => {
+            const countryCode = store.getState()?.session?.countryCode;
+            const request = store.dispatch(openApi.endpoints.getSearchResults.initiate(
+                {
+                    countryCode,
+                    filter: { query },
+                    include: ["tracks", "tracks.artists", "tracks.albums"],
+                    explicitFilter: "INCLUDE",
+                },
+                { subscribe: false },
+            ));
+            const timeout = new Promise((_, reject) => setTimeout(
+                () => reject(new TrackLookupError(`TIDAL search timed out for "${query}"`)),
+                SEARCH_TIMEOUT_MS,
+            ));
+            const result = await Promise.race([request, timeout]);
+            if (result?.error) {
+                throw new Error(`TIDAL search failed: ${JSON.stringify(result.error).slice(0, 200)}`);
+            }
+            const document = result?.data;
+            const ranking = document?.data?.[0]?.relationships?.tracks?.data;
+            if (!Array.isArray(ranking)) throw new Error("TIDAL's search returned an unexpected response");
+            const tracks = (document.included ?? []).filter(item => item?.type === "tracks");
+            const byId = new Map(candidatesFromDocument({ data: tracks, included: document.included })
+                .map(candidate => [candidate.productId, candidate]));
+            return ranking
+                .map(link => byId.get(String(link.id)))
+                .filter(candidate => candidate?.streamable);
+        });
     }
 
     // Resolve every entry independently. Entries already in TIDAL's queue
@@ -1001,10 +1101,15 @@
             }]);
         }
 
+        // Look the rest up while the song starts: the hold below took 6 s
+        // with TIDAL hidden (verified live), and the lookups don't touch
+        // the queue.
+        const lookups = resolveEntries(orderedEntries.slice(1), known);
+        lookups.catch(() => {}); // awaited below; don't report it twice
         writeQueue([current]);
         if (playback) await startLoadedTrack(current.productId, playback, calledAt);
 
-        const upcoming = await resolveEntries(orderedEntries.slice(1), known);
+        const upcoming = await lookups;
         const failures = upcoming.filter(result => result.error);
         const found = upcoming.filter(result => !result.error);
         const missing = new Set(await ensureMediaItems(found.map(result => result.productId)));
@@ -1430,8 +1535,11 @@
                 const currentEntryId = operation.currentEntryId ?? operation.entries[0]?.entryId ?? null;
                 const playback = cloneState(currentState).playback;
                 if (currentEntryId !== currentState.currentEntryId) {
-                    playback.positionMs = 0;
-                    playback.isPlaying = true;
+                    // Protocol 2: where the new current song is (a list may
+                    // be resumed part-way); without it, from 0, playing.
+                    playback.positionMs = operation.playback?.positionMs ?? 0;
+                    playback.isPlaying = operation.playback ? Boolean(operation.playback.isPlaying) : true;
+                    playback.positionCapturedAtMs = Date.now();
                 }
                 return replaceQueue(operation.entries, currentEntryId, playback);
             }

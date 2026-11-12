@@ -931,6 +931,10 @@
         const [current] = await resolveEntries([entries[0]], known);
         if (current.error) throw trackUnavailableError([current]);
         const head = { entryId: current.entry.entryId, videoId: current.videoId };
+        // Look the rest up while the song starts; the lookups don't touch
+        // the queue.
+        const lookups = resolveEntries(entries.slice(1), known);
+        lookups.catch(() => {}); // awaited below; don't report it twice
 
         const queue = readQueue();
         const currentEntryId = queue.length ? entryIdFor(queue[0].key) : null;
@@ -951,7 +955,7 @@
         }
         await holdPlayback(head.videoId, playback, calledAt, started ? TRACK_START_TIMEOUT_MS : CHANGE_TIMEOUT_MS);
 
-        const upcoming = await resolveEntries(entries.slice(1), known);
+        const upcoming = await lookups;
         unavailable.push(...upcoming.filter(result => result.error).map(failure => failure.entry.entryId));
         const wanted = upcoming.filter(result => !result.error)
             .map(result => ({ entryId: result.entry.entryId, videoId: result.videoId }));
@@ -1019,7 +1023,12 @@
                     : entries.findIndex(entry => entry.entryId === currentEntryId);
                 if (start < 0) throw new Error(`Current queue entry was not found: ${currentEntryId}`);
                 const sameCurrent = currentEntryId != null && currentEntryId === state.currentEntryId;
-                return loadQueue(entries.slice(start), sameCurrent ? null : fromStart, calledAt);
+                // Protocol 2: where the new current song is (a list may be
+                // resumed part-way); without it, from 0, playing.
+                const startAt = operation.playback
+                    ? { isPlaying: Boolean(operation.playback.isPlaying), positionMs: operation.playback.positionMs ?? 0 }
+                    : fromStart;
+                return loadQueue(entries.slice(start), sameCurrent ? null : startAt, calledAt);
             }
 
             case "queue.insert": {

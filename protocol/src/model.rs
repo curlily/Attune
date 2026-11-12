@@ -69,6 +69,16 @@ pub struct SessionSnapshot {
     pub state: SessionMusicState,
 }
 
+/// Where the new current song of a `queue.replace` is (protocol 2). A
+/// provider may start a new list part-way: Spotify resumes an album or
+/// playlist where it was left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplacePlayback {
+    pub position_ms: u64,
+    pub is_playing: bool,
+}
+
 /// Absolute, provider-independent operations. They are intentionally not
 /// encoded as provider actions such as Redux action names or Spotify URIs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +88,10 @@ pub enum SessionOperation {
     QueueReplace {
         entries: Vec<QueueEntry>,
         current_entry_id: Option<String>,
+        /// Only used when the current entry changes; without it the new
+        /// current song starts at 0, playing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        playback: Option<ReplacePlayback>,
     },
     #[serde(rename = "queue.insert")]
     QueueInsert { entry: QueueEntry, index: usize },

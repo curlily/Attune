@@ -711,19 +711,39 @@ test("Store changes that go on after a remote change aren't published as the use
     assert.deepEqual(operations(events), [{ type: "playback.setPlaying", isPlaying: true }]);
 }));
 
-test("A new queue starts its current song before the rest is looked up", () => withAdapter(page => {
-    const fetch = page.network.fetch;
-    page.searchedAfter = new Map();
-    page.network.fetch = (path, params) => {
-        if (path === "/search") page.searchedAfter.set(params.query, page.calls.filter(call => call.startsWith("select:")).length);
-        return fetch(path, params);
-    };
-}, async ({ bridge, page }) => {
-    await loadSession(bridge, ["a", "b", "c"]);
+test("A new queue starts its current song before the rest is looked up", () => {
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    return withAdapter(page => {
+        const fetch = page.network.fetch;
+        page.network.fetch = async (path, params) => {
+            if (path === "/search" && !params.query.startsWith("Song A")) await held;
+            return fetch(path, params);
+        };
+    }, async ({ bridge, page }) => {
+        const loading = loadSession(bridge, ["a", "b", "c"]);
+        const deadline = Date.now() + 3_000;
+        while (!page.calls.includes("select:a") && Date.now() < deadline) await sleep(10);
+        assert.ok(page.calls.includes("select:a"), "the current song started while the rest was still being looked up");
+        release();
+        await loading;
+        assert.deepEqual(entryIds(bridge.getState()), ["session-a", "session-b", "session-c"]);
+    });
+});
 
-    assert.equal(page.calls.find(call => call.startsWith("select:")), "select:a");
-    for (const [query, selects] of page.searchedAfter) {
-        if (!query.startsWith("Song A")) assert.ok(selects >= 1, `"${query}" is looked up after the current song started`);
-    }
-    assert.deepEqual(entryIds(bridge.getState()), ["session-a", "session-b", "session-c"]);
+test("A replace with a new song starts it where the replace says (protocol 2)", () => withAdapter(async ({ bridge, page }) => {
+    await loadSession(bridge, ["a", "b"]);
+
+    await bridge.applyOperation({
+        type: "queue.replace",
+        entries: [entry("session-c", "c"), entry("session-a2", "a")],
+        currentEntryId: "session-c",
+        playback: { positionMs: 48_000, isPlaying: false },
+    });
+
+    const state = bridge.getState();
+    assert.equal(page.player.videoId, "c");
+    assert.equal(state.currentEntryId, "session-c");
+    assert.equal(state.playback.isPlaying, false);
+    assert.ok(Math.abs(state.playback.positionMs - 48_000) < 500, `position ${state.playback.positionMs}`);
 }));

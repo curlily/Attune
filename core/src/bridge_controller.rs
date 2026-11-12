@@ -9,8 +9,8 @@ use chromiumoxide::cdp::{
     browser_protocol::{
         log::{EnableParams as LogEnableParams, EventEntryAdded},
         page::{
-            DialogType, EnableParams as PageEnableParams, EventJavascriptDialogOpening,
-            HandleJavaScriptDialogParams, ReloadParams,
+            DialogType, EnableParams as PageEnableParams, EventFrameStartedLoading,
+            EventJavascriptDialogOpening, HandleJavaScriptDialogParams, ReloadParams,
         },
     },
     js_protocol::runtime::{
@@ -84,6 +84,8 @@ pub struct BridgeController {
 /// gives up early so the retry in [`BridgeController::initialise`] can start.
 const FIRST_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
+/// A reload that hasn't started navigating by then is retried from the page.
+const RELOAD_FALLBACK_AFTER: Duration = Duration::from_secs(2);
 
 impl BridgeController {
     pub async fn initialise(config: ProviderConfig) -> Result<Self> {
@@ -369,6 +371,10 @@ impl BridgeController {
             .await
             .map_err(cdp("subscribe to page dialog events"))?;
         let dialog_page = page.clone();
+        let mut loading_events = page
+            .event_listener::<EventFrameStartedLoading>()
+            .await
+            .map_err(cdp("subscribe to page loading events"))?;
 
         page.execute(AddBindingParams::new("__jamEvent"))
             .await
@@ -490,12 +496,38 @@ impl BridgeController {
 
         info!("Reload requested; waiting for bridge Ready");
         let deadline = tokio::time::Instant::now() + ready_timeout;
+        // Verified live (TIDAL 2.48): after a while TIDAL ignored
+        // `Page.reload` completely (no navigation within 90 s), while
+        // `location.reload()` from the page reloaded it at once. The init
+        // script runs either way.
+        let fallback_at = tokio::time::Instant::now() + RELOAD_FALLBACK_AFTER;
+        let mut navigating = false;
+        let mut fell_back = false;
 
         loop {
             tokio::select! {
                 _ = tokio::time::sleep_until(deadline) => {
                     event_task.abort();
                     return Err(Error::Timeout { context: "receive the bridge Ready event" });
+                }
+
+                event = loading_events.next(), if !navigating => {
+                    navigating = event.is_some();
+                    if event.is_none() {
+                        fell_back = true; // no events to go by; don't guess
+                    }
+                }
+
+                _ = tokio::time::sleep_until(fallback_at), if !navigating && !fell_back => {
+                    fell_back = true;
+                    warn!("The page ignored the reload; reloading it from the page instead");
+                    let reload = EvaluateParams::builder()
+                        .expression("setTimeout(() => location.reload(), 0)")
+                        .build()
+                        .map_err(|message| Error::BridgeReported { message })?;
+                    if let Err(error) = page.execute(reload).await {
+                        warn!(%error, "Could not reload the page from the page");
+                    }
                 }
 
 

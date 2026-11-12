@@ -438,7 +438,7 @@ async fn garbage_after_joining_gets_an_error_but_keeps_the_connection() {
     let mut socket = raw(&server).await;
     let join = serde_json::json!({
         "type": "session.join",
-        "protocolVersion": 1,
+        "protocolVersion": attune_protocol::PROTOCOL_VERSION,
         "clientId": "raw",
         "displayName": "Raw",
         "sessionId": a_start.credentials.code,

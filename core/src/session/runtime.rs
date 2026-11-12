@@ -52,8 +52,8 @@ use crate::{
         SessionEvent, SubmitOutcome,
     },
     protocol::{
-        Participant, ParticipantStatus, RejectCode, SessionMusicState, SessionOperation,
-        SessionSnapshot, state,
+        Participant, ParticipantStatus, RejectCode, ReplacePlayback, SessionMusicState,
+        SessionOperation, SessionSnapshot, state,
     },
     session::{
         bridge::ProviderBridge,
@@ -109,6 +109,26 @@ fn shift_position(
             is_playing: true,
             ..
         } => *position_ms = shift(*position_ms),
+        SessionOperation::QueueReplace {
+            entries,
+            current_entry_id,
+            playback:
+                Some(ReplacePlayback {
+                    position_ms,
+                    is_playing: true,
+                }),
+        } => {
+            // The new current song's length, from the replace itself.
+            let current = current_entry_id
+                .as_deref()
+                .and_then(|id| entries.iter().find(|entry| entry.entry_id == id))
+                .or(entries.first());
+            let shifted = position_ms.saturating_add(by_ms.min(MAX_CATCH_UP_MS));
+            *position_ms = match current.and_then(|entry| entry.track.duration_ms) {
+                Some(duration) => shifted.min(duration),
+                None => shifted,
+            };
+        }
         _ => {}
     }
     operation
@@ -990,7 +1010,7 @@ impl<B: ProviderBridge> Worker<B> {
                         entry: entry.clone(),
                         index,
                     })
-                    .unwrap_or_else(|| self.provider_queue_replace()),
+                    .unwrap_or_else(|| self.provider_queue_replace(None)),
             ),
             SessionOperation::QueueMove { entry_id, .. } if !self.unavailable.is_empty() => Some(
                 self.provider_index(entry_id)
@@ -998,11 +1018,11 @@ impl<B: ProviderBridge> Worker<B> {
                         entry_id: entry_id.clone(),
                         to_index,
                     })
-                    .unwrap_or_else(|| self.provider_queue_replace()),
+                    .unwrap_or_else(|| self.provider_queue_replace(None)),
             ),
             // Don't make the provider search again for entries it can't find.
-            SessionOperation::QueueReplace { .. } if !self.unavailable.is_empty() => {
-                Some(self.provider_queue_replace())
+            SessionOperation::QueueReplace { playback, .. } if !self.unavailable.is_empty() => {
+                Some(self.provider_queue_replace(*playback))
             }
             other => Some(other.clone()),
         }
@@ -1024,7 +1044,7 @@ impl<B: ProviderBridge> Worker<B> {
         )
     }
 
-    fn provider_queue_replace(&self) -> SessionOperation {
+    fn provider_queue_replace(&self, playback: Option<ReplacePlayback>) -> SessionOperation {
         SessionOperation::QueueReplace {
             entries: self
                 .mirror
@@ -1034,6 +1054,7 @@ impl<B: ProviderBridge> Worker<B> {
                 .cloned()
                 .collect(),
             current_entry_id: self.mirror.current_entry_id.clone(),
+            playback,
         }
     }
 
@@ -1081,14 +1102,8 @@ impl<B: ProviderBridge> Worker<B> {
                 return;
             }
         }
-        let previous_current = self.mirror.current_entry_id.clone();
-        let replaced = matches!(operation, SessionOperation::QueueReplace { .. });
-        if self.submit_local(operation).await
-            && replaced
-            && self.mirror.current_entry_id != previous_current
-        {
-            self.publish_actual_playback().await;
-        }
+        let operation = self.with_actual_playback(operation).await;
+        self.submit_local(operation).await;
     }
 
     /// While the session has nothing to play, what the provider plays
@@ -1116,44 +1131,46 @@ impl<B: ProviderBridge> Worker<B> {
         Some(SessionOperation::QueueReplace {
             entries,
             current_entry_id,
+            playback: None, // filled in by `with_actual_playback`
         })
     }
 
-    /// A new current song starts at 0 and playing in the session, but the
-    /// provider may differ: Spotify resumes an album or playlist part-way
+    /// A replace that changes the current song carries where the provider
+    /// really is in it (protocol 2). Without it the session starts the song
+    /// at 0, playing, but Spotify resumes an album or playlist part-way
     /// (verified live: 48 s and 164 s in), and a provider sharing its queue
-    /// into an empty session may be paused. Left alone, the others play
-    /// that far behind, and the next resync throws this provider back to
-    /// the session's position, which sounds like the song restarting.
-    async fn publish_actual_playback(&mut self) {
-        let Ok(local) = self.bridge.get_state().await else {
-            return;
+    /// into an empty session may be paused. The others then played that far
+    /// behind, and the next resync threw this provider back to the
+    /// session's position, which sounds like the song restarting. (A seek
+    /// sent after the replace reached the others only once they had looked
+    /// up the whole new list: 8 s for 50 songs on YouTube Music.)
+    async fn with_actual_playback(&self, operation: SessionOperation) -> SessionOperation {
+        let SessionOperation::QueueReplace {
+            entries,
+            current_entry_id,
+            playback: None,
+        } = operation
+        else {
+            return operation;
         };
-        let Some(entry_id) = local.current_entry_id.clone() else {
-            return;
-        };
-        if self.mirror.current_entry_id.as_ref() != Some(&entry_id) {
-            return;
+        let new_current = current_entry_id
+            .clone()
+            .or_else(|| entries.first().map(|entry| entry.entry_id.clone()));
+        let mut playback = None;
+        if new_current.is_some() && new_current != self.mirror.current_entry_id {
+            if let Ok(local) = self.bridge.get_state().await {
+                if local.current_entry_id == new_current {
+                    playback = Some(ReplacePlayback {
+                        position_ms: state::position_at(&local, now_ms()),
+                        is_playing: local.playback.is_playing,
+                    });
+                }
+            }
         }
-        let local_now = now_ms();
-        let here = state::position_at(&local, local_now);
-        let session = state::position_at(&self.mirror, self.clock().server_time(local_now));
-        if here.abs_diff(session) > state::POSITION_TOLERANCE_MS {
-            debug!(
-                here,
-                session, "Provider is elsewhere in the new song; publishing its position"
-            );
-            self.submit_local(SessionOperation::PlaybackSeek {
-                entry_id,
-                position_ms: here,
-            })
-            .await;
-        }
-        if local.playback.is_playing != self.mirror.playback.is_playing {
-            self.submit_local(SessionOperation::PlaybackSetPlaying {
-                is_playing: local.playback.is_playing,
-            })
-            .await;
+        SessionOperation::QueueReplace {
+            entries,
+            current_entry_id,
+            playback,
         }
     }
 
@@ -1212,6 +1229,7 @@ impl<B: ProviderBridge> Worker<B> {
             SessionOperation::QueueReplace {
                 entries,
                 current_entry_id,
+                playback,
             } => SessionOperation::QueueReplace {
                 entries: state::reinsert_unavailable(
                     &entries,
@@ -1219,6 +1237,7 @@ impl<B: ProviderBridge> Worker<B> {
                     &self.unavailable,
                 ),
                 current_entry_id,
+                playback,
             },
             // At song end the provider skips straight to the next song it
             // has. For the session, the song that ended is followed by the

@@ -12,8 +12,9 @@ use attune_core::{
         SessionEvent, SessionStart, SubmitOutcome,
     },
     protocol::{
-        ClientMessage, ErrorCode, ParticipantStatus, QueueEntry, RejectCode, ServerMessage,
-        SessionMusicState, SessionOperation as Op, SessionPlayback, TrackDescriptor, state,
+        ClientMessage, ErrorCode, PROTOCOL_VERSION, ParticipantStatus, QueueEntry, RejectCode,
+        ServerMessage, SessionMusicState, SessionOperation as Op, SessionPlayback, TrackDescriptor,
+        state,
     },
 };
 use support::TestServer;
@@ -166,7 +167,7 @@ async fn create_and_join_exchange_snapshots_and_participants() {
     // The handshake carried identity and version exactly once.
     match &server.received("b")[0] {
         ClientMessage::Join(join) => {
-            assert_eq!(join.hello.protocol_version, 1);
+            assert_eq!(join.hello.protocol_version, PROTOCOL_VERSION);
             assert_eq!(join.hello.client_id, "b");
             assert_eq!(join.session_id, credentials.code);
         }
@@ -299,6 +300,7 @@ async fn noop_and_stale_outcomes_are_reported() {
     let replace = Op::QueueReplace {
         entries: vec![entry("s1"), entry("new")],
         current_entry_id: Some("s1".to_owned()),
+        playback: None,
     };
     match a.submit_operation(replace, 0).await.expect("submit") {
         SubmitOutcome::Rejected {
@@ -445,6 +447,7 @@ async fn oversized_messages_are_refused_locally() {
     let huge = Op::QueueReplace {
         entries: (0..50).map(|i| entry(&format!("e{i}"))).collect(),
         current_entry_id: None,
+        playback: None,
     };
     assert!(matches!(
         a.submit_operation(huge, 0).await,

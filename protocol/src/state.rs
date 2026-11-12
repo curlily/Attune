@@ -155,9 +155,11 @@ pub fn stamp_added_by(
         SessionOperation::QueueReplace {
             entries,
             current_entry_id,
+            playback,
         } => SessionOperation::QueueReplace {
             entries: entries.into_iter().map(stamp).collect(),
             current_entry_id,
+            playback,
         },
         other => other,
     }
@@ -270,7 +272,8 @@ fn restart_at_front(state: &mut SessionMusicState) {
 /// Boundary semantics:
 /// - `queue.replace`: entries before `currentEntryId` are history and are
 ///   dropped. A missing `currentEntryId` means `entries[0]`. If the current
-///   entry changes, playback restarts at 0 and plays.
+///   entry changes, playback restarts at `playback` (position and play
+///   state), or at 0 and playing without it.
 /// - `queue.insert`: `index` must be `0..=len`. Inserting at 0 makes the new
 ///   entry current (position 0, play state unchanged).
 /// - `queue.remove`: removing the current entry makes the next one current at
@@ -293,6 +296,7 @@ pub fn apply(
         SessionOperation::QueueReplace {
             entries,
             current_entry_id,
+            playback,
         } => {
             let start = match current_entry_id {
                 None => 0,
@@ -306,6 +310,10 @@ pub fn apply(
                 if new_current != next.current_entry_id {
                     restart_at_front(&mut next);
                     next.playback.is_playing = true;
+                    if let Some(playback) = playback {
+                        next.playback.position_ms = playback.position_ms;
+                        next.playback.is_playing = playback.is_playing;
+                    }
                 }
             }
         }

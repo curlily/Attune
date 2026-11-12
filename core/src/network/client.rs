@@ -1227,10 +1227,10 @@ mod tests {
         ));
 
         let mut wrong_version = snapshot("s1");
-        wrong_version.protocol_version = 2;
+        wrong_version.protocol_version = 1;
         assert!(matches!(
             validate_snapshot(&wrong_version, "s1"),
-            Err(Error::UnsupportedProtocolVersion { found: 2 })
+            Err(Error::UnsupportedProtocolVersion { found: 1 })
         ));
 
         let mut invalid_state = snapshot("s1");
