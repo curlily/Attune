@@ -108,12 +108,17 @@
   .jam {
     display: grid;
     grid-template-rows: 1fr auto;
+    /* One column exactly as wide as the window. An `auto` column grows to
+       the longest unbroken line, such as a long title held on one line to
+       pan, and pushes everything past the right edge. */
+    grid-template-columns: minmax(0, 1fr);
     height: 100%;
   }
 
   .body {
     display: flex;
     flex-direction: column;
+    min-width: 0;
     min-height: 0;
     padding: 14px 14px 12px;
   }
