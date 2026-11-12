@@ -9,7 +9,7 @@ export interface ProviderColors {
 }
 
 export const PROVIDER_COLORS: Record<string, ProviderColors> = {
-  tidal: { accent: "#3fe6f2", strong: "#14c8d8", onAccent: "#031518" },
+  tidal: { accent: "#ffffff", strong: "#ededed", onAccent: "#000000" },
   spotify: { accent: "#1ed760", strong: "#1db954", onAccent: "#04130a" },
   youtubemusic: { accent: "#ff5266", strong: "#ff0033", onAccent: "#ffffff" },
 };

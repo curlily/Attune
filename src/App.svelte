@@ -35,13 +35,13 @@
   $effect(() => applyTheme(app.theme, app.connected));
 
   // Only the session view adapts to a shorter window; elsewhere the window
-  // keeps its full height.
+  // can't be resized at all (it starts that way, see tauri.conf.json).
   $effect(() => {
-    const min = app.screen === "jam" ? TINY_HEIGHT : FULL_HEIGHT;
-    getCurrentWindow()
-      .setMinSize(new LogicalSize(380, min))
-      .catch(() => {});
-    if (min > untrack(() => app.height)) void app.setHeight(min);
+    const inSession = app.screen === "jam";
+    const window = getCurrentWindow();
+    window.setMinSize(new LogicalSize(380, inSession ? TINY_HEIGHT : FULL_HEIGHT)).catch(() => {});
+    window.setResizable(inSession).catch(() => {});
+    if (!inSession && untrack(() => app.height) < FULL_HEIGHT) void app.setHeight(FULL_HEIGHT);
   });
 
   /** The window has no frame: this strip along the bottom resizes it. */
@@ -64,7 +64,7 @@
 {#if app.tiny}
   <Mini />
 {:else}
-  <div class="shell">
+  <div class="shell" in:fade={{ duration: 200 }}>
     <!-- No window frame: the header is where the window is dragged. -->
     <header data-tauri-drag-region>
       <span class="mark" aria-hidden="true" data-tauri-drag-region></span>
@@ -106,8 +106,8 @@
       >
         <Icon name="pin" label="Pin" />
       </button>
-      <button class="icon-btn" title="Hide to the tray" onclick={() => api.hideWindow()}>
-        <Icon name="x" label="Hide to the tray" />
+      <button class="icon-btn" title="Minimize to the tray" onclick={() => api.hideWindow()}>
+        <Icon name="minimize" label="Minimize to the tray" />
       </button>
     </header>
 

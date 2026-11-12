@@ -14,7 +14,8 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 use crate::state::AppState;
 
-/// Passed when Windows starts Attune: stay in the tray.
+/// Passed when Windows starts Attune: stay in the tray. Otherwise Attune
+/// opens as a normal window.
 const HIDDEN_ARG: &str = "--hidden";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -48,10 +49,7 @@ pub fn run() {
             app.manage(AppState::new(data_dir));
             app.manage(window::WindowState::default());
             app.manage(links::PendingJoin::default());
-            let tray = tray::create(app.handle())?;
-            if let Ok(Some(rect)) = tray.rect() {
-                window::remember_icon(app.handle(), rect);
-            }
+            tray::create(app.handle())?;
 
             // Links that reach the running app, and the one that started it.
             let handle = app.handle().clone();

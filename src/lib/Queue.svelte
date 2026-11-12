@@ -7,7 +7,7 @@
   import Marquee from "./Marquee.svelte";
   import Section from "./Section.svelte";
 
-  let { status }: { status: RuntimeStatus } = $props();
+  let { status, shown = true }: { status: RuntimeStatus; shown?: boolean } = $props();
 
   /** Row height in px; dragging maps pointer movement to positions with it. */
   const ROW = 42;
@@ -35,7 +35,7 @@
   /** The row under the pointer: its long title pans. */
   let hovered = $state<string | null>(null);
 
-  let shown = $derived(order.slice(0, SHOWN));
+  let visibleItems = $derived(order.slice(0, SHOWN));
 
   function startDrag(event: PointerEvent, item: QueueItem) {
     if (event.button !== 0) return;
@@ -127,12 +127,12 @@
   }
 </script>
 
-<Section id="queue" title="Up next" count={order.length} grow>
+<Section {shown} id="queue" title="Up next" count={order.length} grow>
   {#if order.length === 0}
     <p class="empty muted">Queue songs in {app.providerName} and everyone gets them.</p>
   {/if}
   <ol style:--row="{ROW}px">
-    {#each shown as item (item.entryId)}
+    {#each visibleItems as item (item.entryId)}
       {@const warning = warnings.get(item.entryId)}
       <li
         class:dragging={drag?.entryId === item.entryId}

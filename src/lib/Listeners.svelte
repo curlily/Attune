@@ -10,11 +10,11 @@
   import { participantBadge } from "./status";
   import { providerColors } from "./theme";
 
-  let { status }: { status: RuntimeStatus } = $props();
+  let { status, shown = true }: { status: RuntimeStatus; shown?: boolean } = $props();
 </script>
 
 <!-- Below the queue, scrolling once it would take more than about a third. -->
-<Section id="listeners" title="Listening" count={status.participants.length} maxHeight="36%">
+<Section {shown} id="listeners" title="Listening" count={status.participants.length} maxHeight="36%">
   <ul>
     {#each status.participants as person (person.clientId)}
       {@const badge = participantBadge(person)}

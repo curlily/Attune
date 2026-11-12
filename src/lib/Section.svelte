@@ -1,48 +1,34 @@
 <script lang="ts">
-  import { untrack, type Snippet } from "svelte";
+  import type { Snippet } from "svelte";
   import { slide } from "svelte/transition";
+  import { app, type SectionId } from "./app.svelte";
+  import { collapse } from "./collapse";
   import Icon from "./Icon.svelte";
 
-  // A titled part of the session view that can be folded away. Its content
-  // scrolls on its own when it doesn't fit, fading out at the bottom while
-  // there's more below. Folding is remembered per section.
+  // A titled part of the session view, below a divider. It can be folded to
+  // its title (remembered), and leaves altogether, animated, when the window
+  // gets too short for it (`shown`). Its content scrolls on its own when it
+  // doesn't fit, fading out at the bottom while there's more below.
   let {
     id,
     title,
     count,
+    shown = true,
     grow = false,
     maxHeight,
     children,
   }: {
-    id: string;
+    id: SectionId;
     title: string;
     count?: number;
+    shown?: boolean;
     /** Take the room that's left in the column. */
     grow?: boolean;
     maxHeight?: string;
     children: Snippet;
   } = $props();
 
-  let storageKey = $derived(`attune.section.${id}.collapsed`);
-  // Sections keep their id; read the remembered state once.
-  let collapsed = $state(untrack(() => read(storageKey)));
-
-  function read(key: string): boolean {
-    try {
-      return localStorage.getItem(key) === "1";
-    } catch {
-      return false;
-    }
-  }
-
-  function toggle() {
-    collapsed = !collapsed;
-    try {
-      localStorage.setItem(storageKey, collapsed ? "1" : "0");
-    } catch {
-      // Not remembered; still folds for now.
-    }
-  }
+  let collapsed = $derived(app.collapsed[id]);
 
   /** Fades the bottom edge while there's more content below it. */
   function fadeOverflow(node: HTMLElement) {
@@ -66,8 +52,9 @@
   }
 </script>
 
-<section class:grow={grow && !collapsed} style:max-height={maxHeight}>
-  <button class="head" aria-expanded={!collapsed} onclick={toggle}>
+{#if shown}
+<section class:grow={grow && !collapsed} style:max-height={maxHeight} transition:collapse>
+  <button class="head" aria-expanded={!collapsed} onclick={() => app.toggleSection(id)}>
     <span class="section-title">{title}{count !== undefined ? ` · ${count}` : ""}</span>
     <span class="chevron" class:collapsed><Icon name="chevron" size={14} /></span>
   </button>
@@ -77,6 +64,7 @@
     </div>
   {/if}
 </section>
+{/if}
 
 <style>
   section {
@@ -84,6 +72,10 @@
     flex-direction: column;
     flex: none;
     min-height: 0;
+    /* The divider above it. */
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
   }
   section.grow {
     flex: 1 1 0;

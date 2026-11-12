@@ -14,6 +14,8 @@ import {
 } from "./api";
 import { saveTheme, savedTheme, type ThemeChoice } from "./theme";
 
+export type SectionId = "queue" | "listeners";
+
 export type Screen = "loading" | "firstRun" | "connect" | "lobby" | "jam";
 export type Tone = "info" | "success" | "warning" | "error";
 
@@ -56,6 +58,11 @@ class App {
   theme = $state<ThemeChoice>(savedTheme());
   /** Take songs someone in the session can't play out of the queue. */
   autoRemove = $state(readFlag("attune.autoRemove"));
+  /** Session view sections folded to their title (remembered). */
+  collapsed = $state<Record<SectionId, boolean>>({
+    queue: readFlag("attune.section.queue.collapsed"),
+    listeners: readFlag("attune.section.listeners.collapsed"),
+  });
   /** Join code from a attune:// link, joined as soon as the lobby can. */
   linkCode = $state<string | null>(null);
   /** Bumped each time the window is shown, to replay the opening animation. */
@@ -115,6 +122,11 @@ class App {
     this.loaded = true;
     const link = await api.takeJoinLink().catch(() => null);
     if (link) this.#onJoinLink(link);
+  }
+
+  toggleSection(id: SectionId) {
+    this.collapsed[id] = !this.collapsed[id];
+    writeFlag(`attune.section.${id}.collapsed`, this.collapsed[id]);
   }
 
   setAutoRemove(on: boolean) {

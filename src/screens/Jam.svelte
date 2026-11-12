@@ -5,15 +5,48 @@
   import Listeners from "../lib/Listeners.svelte";
   import NowPlaying from "../lib/NowPlaying.svelte";
   import Queue from "../lib/Queue.svelte";
+  import { collapse } from "../lib/collapse";
 
   let status = $derived(app.status!);
   // Stepped out or broken: the main action is getting back in.
   let canResync = $derived(status.sync === "steppedOut" || status.sync === "error");
-  // A shorter window shows less: listeners go first, then the queue, then
-  // these buttons; below that App shows the tiny view.
-  let showListeners = $derived(app.height >= 520);
-  let showQueue = $derived(app.height >= 400);
-  let showFooter = $derived(app.height >= 290);
+  // A shorter window shows less: the listeners go first, then the queue,
+  // then these buttons; below that App shows the tiny view. Each goes when
+  // the room it needs runs out, counting folded sections as just a title.
+  const HEADER = 44;
+  const BODY_PADDING = 26;
+  const FOOTER = 55;
+  /** Divider, gap and title of a section. */
+  const SECTION = 52;
+  /** The part of SECTION above the divider. */
+  const SECTION_GAP = 14;
+  const QUEUE_ROW = 42;
+  const LISTENER_ROW = 32;
+  const EMPTY_QUEUE = 22;
+
+  let topHeight = $state(0);
+  let room = $derived(app.height - HEADER - BODY_PADDING - topHeight);
+  let showFooter = $derived(room >= FOOTER);
+  let left = $derived(room - FOOTER);
+  let upcoming = $derived(status.queue.length - 1);
+
+  /** Room the queue needs to show `rows` songs. */
+  function queueNeeds(rows: number): number {
+    if (app.collapsed.queue) return SECTION;
+    return SECTION + (upcoming === 0 ? EMPTY_QUEUE : Math.min(upcoming, rows) * QUEUE_ROW);
+  }
+  let listenersNeed = $derived.by(() => {
+    if (app.collapsed.listeners) return SECTION;
+    // They stop growing at 36% of the column, then scroll. The cap leaves
+    // out the gap above the divider.
+    const column = app.height - HEADER - BODY_PADDING - FOOTER;
+    const box = SECTION - SECTION_GAP + status.participants.length * LISTENER_ROW;
+    return SECTION_GAP + Math.min(box, column * 0.36);
+  });
+  // The queue stays down to one song; the listeners leave while it still
+  // has three.
+  let showQueue = $derived(showFooter && left >= queueNeeds(1));
+  let showListeners = $derived(showQueue && left >= queueNeeds(3) + listenersNeed);
   let busy = $state(false);
   let confirmLeave = $state(false);
   let confirmTimer: ReturnType<typeof setTimeout> | undefined;
@@ -44,18 +77,14 @@
 {#if status}
   <div class="jam">
     <div class="body">
-      <NowPlaying {status} />
-      {#if showQueue}
-        <div class="divider"></div>
-        <Queue {status} />
-      {/if}
-      {#if showListeners}
-        <div class="divider"></div>
-        <Listeners {status} />
-      {/if}
+      <div class="top" bind:clientHeight={topHeight}>
+        <NowPlaying {status} />
+      </div>
+      <Queue {status} shown={showQueue} />
+      <Listeners {status} shown={showListeners} />
     </div>
     {#if showFooter}
-    <footer>
+    <footer transition:collapse>
       <button
         class="btn"
         class:primary={canResync}
@@ -89,11 +118,8 @@
     padding: 14px 14px 12px;
   }
 
-  .divider {
+  .top {
     flex: none;
-    height: 1px;
-    margin: 14px 0 12px;
-    background: var(--border);
   }
 
   footer {

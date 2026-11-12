@@ -103,11 +103,10 @@ pub fn create<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
-                rect,
                 ..
             } = event
             {
-                window::toggle_from_tray(tray.app_handle(), rect);
+                window::toggle_from_tray(tray.app_handle());
             }
         })
         .build(app)?;
