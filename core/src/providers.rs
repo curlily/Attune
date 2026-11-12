@@ -12,7 +12,7 @@ const SPOTIFY_CDP_PORT: u16 = 9223;
 const YOUTUBE_MUSIC_CDP_PORT: u16 = 9224;
 
 /// Overrides where the browser profile for YouTube Music is kept.
-const YOUTUBE_MUSIC_PROFILE_ENV: &str = "MYJAM_YOUTUBE_MUSIC_PROFILE";
+const YOUTUBE_MUSIC_PROFILE_ENV: &str = "ATTUNE_YOUTUBE_MUSIC_PROFILE";
 
 fn env_dir(var: &'static str) -> Result<PathBuf> {
     std::env::var_os(var)
@@ -50,7 +50,7 @@ pub fn youtube_music() -> Result<ProviderConfig> {
     let profile_dir = match std::env::var_os(YOUTUBE_MUSIC_PROFILE_ENV) {
         Some(dir) => PathBuf::from(dir),
         None => env_dir("LOCALAPPDATA")?
-            .join("MyJam")
+            .join("Attune")
             .join("YouTubeMusicProfile"),
     };
     Ok(ProviderConfig {

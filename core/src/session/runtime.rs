@@ -145,7 +145,7 @@ async fn settled_state<B: ProviderBridge>(bridge: &B) -> Result<SessionMusicStat
     }
 }
 
-/// A queue change made in MyJam's own UI. Deliberately only queue edits:
+/// A queue change made in Attune's own UI. Deliberately only queue edits:
 /// playback is controlled in the music client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueueEdit {
@@ -336,7 +336,7 @@ impl SessionRuntime {
         response.await.map_err(|_| Error::SessionClosed)?
     }
 
-    /// Stop without leaving (the seat is kept for a rejoin, e.g. when MyJam
+    /// Stop without leaving (the seat is kept for a rejoin, e.g. when Attune
     /// quits). Waits until the provider's settings are restored and the
     /// connection is closed.
     pub async fn close(self) {

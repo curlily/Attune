@@ -1,7 +1,7 @@
 //! User settings and the last session, stored as JSON in the app data folder.
 //!
 //! `settings.json` holds preferences; `rejoin.json` holds what is needed to
-//! take the seat back after MyJam restarts (it contains the rejoin secret,
+//! take the seat back after Attune restarts (it contains the rejoin secret,
 //! so it is kept separate, never sent to the UI and deleted when the session
 //! is over). Both are written atomically (write a temp file, then rename),
 //! so a crash mid-write never leaves a half-written file.
@@ -11,13 +11,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use jam_core::{network::new_client_id, protocol::MAX_DISPLAY_NAME_CHARS, structs::ProviderId};
+use attune_core::{network::new_client_id, protocol::MAX_DISPLAY_NAME_CHARS, structs::ProviderId};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tracing::warn;
 
 use crate::error::AppError;
 
-/// The relay MyJam connects to unless the user picks another.
+/// The relay Attune connects to unless the user picks another.
 pub const DEFAULT_SERVER_URL: &str = "ws://relay-host:8787/ws";
 /// Upper end of the listening offset setting.
 pub const MAX_LISTENING_OFFSET_MS: u32 = 1_000;
@@ -35,7 +35,7 @@ pub struct Settings {
     pub last_provider: Option<ProviderId>,
     /// Play this far behind the group (for voice-chat sing-alongs).
     pub listening_offset_ms: u32,
-    /// Identifies this installation to the server, so a restarted MyJam can
+    /// Identifies this installation to the server, so a restarted Attune can
     /// take its old seat back. Not secret: everyone in a session sees it.
     pub client_id: String,
 }
@@ -201,7 +201,7 @@ mod tests {
     use super::*;
 
     fn store() -> (Store, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("myjam-settings-{}", new_client_id()));
+        let dir = std::env::temp_dir().join(format!("attune-settings-{}", new_client_id()));
         (Store::new(dir.clone()), dir)
     }
 

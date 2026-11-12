@@ -1,10 +1,10 @@
 mod common;
 
-use common::{entry, hello, state};
-use jam_protocol::{
+use attune_protocol::{
     ClientMessage, CreateSession, ErrorCode, JoinSession, OperationRequest, Participant,
     ParticipantStatus, RejectCode, ServerMessage, SessionOperation, SessionSnapshot,
 };
+use common::{entry, hello, state};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 

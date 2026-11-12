@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use crate::{error::AppError, state::AppState};
-use jam_core::{
+use attune_core::{
     bridge_controller::{open_sign_in_window, BridgeController},
     detect::{detect_providers, provider_config, ProviderAvailability},
     protocol::SessionMusicState,
@@ -25,7 +25,7 @@ pub(crate) async fn connected_controller(
         .lock()
         .await
         .clone()
-        .ok_or_else(|| jam_core::Error::NotConnected.into())
+        .ok_or_else(|| attune_core::Error::NotConnected.into())
 }
 
 /// Connect one provider and remember it for next time. The same mutex guard
@@ -38,7 +38,7 @@ pub(crate) async fn connect(
 ) -> Result<(), AppError> {
     let mut controller_slot = state.controller.lock().await;
     if controller_slot.is_some() {
-        return Err(jam_core::Error::AlreadyConnected.into());
+        return Err(attune_core::Error::AlreadyConnected.into());
     }
     let controller = BridgeController::initialise(provider_config(id)?).await?;
     *controller_slot = Some(Arc::new(controller));
@@ -100,7 +100,7 @@ pub async fn get_providers(state: State<'_, AppState>) -> Result<ProviderOvervie
     })
 }
 
-/// Connect a music app. If it runs without MyJam's debug port it is
+/// Connect a music app. If it runs without Attune's debug port it is
 /// restarted (interrupting playback once); if it isn't running it is
 /// started. The UI asks the user before calling this in those cases.
 #[tauri::command]
@@ -113,7 +113,7 @@ pub async fn connect_provider(
 }
 
 /// Open a browser-based music service in an ordinary window so the user
-/// can sign in. Needed once: Google refuses sign-ins in the window MyJam
+/// can sign in. Needed once: Google refuses sign-ins in the window Attune
 /// connects to. The user closes it again before connecting.
 #[tauri::command]
 pub async fn open_provider_sign_in(id: ProviderId) -> Result<(), AppError> {

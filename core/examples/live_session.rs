@@ -1,6 +1,6 @@
 //! Live end-to-end check: a real provider in a real session.
 //!
-//!     cargo run -p jam-core --example live_session -- tidal ws://host:8787/ws
+//!     cargo run -p attune-core --example live_session -- tidal ws://host:8787/ws
 //!
 //! Attaches to the running provider and creates a session through
 //! `SessionRuntime` (the app's code path). A scripted headless participant
@@ -10,7 +10,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use jam_core::{
+use attune_core::{
     bridge_controller::BridgeController,
     network::{SessionClient, SessionClientConfig, SessionEvent, SubmitOutcome, new_client_id},
     protocol::{QueueEntry, SessionMusicState, SessionOperation, TrackDescriptor},
@@ -87,7 +87,7 @@ impl Peer {
                 SessionEvent::Participants(participants) => {
                     for p in participants {
                         if !p.unavailable_entry_ids.is_empty()
-                            || p.status != jam_core::protocol::ParticipantStatus::Synced
+                            || p.status != attune_core::protocol::ParticipantStatus::Synced
                         {
                             println!(
                                 "    participant {} status={:?} unavailable={:?}",
@@ -142,11 +142,9 @@ async fn step(
 #[tokio::main]
 async fn main() -> Outcome {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| {
-                "jam_core::session=info,warn,chromiumoxide::handler=error".into()
-            }),
-        )
+        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| {
+            "attune_core::session=info,warn,chromiumoxide::handler=error".into()
+        }))
         .with_writer(std::io::stderr)
         .init();
 

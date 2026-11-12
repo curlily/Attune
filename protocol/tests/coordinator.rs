@@ -1,12 +1,12 @@
 mod common;
 
-use common::{entry, hello, ids, state};
-use jam_protocol::{
+use attune_protocol::{
     ClientMessage, CreateSession, ErrorCode, JoinSession, OperationRequest, ParticipantStatus,
     RejectCode, ServerMessage, SessionMusicState, SessionOperation as Op,
     coordinator::{Outbound, Recipient, SessionCoordinator},
     state,
 };
+use common::{entry, hello, ids, state};
 
 const SESSION: &str = "KWPZ";
 const SECRET_A: &str = "secret-of-a";
@@ -274,7 +274,7 @@ fn time_ping_is_answered_with_the_server_clock() {
 
 #[test]
 fn join_codes_are_normalized() {
-    use jam_protocol::normalize_join_code;
+    use attune_protocol::normalize_join_code;
     assert_eq!(normalize_join_code(" kwpz "), Some("KWPZ".to_owned()));
     // Wrong length, look-alike letters, digits.
     for bad in ["KWP", "KWPZA", "KWPO", "KWP1", "KW Z", ""] {

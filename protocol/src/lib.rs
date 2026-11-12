@@ -1,6 +1,6 @@
-//! Provider-independent MyJam session protocol.
+//! Provider-independent Attune session protocol.
 //!
-//! Shared by the desktop client (`jam-core`) and the relay server. Contains no
+//! Shared by the desktop client (`attune-core`) and the relay server. Contains no
 //! I/O: models, wire messages, pure state transitions and the per-session
 //! coordinator that decides which operations are accepted.
 //!

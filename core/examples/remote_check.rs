@@ -1,6 +1,6 @@
 //! Smoke test against a deployed relay with two real clients.
 //!
-//!     cargo run -p jam-core --example remote_check -- ws://host:8787/ws
+//!     cargo run -p attune-core --example remote_check -- ws://host:8787/ws
 //!
 //! Checks create/join, an operation round trip (with latency), the
 //! skip-what-nobody-can-play rule, and leaving. Prints a line per step and
@@ -8,7 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-use jam_core::{
+use attune_core::{
     network::{SessionClient, SessionClientConfig, SessionEvent, SubmitOutcome, new_client_id},
     protocol::{QueueEntry, SessionMusicState, SessionOperation, SessionPlayback, TrackDescriptor},
 };

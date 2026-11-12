@@ -2,8 +2,7 @@
 
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
-use jam_core::{
+use attune_core::{
     Error,
     network::{
         JoinCredentials, ReconnectPolicy, SessionClient, SessionClientConfig, SessionEvent,
@@ -14,7 +13,8 @@ use jam_core::{
         SessionOperation as Op, SessionPlayback, TrackDescriptor,
     },
 };
-use jam_server::{ServerConfig, serve};
+use attune_server::{ServerConfig, serve};
+use futures_util::{SinkExt, StreamExt};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -110,7 +110,7 @@ async fn wait_for(
 }
 
 fn participants_where(
-    predicate: impl Fn(&[jam_core::protocol::Participant]) -> bool,
+    predicate: impl Fn(&[attune_core::protocol::Participant]) -> bool,
 ) -> impl Fn(&SessionEvent) -> bool {
     move |event| matches!(event, SessionEvent::Participants(p) if predicate(p))
 }

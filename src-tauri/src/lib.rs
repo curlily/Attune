@@ -14,7 +14,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 use crate::state::AppState;
 
-/// Passed when Windows starts MyJam: stay in the tray.
+/// Passed when Windows starts Attune: stay in the tray.
 const HIDDEN_ARG: &str = "--hidden";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -24,13 +24,13 @@ pub fn run() {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
                 // chromiumoxide 0.9 warns on every CDP message it cannot
                 // parse from newer Chromium builds; those are harmless.
-                "warn,jam_core=debug,chromiumoxide::handler=error".into()
+                "warn,attune_core=debug,chromiumoxide::handler=error".into()
             }),
         )
         .init();
 
     tauri::Builder::default()
-        // First, so a second launch (e.g. from a myjam:// link) is handed to
+        // First, so a second launch (e.g. from a attune:// link) is handed to
         // the running copy before anything else starts.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             window::show(app);
@@ -111,7 +111,7 @@ pub fn run() {
 
 /// On quit, stop the session without leaving (so it can be rejoined) and
 /// give the music client its shuffle/repeat/autoplay settings back. Bounded,
-/// so a stuck client can't keep MyJam from exiting.
+/// so a stuck client can't keep Attune from exiting.
 fn close_session(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
     tauri::async_runtime::block_on(async {

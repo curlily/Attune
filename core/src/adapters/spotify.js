@@ -1,5 +1,5 @@
 /*
- * MyJam adapter for Spotify Desktop.
+ * Attune adapter for Spotify Desktop.
  *
  * This script runs inside Spotify's renderer. All Spotify implementation
  * details stay here; Rust only talks to the shared bridge contract.
@@ -10,7 +10,7 @@
 (async () => {
     "use strict";
 
-    const BRIDGE_KEY = "__MYJAM_BRIDGE_V1__";
+    const BRIDGE_KEY = "__ATTUNE_BRIDGE_V1__";
     const BRIDGE_VERSION = 1;
     const EVENT_BINDING = "__jamEvent";
     const PLATFORM_TIMEOUT_MS = 30_000;
@@ -48,7 +48,7 @@
     // Queue writes with an outdated revision are refused; read again and retry.
     const QUEUE_WRITE_ATTEMPTS = 4;
     const RECENT_EVENT_LIMIT = 200;
-    const PLAY_ORIGIN = { featureIdentifier: "myjam", referrerIdentifier: "myjam" };
+    const PLAY_ORIGIN = { featureIdentifier: "attune", referrerIdentifier: "attune" };
     // Fallback for the `searchTracks` query if it can't be read from
     // Spotify's own code (Spotify 1.3.8).
     const SEARCH_TRACKS_HASH = "b02683192a98dde7966b5e6655a79eeb62713eab703eda9902c932818dd52751";
@@ -432,11 +432,11 @@
     // - "queue": added by the user ("Next in queue"),
     // - "context": the rest of the playlist or album being played,
     // - "autoplay": recommendations after the context ends.
-    // MyJam's queue is the current track plus the queue and context items.
+    // Attune's queue is the current track plus the queue and context items.
     // Autoplay items are left out: Spotify regenerates them at will, and
     // autoplay is switched off for the length of a session.
 
-    // Spotify identifies each queue occurrence by a `uid`; MyJam entry IDs
+    // Spotify identifies each queue occurrence by a `uid`; Attune entry IDs
     // are mapped to those.
     const entryIdByUid = new Map();
     // When the queue runs out, Spotify returns to the track its context
@@ -819,7 +819,7 @@
 
     function applySnapshot(nextState) {
         if (!nextState || !Array.isArray(nextState.queue) || !nextState.playback) {
-            throw new TypeError("Invalid MyJam music state");
+            throw new TypeError("Invalid Attune music state");
         }
         const calledAt = Date.now();
         return asRemoteChange(() => {
@@ -835,7 +835,7 @@
 
     function applyOperation(operation) {
         if (!operation || typeof operation.type !== "string") {
-            throw new TypeError("Invalid MyJam operation");
+            throw new TypeError("Invalid Attune operation");
         }
         const calledAt = Date.now();
         return asRemoteChange(() => applyOperationNow(operation, calledAt));
@@ -936,7 +936,7 @@
             }
 
             default:
-                throw new Error(`Unsupported MyJam operation: ${operation.type}`);
+                throw new Error(`Unsupported Attune operation: ${operation.type}`);
         }
     }
 
@@ -989,7 +989,7 @@
 
     /**
      * Turn off what a session can't follow: shuffle and repeat (they change
-     * what plays next behind MyJam's back) and autoplay (it adds
+     * what plays next behind Attune's back) and autoplay (it adds
      * recommendations after the queue). Returns the user's settings, for
      * `restoreAfterSession`.
      */
@@ -1015,7 +1015,7 @@
                 try {
                     await action();
                 } catch (error) {
-                    console.warn("[MyJam] Spotify refused a setting change", error);
+                    console.warn("[Attune] Spotify refused a setting change", error);
                 }
             };
             if (previous.autoPlay === true) {
@@ -1047,7 +1047,7 @@
                 try {
                     await action();
                 } catch (error) {
-                    console.warn("[MyJam] Spotify refused a setting change", error);
+                    console.warn("[Attune] Spotify refused a setting change", error);
                 }
             };
             if (previous.autoPlay === true) await attempt(() => getSettings()?.autoPlay?.setValue?.(true));
@@ -1325,7 +1325,7 @@
         if (recentEvents.length > RECENT_EVENT_LIMIT) recentEvents.shift();
 
         if (typeof window[EVENT_BINDING] !== "function") {
-            console.warn("[MyJam] CDP event binding is unavailable", type);
+            console.warn("[Attune] CDP event binding is unavailable", type);
             return;
         }
         window[EVENT_BINDING](JSON.stringify(event));
@@ -1342,7 +1342,7 @@
         subscribe();
         bridge.ready = true;
         sendEvent("Ready");
-        console.info("[MyJam] Spotify adapter ready");
+        console.info("[Attune] Spotify adapter ready");
     }
 
     async function dispose() {
@@ -1408,7 +1408,7 @@
     try {
         await initialise();
     } catch (error) {
-        console.error("[MyJam] Spotify adapter initialization failed", error);
+        console.error("[Attune] Spotify adapter initialization failed", error);
         sendEvent("Error", error?.message ?? String(error));
     }
 

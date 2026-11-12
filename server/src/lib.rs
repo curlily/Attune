@@ -1,8 +1,8 @@
-//! MyJam session relay.
+//! Attune session relay.
 //!
 //! A small WebSocket server that keeps sessions in memory and delegates every
 //! decision (sequencing, acceptance, participants, skipping unplayable songs)
-//! to `jam_protocol::coordinator::SessionCoordinator`. This crate only
+//! to `attune_protocol::coordinator::SessionCoordinator`. This crate only
 //! accepts connections, routes messages and enforces resource limits.
 //!
 //! Endpoints:

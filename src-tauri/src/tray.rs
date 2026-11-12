@@ -1,4 +1,4 @@
-//! Tray icon: the MyJam mark with a status dot, and a small menu.
+//! Tray icon: the Attune mark with a status dot, and a small menu.
 //!
 //! Left click shows or hides the widget next to the icon. The dot tells the
 //! state at a glance without opening anything: green in sync, amber catching
@@ -6,7 +6,7 @@
 
 use std::sync::Mutex;
 
-use jam_core::session::SyncState;
+use attune_core::session::SyncState;
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -55,11 +55,11 @@ impl TrayStatus {
 
     fn tooltip(self) -> &'static str {
         match self {
-            Self::Idle => "MyJam",
-            Self::Synced => "MyJam: in sync",
-            Self::Busy => "MyJam: catching up",
-            Self::SteppedOut => "MyJam: stepped out",
-            Self::Error => "MyJam: out of sync",
+            Self::Idle => "Attune",
+            Self::Synced => "Attune: in sync",
+            Self::Busy => "Attune: catching up",
+            Self::SteppedOut => "Attune: stepped out",
+            Self::Error => "Attune: out of sync",
         }
     }
 }
@@ -72,10 +72,10 @@ pub struct TrayMenu<R: Runtime> {
 }
 
 pub fn create<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
-    let show = MenuItem::with_id(app, "show", "Show MyJam", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", "Show Attune", true, None::<&str>)?;
     let follow = MenuItem::with_id(app, "follow", "Step out", false, None::<&str>)?;
     let leave = MenuItem::with_id(app, "leave", "Leave the jam", false, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit MyJam", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Attune", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
         &[
@@ -166,7 +166,7 @@ fn icon(status: TrayStatus) -> Image<'static> {
     Image::new_owned(draw_icon(ICON_SIZE, status.dot()), ICON_SIZE, ICON_SIZE)
 }
 
-/// The MyJam mark (a rounded square with a violet sweep and a hole, as in the
+/// The Attune mark (a rounded square with a violet sweep and a hole, as in the
 /// app header) with an optional status dot, as RGBA.
 pub fn draw_icon(size: u32, dot: Option<[u8; 3]>) -> Vec<u8> {
     let s = size as f32;
@@ -256,11 +256,11 @@ mod tests {
 #[cfg(test)]
 mod preview {
     /// Writes the icons as raw RGBA for a visual check:
-    /// `MYJAM_ICON_DUMP=<dir> cargo test -p jam dump_icons -- --ignored`.
+    /// `ATTUNE_ICON_DUMP=<dir> cargo test -p attune dump_icons -- --ignored`.
     #[test]
     #[ignore]
     fn dump_icons() {
-        let dir = std::env::var("MYJAM_ICON_DUMP").expect("MYJAM_ICON_DUMP");
+        let dir = std::env::var("ATTUNE_ICON_DUMP").expect("ATTUNE_ICON_DUMP");
         for (name, status) in [
             ("idle", super::TrayStatus::Idle),
             ("synced", super::TrayStatus::Synced),

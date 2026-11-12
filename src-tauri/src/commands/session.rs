@@ -7,7 +7,7 @@
 //!
 //! The server address, display name and client ID come from the settings.
 //! After a successful create or join the seat is saved (`rejoin.json`), so
-//! a restarted MyJam can offer to rejoin; it is forgotten once the session
+//! a restarted Attune can offer to rejoin; it is forgotten once the session
 //! is over for this client.
 
 use serde::Serialize;
@@ -22,7 +22,7 @@ use crate::{
     state::AppState,
     tray,
 };
-use jam_core::{
+use attune_core::{
     network::{JoinCredentials, SessionClientConfig},
     protocol::ErrorCode,
     session::{Notice, QueueEdit, RuntimeStatus, SessionRuntime, SyncState},
@@ -66,7 +66,7 @@ fn forward_events(app: AppHandle, store: Store, runtime: &SessionRuntime) {
             match notices.recv().await {
                 Ok(notice) => {
                     // Left, or the server no longer has the session. (Quitting
-                    // MyJam sends no notice, so the seat stays saved then.)
+                    // Attune sends no notice, so the seat stays saved then.)
                     if matches!(notice, Notice::Ended { .. }) {
                         store.clear_rejoin();
                     }
@@ -115,7 +115,7 @@ async fn start(app: AppHandle, state: &AppState, entry: Entry) -> Result<Session
                     // offer it again.
                     if matches!(
                         error,
-                        jam_core::Error::Remote {
+                        attune_core::Error::Remote {
                             code: ErrorCode::InvalidCredentials,
                             ..
                         }
@@ -167,7 +167,7 @@ pub async fn join_session(
     start(app, &state, Entry::Join(credentials)).await
 }
 
-/// The code of a session MyJam was in when it last closed, if any.
+/// The code of a session Attune was in when it last closed, if any.
 #[tauri::command]
 pub fn get_rejoin_offer(state: State<'_, AppState>) -> Option<String> {
     state.store.load_rejoin().map(|saved| saved.code)

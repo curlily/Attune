@@ -70,7 +70,7 @@
 
     <label class="label" for="server">Server address</label>
     <input id="server" class="field mono" bind:value={serverUrl} autocomplete="off" spellcheck="false" />
-    <p class="hint">Change this only if you run your own MyJam server.</p>
+    <p class="hint">Change this only if you run your own Attune server.</p>
 
     {#if error}<p class="error-text" transition:slide={{ duration: 160 }}>{error}</p>{/if}
 
@@ -90,7 +90,7 @@
   >
     <span>
       <span class="switch-label">Start with Windows</span>
-      <span class="hint">MyJam waits in the tray until you need it.</span>
+      <span class="hint">Attune waits in the tray until you need it.</span>
     </span>
     <span class="switch" class:on={autostart === true}><span></span></span>
   </button>

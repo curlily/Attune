@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  // 24×24 outline icons, drawn for MyJam. Each entry is a list of SVG path
+  // 24×24 outline icons, drawn for Attune. Each entry is a list of SVG path
   // strings stroked with the current text colour.
   const ICONS = {
     sliders: ["M4 7h10", "M18 7h2", "M4 17h4", "M12 17h8", "M16 5v4", "M10 15v4"],

@@ -1,6 +1,6 @@
 //! Test-only WebSocket peer for `SessionClient` tests.
 //!
-//! Wraps the real `jam_protocol::coordinator::SessionCoordinator`, so client
+//! Wraps the real `attune_protocol::coordinator::SessionCoordinator`, so client
 //! tests run against the actual acceptance rules. It only does the minimum
 //! routing needed for tests and is not a deployable server. It also exposes
 //! hooks to drop connections, forget sessions and inject arbitrary frames.
@@ -13,11 +13,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use futures_util::{SinkExt, StreamExt};
-use jam_core::protocol::{
+use attune_core::protocol::{
     ClientMessage, ErrorCode, ServerMessage, SessionMusicState,
     coordinator::{Outbound, Recipient, SessionCoordinator},
 };
+use futures_util::{SinkExt, StreamExt};
 use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -100,9 +100,9 @@ impl Inner {
                     let code: String = uuid::Uuid::new_v4()
                         .into_bytes()
                         .iter()
-                        .take(jam_core::protocol::JOIN_CODE_LEN)
+                        .take(attune_core::protocol::JOIN_CODE_LEN)
                         .map(|byte| {
-                            let alphabet = jam_core::protocol::JOIN_CODE_ALPHABET;
+                            let alphabet = attune_core::protocol::JOIN_CODE_ALPHABET;
                             char::from(alphabet[usize::from(*byte) % alphabet.len()])
                         })
                         .collect();

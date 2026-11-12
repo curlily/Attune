@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex as SyncMutex, MutexGuard},
 };
 
-use jam_core::{bridge_controller::BridgeController, session::SessionRuntime};
+use attune_core::{bridge_controller::BridgeController, session::SessionRuntime};
 use tokio::sync::Mutex;
 
 use crate::settings::{Settings, Store};

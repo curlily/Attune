@@ -277,7 +277,7 @@ test("TIDAL adapter exposes the shared API and normalizes queue history/duplicat
     await bridge.dispose();
     assert.equal(bridge.ready, false);
     assert.equal(context.observerDisconnected, true);
-    assert.equal(window.__MYJAM_BRIDGE_V1__, undefined);
+    assert.equal(window.__ATTUNE_BRIDGE_V1__, undefined);
     assert.equal(window.bridge, undefined);
 });
 
@@ -496,7 +496,7 @@ test("TIDAL settles after attaching: waits for its restore, then stays paused", 
     const playing = () => store.getState().playbackControls.playbackState === "PLAYING";
 
     // Like the reload (verified live): empty queue, restored queue, then
-    // TIDAL resumes by itself, and once more after MyJam has paused.
+    // TIDAL resumes by itself, and once more after Attune has paused.
     set("test/SET_QUEUE", { elements: [] });
     events.length = 0;
     const timers = [

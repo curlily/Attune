@@ -3,7 +3,7 @@ use std::process::ExitStatus;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Typed failures of the jam-core library.
+/// Typed failures of the attune-core library.
 ///
 /// Source errors are kept (`#[source]`/`#[from]`) so callers can walk the
 /// chain; conversion to plain text happens only at the UI/wire boundary.
@@ -48,7 +48,7 @@ pub enum Error {
     /// Usually a window of the same profile is already open without it
     /// (e.g. the one used for signing in).
     #[error(
-        "{name} didn't open in a window MyJam can connect to. Close every {name} window MyJam opened and try again."
+        "{name} didn't open in a window Attune can connect to. Close every {name} window Attune opened and try again."
     )]
     BrowserWindowUnavailable { name: String },
 
@@ -99,7 +99,7 @@ pub enum Error {
         source: Option<serde_json::Error>,
     },
 
-    #[error("provider bridge does not implement MyJam bridge protocol v1 (found {found:?})")]
+    #[error("provider bridge does not implement Attune bridge protocol v1 (found {found:?})")]
     UnsupportedBridgeVersion { found: Option<u64> },
 
     #[error("bridge event channel closed")]
@@ -141,12 +141,12 @@ pub enum Error {
     ProtocolViolation { reason: &'static str },
 
     #[error("the session server sent an invalid session state")]
-    InvalidRemoteState(#[source] jam_protocol::state::StateError),
+    InvalidRemoteState(#[source] attune_protocol::state::StateError),
 
     /// A structured error from the server. `message` is display text only.
     #[error("the session server refused the request ({code:?}): {message}")]
     Remote {
-        code: jam_protocol::ErrorCode,
+        code: attune_protocol::ErrorCode,
         message: String,
     },
 
@@ -156,11 +156,11 @@ pub enum Error {
     #[error("too many requests are waiting for the session server")]
     TooManyPendingRequests,
 
-    /// A queue edit made in MyJam that the session didn't take, e.g. because
+    /// A queue edit made in Attune that the session didn't take, e.g. because
     /// the song was removed meanwhile. Nothing changed.
     #[error("the session didn't take this queue edit: {message}")]
     EditRejected {
-        code: jam_protocol::RejectCode,
+        code: attune_protocol::RejectCode,
         message: String,
     },
 }

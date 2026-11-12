@@ -1,24 +1,24 @@
-//! `myjam://join/KWPZ` links and starting with Windows.
+//! `attune://join/KWPZ` links and starting with Windows.
 //!
-//! A link opens MyJam (or, through the single-instance plugin, reaches the
+//! A link opens Attune (or, through the single-instance plugin, reaches the
 //! copy already running) and hands the join code to the page, which joins
 //! as soon as it can. The code is kept until the page takes it, so a link
-//! that started MyJam isn't lost before the page is listening.
+//! that started Attune isn't lost before the page is listening.
 
 use std::sync::Mutex;
 
-use jam_core::protocol::normalize_join_code;
+use attune_core::protocol::normalize_join_code;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::{error::AppError, window};
 
-const SCHEME: &str = "myjam://";
+const SCHEME: &str = "attune://";
 
 #[derive(Default)]
 pub struct PendingJoin(Mutex<Option<String>>);
 
-/// The join code in a `myjam://join/<code>` link.
+/// The join code in a `attune://join/<code>` link.
 pub fn join_code(link: &str) -> Option<String> {
     let rest = link.trim().strip_prefix(SCHEME)?;
     let code = rest.strip_prefix("join/")?.trim_end_matches('/');
@@ -51,7 +51,7 @@ pub fn get_autostart(app: AppHandle) -> Result<bool, AppError> {
         .map_err(|error| AppError::Autostart(error.to_string()))
 }
 
-/// Start MyJam (hidden in the tray) when Windows starts.
+/// Start Attune (hidden in the tray) when Windows starts.
 #[tauri::command]
 pub fn set_autostart(app: AppHandle, enabled: bool) -> Result<bool, AppError> {
     let launcher = app.autolaunch();
@@ -70,13 +70,13 @@ mod tests {
 
     #[test]
     fn join_links_give_their_code() {
-        assert_eq!(join_code("myjam://join/KWPZ"), Some("KWPZ".to_owned()));
-        assert_eq!(join_code("myjam://join/kwpz/"), Some("KWPZ".to_owned()));
+        assert_eq!(join_code("attune://join/KWPZ"), Some("KWPZ".to_owned()));
+        assert_eq!(join_code("attune://join/kwpz/"), Some("KWPZ".to_owned()));
         for other in [
-            "myjam://join/KWPO",
-            "myjam://leave/KWPZ",
+            "attune://join/KWPO",
+            "attune://leave/KWPZ",
             "https://join/KWPZ",
-            "C:\\Program Files\\MyJam\\MyJam.exe",
+            "C:\\Program Files\\Attune\\Attune.exe",
             "--hidden",
         ] {
             assert_eq!(join_code(other), None, "{other}");

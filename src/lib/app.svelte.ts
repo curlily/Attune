@@ -46,7 +46,7 @@ class App {
   showSettings = $state(false);
   mini = $state(false);
   pinned = $state(false);
-  /** Join code from a myjam:// link, joined as soon as the lobby can. */
+  /** Join code from a attune:// link, joined as soon as the lobby can. */
   linkCode = $state<string | null>(null);
   /** Bumped each time the window is shown, to replay the opening animation. */
   shown = $state(0);
@@ -109,7 +109,7 @@ class App {
     }
     this.linkCode = code;
     if (this.screen !== "lobby") {
-      this.toast(`MyJam joins ${code} once your music app is connected.`, "info");
+      this.toast(`Attune joins ${code} once your music app is connected.`, "info");
     }
   }
 

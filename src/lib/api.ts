@@ -11,10 +11,10 @@ export interface ProviderAvailability {
   displayName: string;
   installed: boolean;
   running: boolean;
-  /** Running with MyJam's debug port: connecting won't restart it. */
+  /** Running with Attune's debug port: connecting won't restart it. */
   ready: boolean;
   unsupported: string | null;
-  /** A website MyJam opens in a browser window of its own. */
+  /** A website Attune opens in a browser window of its own. */
   inBrowser: boolean;
 }
 
@@ -126,7 +126,7 @@ const FRIENDLY: [string, string][] = [
   ["(RateLimited)", "Too many wrong codes. Try again in a minute."],
   ["(SessionFull)", "That jam is full."],
   ["(ServerBusy)", "The server is busy right now. Try again later."],
-  ["(UnsupportedVersion)", "This version of MyJam is too old or too new for the server."],
+  ["(UnsupportedVersion)", "This version of Attune is too old or too new for the server."],
 ];
 
 /** A message for the user from a rejected command. */
@@ -163,7 +163,7 @@ export const api = {
 
   setPinned: (pinned: boolean) => invoke<void>("set_window_pinned", { pinned }),
   hideWindow: () => invoke<void>("hide_window"),
-  /** A join code from a myjam:// link not handled yet. */
+  /** A join code from a attune:// link not handled yet. */
   takeJoinLink: () => invoke<string | null>("take_join_link"),
   getAutostart: () => invoke<boolean>("get_autostart"),
   setAutostart: (enabled: boolean) => invoke<boolean>("set_autostart", { enabled }),

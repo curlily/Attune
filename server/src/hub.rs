@@ -15,7 +15,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use jam_protocol::{
+use attune_protocol::{
     ClientMessage, CreateSession, ErrorCode, JOIN_CODE_ALPHABET, JOIN_CODE_LEN, JoinSession,
     ServerMessage,
     coordinator::{Outbound, Recipient, SessionCoordinator},

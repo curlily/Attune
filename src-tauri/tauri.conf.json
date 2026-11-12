@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "MyJam",
+  "productName": "Attune",
   "version": "0.1.0",
-  "identifier": "com.lilypad.jam",
+  "identifier": "com.lilypad.attune",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "MyJam",
+        "title": "Attune",
         "width": 380,
         "height": 640,
         "minWidth": 320,
@@ -46,7 +46,7 @@
     "deep-link": {
       "desktop": {
         "schemes": [
-          "myjam"
+          "attune"
         ]
       }
     }

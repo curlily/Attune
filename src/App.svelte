@@ -35,7 +35,7 @@
   });
 
   let title = $derived(
-    app.showSettings ? "Settings" : app.screen === "jam" ? "Jam" : "MyJam",
+    app.showSettings ? "Settings" : app.screen === "jam" ? "Jam" : "Attune",
   );
 </script>
 
@@ -92,7 +92,7 @@
 
     <main>
       {#if failure}
-        <p class="failure">MyJam couldn't start: {failure}</p>
+        <p class="failure">Attune couldn't start: {failure}</p>
       {:else if app.showSettings}
         <div class="screen" in:fly={{ x: 24, duration: 220, easing: cubicOut }}>
           <SettingsScreen />
