@@ -22,14 +22,14 @@ use crate::{
 pub struct ProviderAvailability {
     pub id: ProviderId,
     pub display_name: String,
-    /// The desktop app MyJam can launch is installed.
+    /// The desktop app Attune can launch is installed.
     pub installed: bool,
     pub running: bool,
-    /// Running with MyJam's debug port: connecting won't restart it.
+    /// Running with Attune's debug port: connecting won't restart it.
     pub ready: bool,
-    /// Why MyJam can't use this install, if it can't (shown as is).
+    /// Why Attune can't use this install, if it can't (shown as is).
     pub unsupported: Option<String>,
-    /// A website in a browser window MyJam opens itself. Signing in to it
+    /// A website in a browser window Attune opens itself. Signing in to it
     /// is a separate, one-time step (see `open_sign_in_window`).
     pub in_browser: bool,
 }
@@ -53,7 +53,7 @@ pub async fn detect_providers() -> Result<Vec<ProviderAvailability>> {
 
 async fn detect(system: &System, config: &ProviderConfig) -> ProviderAvailability {
     // A page in a browser: the browser running says nothing about the page.
-    // It counts as running only once MyJam's own window is up.
+    // It counts as running only once Attune's own window is up.
     if config.browser.is_some() {
         let ready = music_client_running(config.debugging_port, &config.page_url)
             .await
@@ -85,7 +85,7 @@ async fn detect(system: &System, config: &ProviderConfig) -> ProviderAvailabilit
             .unwrap_or(false);
 
     // Microsoft Store apps live under WindowsApps and are launched through
-    // an alias; MyJam hasn't been tested with them.
+    // an alias; Attune hasn't been tested with them.
     let store_install = !installed
         && (running_from.iter().any(|path| is_store_path(path))
             || store_alias(exe_name).is_some_and(|alias| alias.is_file()));

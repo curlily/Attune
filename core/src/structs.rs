@@ -36,7 +36,7 @@ pub struct ProviderConfig {
 
 /// A provider that runs as a page in a Chromium browser.
 ///
-/// The executable is the user's browser, so MyJam must never close it to
+/// The executable is the user's browser, so Attune must never close it to
 /// restart it: it opens a window of its own, with a profile of its own
 /// (browsers ignore the debug port on the user's default profile).
 #[derive(Debug, Clone)]

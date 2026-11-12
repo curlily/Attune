@@ -324,7 +324,7 @@ test("Spotify adapter exposes the shared bridge API", async () => {
     const { bridge, events, window } = await loadAdapter();
 
     assert.equal(bridge.version, 1);
-    assert.equal(window.__MYJAM_BRIDGE_V1__, bridge);
+    assert.equal(window.__ATTUNE_BRIDGE_V1__, bridge);
     assert.ok(events.some(event => event.type === "Ready"));
 
     const state = bridge.getState();
@@ -340,7 +340,7 @@ test("Spotify adapter exposes the shared bridge API", async () => {
     assert.equal(bridge.getState().playback.isPlaying, false);
 
     await bridge.dispose();
-    assert.equal(window.__MYJAM_BRIDGE_V1__, undefined);
+    assert.equal(window.__ATTUNE_BRIDGE_V1__, undefined);
 });
 
 test("Spotify reports playlist items and the whole queue, but not recommendations", async () => {

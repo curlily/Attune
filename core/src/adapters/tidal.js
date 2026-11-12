@@ -1,5 +1,5 @@
 /*
- * MyJam adapter for TIDAL Desktop.
+ * Attune adapter for TIDAL Desktop.
  *
  * This script runs inside TIDAL's renderer. It deliberately keeps all TIDAL
  * implementation details here; Rust only talks to the shared bridge contract.
@@ -9,7 +9,7 @@
 (async () => {
     "use strict";
 
-    const BRIDGE_KEY = "__MYJAM_BRIDGE_V1__";
+    const BRIDGE_KEY = "__ATTUNE_BRIDGE_V1__";
     const BRIDGE_VERSION = 1;
     const EVENT_BINDING = "__jamEvent";
     const STORE_TIMEOUT_MS = 15_000;
@@ -400,7 +400,7 @@
             ? Math.max(0, Math.min(queue.currentIndex, elements.length))
             : 0;
 
-        // TIDAL retains played entries before currentIndex. MyJam's queue is
+        // TIDAL retains played entries before currentIndex. Attune's queue is
         // current-first, so those history entries are intentionally excluded.
         return elements.slice(currentIndex);
     }
@@ -468,7 +468,7 @@
         };
     }
 
-    // TIDAL queue elements as MyJam sees them: current first, no history.
+    // TIDAL queue elements as Attune sees them: current first, no history.
     function currentQueueElements(reduxState) {
         const rawEntries = queueElements(reduxState);
         const activeProductId = reduxState?.playbackControls?.mediaProduct?.productId;
@@ -530,7 +530,7 @@
     //   original, and may give the moved element a new uid.
     // Replacing the whole queue instead restarts the current track.
 
-    // The MyJam queue as positions in TIDAL's element list, or null when it
+    // The Attune queue as positions in TIDAL's element list, or null when it
     // isn't a direct view (another queue type, or a track playing outside
     // the queue). Callers then fall back to replacing the queue.
     function directQueue() {
@@ -613,7 +613,7 @@
         if (!Number.isFinite(positionMs) || positionMs < 0) {
             throw new TypeError("positionMs must be a non-negative number");
         }
-        // TIDAL's internal seek action uses seconds, while MyJam uses ms.
+        // TIDAL's internal seek action uses seconds, while Attune uses ms.
         dispatch("playbackControls/SEEK", positionMs / 1000);
     }
 
@@ -813,7 +813,7 @@
 
     /**
      * Turn off what a session can't follow: shuffle and repeat (they change
-     * what plays next behind MyJam's back) and autoplay (it appends similar
+     * what plays next behind Attune's back) and autoplay (it appends similar
      * tracks when the queue ends). Returns the user's settings, for
      * `restoreAfterSession`. Shuffle is turned off without reordering the
      * queue (TIDAL's own button also unshuffles it).
@@ -845,7 +845,7 @@
 
     async function applyState(nextState) {
         if (!nextState || !Array.isArray(nextState.queue) || !nextState.playback) {
-            throw new TypeError("Invalid MyJam music state");
+            throw new TypeError("Invalid Attune music state");
         }
 
         setRemoteMutationWindow();
@@ -877,7 +877,7 @@
 
     async function applyOperation(operation) {
         if (!operation || typeof operation.type !== "string") {
-            throw new TypeError("Invalid MyJam operation");
+            throw new TypeError("Invalid Attune operation");
         }
 
         setRemoteMutationWindow();
@@ -970,7 +970,7 @@
                 return { unavailableEntryIds: [] };
 
             default:
-                throw new Error(`Unsupported MyJam operation: ${operation.type}`);
+                throw new Error(`Unsupported Attune operation: ${operation.type}`);
         }
     }
 
@@ -1137,7 +1137,7 @@
 
     function sendEvent(type, data) {
         if (typeof window[EVENT_BINDING] !== "function") {
-            console.warn("[MyJam] CDP event binding is unavailable", type);
+            console.warn("[Attune] CDP event binding is unavailable", type);
             return;
         }
 
@@ -1155,7 +1155,7 @@
         subscribeToStore();
         bridge.ready = true;
         sendEvent("Ready");
-        console.info("[MyJam] TIDAL adapter ready");
+        console.info("[Attune] TIDAL adapter ready");
     }
 
     async function dispose() {
@@ -1220,7 +1220,7 @@
     try {
         await initialise();
     } catch (error) {
-        console.error("[MyJam] TIDAL adapter initialization failed", error);
+        console.error("[Attune] TIDAL adapter initialization failed", error);
         sendEvent("Error", error?.message ?? String(error));
     }
 

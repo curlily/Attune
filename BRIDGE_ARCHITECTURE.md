@@ -1,4 +1,4 @@
-# MyJam provider bridge architecture
+# Attune provider bridge architecture
 
 ## Separation of responsibilities
 
@@ -27,7 +27,7 @@ TIDAL uses port `9222`, Spotify `9223` and YouTube Music `9224`. These values ar
 
 ## Provider bridge contract v1
 
-Each adapter installs `window.__MYJAM_BRIDGE_V1__` and the compatibility alias `window.bridge` with these methods:
+Each adapter installs `window.__ATTUNE_BRIDGE_V1__` and the compatibility alias `window.bridge` with these methods:
 
 - `version`: numeric protocol version (`1`)
 - `getState()`: returns `SessionMusicState`

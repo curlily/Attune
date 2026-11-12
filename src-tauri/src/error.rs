@@ -3,7 +3,7 @@ use serde::{Serialize, Serializer};
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error(transparent)]
-    Core(#[from] jam_core::Error),
+    Core(#[from] attune_core::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error("already in a session; leave it first")]
@@ -48,7 +48,7 @@ mod tests {
 
     #[test]
     fn serializes_full_cause_chain() {
-        let error: AppError = jam_core::Error::KillFailed {
+        let error: AppError = attune_core::Error::KillFailed {
             exe: "TIDAL.exe".to_owned(),
             source: std::io::Error::other("access denied"),
         }
@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn sourceless_error_has_single_message() {
-        let error: AppError = jam_core::Error::NotConnected.into();
+        let error: AppError = attune_core::Error::NotConnected.into();
         let value = serde_json::to_value(&error).expect("serialize error");
 
         assert_eq!(value, "not connected to a music provider");

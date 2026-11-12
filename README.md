@@ -1,16 +1,16 @@
-# MyJam
+# Attune
 
 Listen together across music services. Everyone keeps using their own desktop
-client (TIDAL, Spotify or YouTube Music); MyJam watches play/pause, seeking, skips and
+client (TIDAL, Spotify or YouTube Music); Attune watches play/pause, seeking, skips and
 queue edits there and mirrors them to everyone else in the session.
 
 ## Workspace
 
 | Crate / folder | What it is |
 |---|---|
-| `protocol/` (`jam-protocol`) | Provider-independent session protocol: data model, WebSocket messages, pure state transitions, and the per-session coordinator that decides what is accepted. No I/O. |
-| `core/` (`jam-core`) | Desktop library: `BridgeController` (CDP bridge into the music client), the JavaScript provider adapters, and `network::SessionClient` (WebSocket client). |
-| `server/` (`jam-server`) | The relay: a small in-memory WebSocket server around the coordinator. |
+| `protocol/` (`attune-protocol`) | Provider-independent session protocol: data model, WebSocket messages, pure state transitions, and the per-session coordinator that decides what is accepted. No I/O. |
+| `core/` (`attune-core`) | Desktop library: `BridgeController` (CDP bridge into the music client), the JavaScript provider adapters, and `network::SessionClient` (WebSocket client). |
+| `server/` (`attune-server`) | The relay: a small in-memory WebSocket server around the coordinator. |
 | `src-tauri/`, `src/` | The Tauri desktop app: commands and settings (Rust), widget UI (Svelte 5 + Vite). |
 
 See [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCHITECTURE.md) for the provider bridge, and
@@ -34,7 +34,7 @@ YouTube Music adapter tests. None of these replace a live test with the installe
 ## Running the relay server
 
 ```sh
-cargo run --release -p jam-server
+cargo run --release -p attune-server
 ```
 
 It listens on `127.0.0.1:8787` and serves:
@@ -44,11 +44,11 @@ It listens on `127.0.0.1:8787` and serves:
 
 | Setting | Default |
 |---|---|
-| `JAM_BIND` or `--bind <addr>` | `127.0.0.1:8787` |
-| `JAM_MAX_SESSIONS` | `100` |
-| `JAM_MAX_PARTICIPANTS` | `16` |
-| `JAM_RECONNECT_GRACE_SECS` | `60` |
-| `JAM_JOIN_ATTEMPTS_PER_MINUTE` | `10` (failed joins per IP address) |
+| `ATTUNE_BIND` or `--bind <addr>` | `127.0.0.1:8787` |
+| `ATTUNE_MAX_SESSIONS` | `100` |
+| `ATTUNE_MAX_PARTICIPANTS` | `16` |
+| `ATTUNE_RECONNECT_GRACE_SECS` | `60` |
+| `ATTUNE_JOIN_ATTEMPTS_PER_MINUTE` | `10` (failed joins per IP address) |
 | `RUST_LOG` | `info` |
 
 Sessions live in memory: restarting the server ends them, and clients then report
@@ -57,12 +57,12 @@ reconnect grace period expires. Logs never contain join codes, rejoin secrets or
 track data.
 
 Behind a reverse proxy every client appears to come from the proxy's address, so
-they share one join-attempt limit; raise `JAM_JOIN_ATTEMPTS_PER_MINUTE` there.
+they share one join-attempt limit; raise `ATTUNE_JOIN_ATTEMPTS_PER_MINUTE` there.
 
 ### Exposing it with Cloudflare Tunnel
 
 The server speaks plain `ws://` on loopback; a tunnel adds TLS (`wss://`) and a
-public hostname without opening ports. Keep `JAM_BIND` on `127.0.0.1`.
+public hostname without opening ports. Keep `ATTUNE_BIND` on `127.0.0.1`.
 
 Quick test (random URL that changes every start):
 
@@ -76,31 +76,31 @@ Stable hostname (needs a domain on Cloudflare):
 
 ```sh
 cloudflared tunnel login
-cloudflared tunnel create myjam
-cloudflared tunnel route dns myjam jam.example.com
+cloudflared tunnel create attune
+cloudflared tunnel route dns attune attune.example.com
 ```
 
 `~/.cloudflared/config.yml`:
 
 ```yaml
-tunnel: myjam
+tunnel: attune
 credentials-file: /path/to/<tunnel-id>.json
 ingress:
-  - hostname: jam.example.com
+  - hostname: attune.example.com
     service: http://127.0.0.1:8787
   - service: http_status:404
 ```
 
 ```sh
-cloudflared tunnel run myjam
+cloudflared tunnel run attune
 ```
 
-Clients then use `wss://jam.example.com/ws`. Cloudflare drops idle WebSockets after
+Clients then use `wss://attune.example.com/ws`. Cloudflare drops idle WebSockets after
 about 100 seconds; the client pings every 30 seconds, so sessions stay open.
 
 ## Using YouTube Music
 
-YouTube Music has no desktop app, so MyJam opens it in a window of an installed
+YouTube Music has no desktop app, so Attune opens it in a window of an installed
 browser (Microsoft Edge, Google Chrome or Brave), with a browser profile of its own.
 Your normal browser windows and profile are not touched.
 
@@ -109,13 +109,13 @@ To listen with your account, sign in once before connecting:
 1. On the connect screen, choose **Sign in first** under YouTube Music.
 2. Sign in to your Google account in the window that opens.
 3. Close that window.
-4. Choose **Open YouTube Music**. MyJam remembers the sign-in from now on.
+4. Choose **Open YouTube Music**. Attune remembers the sign-in from now on.
 
-The sign-in needs its own step because Google refuses sign-ins in the window MyJam
+The sign-in needs its own step because Google refuses sign-ins in the window Attune
 connects to. If that window was left open, connecting fails with a message asking you
 to close it.
 
-Without a subscription YouTube Music plays advertisements. During one, MyJam steps
+Without a subscription YouTube Music plays advertisements. During one, Attune steps
 out of the session and rejoins when it is over, so you may come back a little into
 the song the others are hearing.
 
@@ -126,7 +126,7 @@ the song the others are hearing.
   short, so the server allows only a few failed join attempts per IP address per
   minute.
 - **Rejoin secret:** each participant also gets a private secret. Reconnecting
-  (or rejoining after restarting MyJam) uses it to take the same seat back, so
+  (or rejoining after restarting Attune) uses it to take the same seat back, so
   knowing the code and someone's client ID isn't enough to take their place.
 - **Clock:** clients measure how far their clock is from the server's and how long
   messages take, and use that to place positions correctly: a seek that took

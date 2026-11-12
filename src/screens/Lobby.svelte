@@ -26,7 +26,7 @@
     }
   }
 
-  // A myjam:// link: fill in its code and join.
+  // A attune:// link: fill in its code and join.
   $effect(() => {
     const linked = app.linkCode;
     if (!linked || busy) return;
@@ -65,7 +65,7 @@
     <div class="rejoin" transition:slide={{ duration: 200 }}>
       <div>
         <p class="title">Rejoin {app.rejoinCode}?</p>
-        <p class="muted">You were in this jam when MyJam closed.</p>
+        <p class="muted">You were in this jam when Attune closed.</p>
       </div>
       <div class="rejoin-actions">
         <button

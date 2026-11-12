@@ -29,7 +29,7 @@
   </div>
   <h2>Listen together</h2>
   <p class="muted">
-    MyJam keeps your music app in step with your friends'. Everyone controls
+    Attune keeps your music app in step with your friends'. Everyone controls
     playback from their own app.
   </p>
 

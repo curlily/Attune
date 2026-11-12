@@ -339,7 +339,7 @@ async function withAdapter(setup, run) {
 
 test("YouTube Music adapter exposes the shared bridge API", () => withAdapter(async ({ bridge, events, window }) => {
     assert.equal(bridge.version, 1);
-    assert.equal(window.__MYJAM_BRIDGE_V1__, bridge);
+    assert.equal(window.__ATTUNE_BRIDGE_V1__, bridge);
     assert.ok(events.some(event => event.type === "Ready"));
 
     const state = bridge.getState();

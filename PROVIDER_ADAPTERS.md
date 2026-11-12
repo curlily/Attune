@@ -1,6 +1,6 @@
 # Provider adapters: known behaviour, problems and plans
 
-MyJam controls music apps through their *private* internals (TIDAL's Redux store,
+Attune controls music apps through their *private* internals (TIDAL's Redux store,
 Spotify's PlayerAPI, YouTube Music's store and player), injected over the Chrome DevTools Protocol. These internals
 are undocumented and full of timing quirks. This file collects everything learned
 about them, what is still broken or unverified, and how to make adapters robust,
@@ -132,14 +132,14 @@ reading its code and recording its events. Not yet run through `SessionRuntime`
 **Loading and play state**
 - `PlayerAPI.play({ uri: track }, origin, { seekTo })` starts at the position, but **drops `initiallyPaused`**. `_contextPlayer.play` with `preparePlayRequest.options.initiallyPaused` and `seekTo` loads the track paused at the position (verified at 45 s). So no correcting afterwards is needed, unlike TIDAL.
 - Playlists go through another service that ignores both options.
-- A custom play origin (`featureIdentifier: "myjam"`) is accepted.
+- A custom play origin (`featureIdentifier: "attune"`) is accepted.
 - Playing a single track makes that track the whole context. Nothing follows it except queued items, and queued items survive the play.
 - A track loads in about 200 ms: `isBuffering` true, then false. `isPaused` is false meanwhile.
 - **A paused track often reports `isBuffering: true`** for as long as it is paused. Ignoring buffering states (as the old adapter did) loses pauses.
 - `positionAsOfTimestamp` is the position at `timestamp` (epoch ms), like TIDAL's sync pair. No late reset to 0 after a track starts was seen.
 - `pause()` while paused and `resume()` while playing throw (`not_paused`).
 - `_contextPlayer.stop({})` unloads the current track and empties the queue. So an empty session queue can be applied (TIDAL can't).
-- **End of the queue** (autoplay off): Spotify returns to the track its context started with, paused at 0. With a queue loaded by MyJam that is the song the jam was on when this client joined. The adapter reports only a pause and keeps the finished entry current until the user does something.
+- **End of the queue** (autoplay off): Spotify returns to the track its context started with, paused at 0. With a queue loaded by Attune that is the song the jam was on when this client joined. The adapter reports only a pause and keeps the finished entry current until the user does something.
 - **Attaching:** a page reload doesn't interrupt playback (the player is native) and the state is there immediately. `settle` pauses anyway, as the contract says.
 
 **Shuffle, repeat, autoplay**
@@ -168,7 +168,7 @@ reading its code and recording its events. Not yet run through `SessionRuntime`
 5. **Starting a jam from a playlist** publishes the window of upcoming playlist tracks Spotify shows (about 15–50). As it moves on and shows more, those are published as inserts. Not tested with a session server.
 6. **The local-change suppression is still partly time-based:** 300 ms after a remote change, though the change itself is now waited for. A user action in that window is lost.
 7. **Changing shuffle, repeat or autoplay during a jam** isn't detected (same as TIDAL).
-8. **Debug port:** MyJam's config expects Spotify on 9223. `--remote-debugging-port=<port>` needs the `=`; with a space Spotify ignores it without a word.
+8. **Debug port:** Attune's config expects Spotify on 9223. `--remote-debugging-port=<port>` needs the `=`; with a space Spotify ignores it without a word.
 9. **Store version:** still unchecked.
 10. **Not done yet:** the `live_session` example and a two-person jam (TIDAL + Spotify), with a missing song on each side.
 
@@ -182,16 +182,16 @@ controller attached to it and applied changes (`live` example). Not yet run thro
 
 ### One-time setup
 
-YouTube Music has no desktop app. MyJam opens it as an app window of an installed
+YouTube Music has no desktop app. Attune opens it as an app window of an installed
 Chromium browser (Edge, Chrome or Brave), in a browser profile kept only for this
-(`%LOCALAPPDATA%\MyJam\YouTubeMusicProfile`, or `MYJAM_YOUTUBE_MUSIC_PROFILE`).
+(`%LOCALAPPDATA%\Attune\YouTubeMusicProfile`, or `ATTUNE_YOUTUBE_MUSIC_PROFILE`).
 
 1. **Sign in first, in a window without the debug port.** Google refuses sign-ins in a
    browser started with a debug port (verified live by the user). The connect screen's
    "Sign in first" button opens the same profile without it.
 2. **Close that window.** While it is open, a new launch joins it and gets no debug port.
-   MyJam then reports that it couldn't connect to the window.
-3. **Connect.** MyJam starts the window with the debug port; the sign-in is remembered in
+   Attune then reports that it couldn't connect to the window.
+3. **Connect.** Attune starts the window with the debug port; the sign-in is remembered in
    the profile.
 
 Signing in is optional: the page also plays signed out. The launch command is
@@ -204,7 +204,7 @@ Signing in is optional: the page also plays signed out. The launch command is
 
 - Browsers ignore `--remote-debugging-port` on the user's default profile, hence the
   profile of its own.
-- MyJam never closes the browser to restart it: it holds the user's other windows.
+- Attune never closes the browser to restart it: it holds the user's other windows.
 - The profile holds the Google sign-in. Keep it out of version control (`/EdgeProfile/`
   is ignored in this repository for that reason).
 
@@ -248,7 +248,7 @@ Signing in is optional: the page also plays signed out. The launch command is
 
 **Loading and play state**
 - **Starting playback needs a user gesture.** Without one, the track loads and stays
-  "unstarted" (player state -1). MyJam launches the browser with
+  "unstarted" (player state -1). Attune launches the browser with
   `--autoplay-policy=no-user-gesture-required` and marks its calls as user gestures
   (`Runtime.evaluate` with `userGesture`), which also covers a window the user started.
 - Selecting an item always starts it **from 0, playing**; a paused start wasn't found.
@@ -262,7 +262,7 @@ Signing in is optional: the page also plays signed out. The launch command is
 - **Song end:** `SET_INDEX` to the next item, which starts about 0.6 s later.
 - **End of the queue** (autoplay off): the player stops on the last track (state 0).
 - **`Leave site?` dialog:** while a song plays, the page blocks unloading, which holds
-  up the reload MyJam attaches with. The controller confirms the dialog.
+  up the reload Attune attaches with. The controller confirms the dialog.
 - **After a reload** the page restores its last song (the URL is `/watch?v=…`) and, with
   playback allowed, starts it, possibly behind an advertisement. `settle` pauses either.
 
@@ -321,14 +321,14 @@ selecting another song 0.9–1.7 s.
 8. **Podcasts and uploads** in the queue weren't tested.
 9. **Other browsers:** only Edge was tested. Chrome and Brave take the same flags.
 10. **Not done yet:** the `live_session` example and a two-person jam, launching the
-    browser from MyJam (the code path exists, the test used a window started by hand),
+    browser from Attune (the code path exists, the test used a window started by hand),
     and the connect screen's sign-in button in the running app.
 
 ## 5. Preventing these problems instead of patching them
 
 1. **Per-provider IDs in tracks.** Add an optional `providerIds: { tidal?: string, spotify?: string, youtube?: string }` to `TrackDescriptor` (protocol v2). Whoever has the track fills its own ID; same-provider clients skip search entirely, and others fill theirs in after a successful lookup. This fixes TIDAL problems 1 and 2 for same-provider groups and cuts search load in general. Unknown fields are dropped by v1 clients, hence v2.
 2. **Record real traces to build mocks.** A debug mode in the adapter that records every store action and state diff (or PlayerAPI event) with timestamps during a scripted live run (load a queue, pause, seek, skip, song end). Mocks built from these traces behave like the real app. The paused-join bug passed its first fix because the mock was "politer" than TIDAL.
-3. **Tag our own dispatches instead of time windows.** If the store lets us add a marker to actions (or we wrap `dispatch`), state changes caused by MyJam can be told apart from the user's exactly, replacing the 300 ms and 5.5 s suppression windows.
+3. **Tag our own dispatches instead of time windows.** If the store lets us add a marker to actions (or we wrap `dispatch`), state changes caused by Attune can be told apart from the user's exactly, replacing the 300 ms and 5.5 s suppression windows.
 4. **Read the clients' own code more.**
    - Look for the action creators the app uses itself: its playback state machine, a queue "clear current" action, ISRC search, batch lookups, autoplay settings.
    - Prefer the app's own intent actions over raw state writes.
@@ -347,9 +347,9 @@ selecting another song 0.9–1.7 s.
 9. **A neutral state.** Proposed by the user; **done for TIDAL and Spotify**. Adapter contract:
     - **`settle({pause})`** runs right after attaching. It waits until the app has finished restoring itself (queue and play state unchanged for 1 s, or 3 s while empty, at most 8 s), then pauses and holds the pause for 1.5 s, which catches a late auto-resume. The queue is kept. `BridgeController::initialise` calls it.
     - **`prepareForSession()`** runs when entering a jam. It turns off shuffle (without reordering), repeat and autoplay, and returns the user's values.
-    - **`restoreAfterSession(previous)`** puts them back on every way out. Leaving, quitting MyJam (Tauri's exit event, at most 3 s) and a failed create or join were verified live or in tests; the runtime does this in `prepare`/`restore`.
+    - **`restoreAfterSession(previous)`** puts them back on every way out. Leaving, quitting Attune (Tauri's exit event, at most 3 s) and a failed create or join were verified live or in tests; the runtime does this in `prepare`/`restore`.
     - **Left out: clearing the queue.** "Start a jam with your current queue" needs it, joining replaces it anyway, and TIDAL can't safely unload the current track (TIDAL problem 4).
     - **Caveats:**
-      - TIDAL saves these settings. If MyJam crashes mid-jam, they stay off until changed by hand. A fix would be to save `previous` in MyJam's settings and restore it on the next start.
+      - TIDAL saves these settings. If Attune crashes mid-jam, they stay off until changed by hand. A fix would be to save `previous` in Attune's settings and restore it on the next start.
       - Turning shuffle back on *during* a jam isn't detected yet. Detect it and either re-disable it or tell the user.
 10. **Version awareness.** Record the client version (Electron/app version from CDP `Browser.getVersion` or the exe) with each live verification above, so a client update that breaks something is recognisable.

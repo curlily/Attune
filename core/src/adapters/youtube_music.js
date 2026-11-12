@@ -1,5 +1,5 @@
 /*
- * MyJam adapter for YouTube Music (music.youtube.com in a Chromium browser).
+ * Attune adapter for YouTube Music (music.youtube.com in a Chromium browser).
  *
  * This script runs inside the page. All YouTube Music implementation
  * details stay here; Rust only talks to the shared bridge contract.
@@ -14,7 +14,7 @@
 (async () => {
     "use strict";
 
-    const BRIDGE_KEY = "__MYJAM_BRIDGE_V1__";
+    const BRIDGE_KEY = "__ATTUNE_BRIDGE_V1__";
     const BRIDGE_VERSION = 1;
     const EVENT_BINDING = "__jamEvent";
     const APP_TIMEOUT_MS = 30_000;
@@ -789,7 +789,7 @@
 
     function applySnapshot(nextState) {
         if (!nextState || !Array.isArray(nextState.queue) || !nextState.playback) {
-            throw new TypeError("Invalid MyJam music state");
+            throw new TypeError("Invalid Attune music state");
         }
         const calledAt = Date.now();
         return asRemoteChange(async () => {
@@ -806,7 +806,7 @@
 
     function applyOperation(operation) {
         if (!operation || typeof operation.type !== "string") {
-            throw new TypeError("Invalid MyJam operation");
+            throw new TypeError("Invalid Attune operation");
         }
         const calledAt = Date.now();
         return asRemoteChange(async () => {
@@ -895,7 +895,7 @@
             }
 
             default:
-                throw new Error(`Unsupported MyJam operation: ${operation.type}`);
+                throw new Error(`Unsupported Attune operation: ${operation.type}`);
         }
     }
 
@@ -1203,7 +1203,7 @@
         if (recentEvents.length > RECENT_EVENT_LIMIT) recentEvents.shift();
 
         if (typeof window[EVENT_BINDING] !== "function") {
-            console.warn("[MyJam] CDP event binding is unavailable", type);
+            console.warn("[Attune] CDP event binding is unavailable", type);
             return;
         }
         window[EVENT_BINDING](JSON.stringify(event));
@@ -1219,7 +1219,7 @@
         subscribe();
         bridge.ready = true;
         sendEvent("Ready");
-        console.info("[MyJam] YouTube Music adapter ready");
+        console.info("[Attune] YouTube Music adapter ready");
     }
 
     async function dispose() {
@@ -1300,7 +1300,7 @@
     try {
         await initialise();
     } catch (error) {
-        console.error("[MyJam] YouTube Music adapter initialization failed", error);
+        console.error("[Attune] YouTube Music adapter initialization failed", error);
         sendEvent("Error", error?.message ?? String(error));
     }
 

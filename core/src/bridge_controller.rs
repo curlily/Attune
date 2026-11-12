@@ -106,7 +106,7 @@ impl BridgeController {
             )?;
         } else {
             // Not running, or running without the debug port: (re)start it
-            // with the port. Interrupts playback once, when MyJam first
+            // with the port. Interrupts playback once, when Attune first
             // connects to a normally started client.
             let mut sys = System::default();
             kill_music_client(&mut sys, &config.executable_path).await?;
@@ -333,7 +333,7 @@ impl BridgeController {
         // debugger on start". After the reload below, TIDAL's new workers
         // then sat paused and its renderer froze for about two minutes, so
         // the bridge never reported Ready (measured live: the same reload
-        // over raw CDP was ready in 0.3 s). MyJam doesn't use workers.
+        // over raw CDP was ready in 0.3 s). Attune doesn't use workers.
         let no_auto_attach = SetAutoAttachParams::builder()
             .auto_attach(false)
             .wait_for_debugger_on_start(false)
@@ -506,7 +506,7 @@ impl BridgeController {
                             self.event_task = Some(event_task);
 
                             let version = self
-                                .eval_value("window.__MYJAM_BRIDGE_V1__?.version ?? null")
+                                .eval_value("window.__ATTUNE_BRIDGE_V1__?.version ?? null")
                                 .await?
                                 .and_then(|value| value.as_u64());
                             if version != Some(1) {
@@ -580,7 +580,7 @@ impl BridgeController {
 
     /// Call a method on the shared protocol API exposed by each provider script.
     async fn call_protocol(&self, method: &'static str, args: &[Value]) -> Result<Value> {
-        self.call_api("window.__MYJAM_BRIDGE_V1__", method, args)
+        self.call_api("window.__ATTUNE_BRIDGE_V1__", method, args)
             .await
     }
 
@@ -598,7 +598,7 @@ impl BridgeController {
         // Adapters may attach a string `code` and JSON `details` to an error
         // to report an expected, structured failure (see `bridge_failure`).
         let expression = format!(
-            "(async () => {{ try {{ const api = {api_expression}; if (!api) throw new Error('Bridge API is unavailable'); const fn = api[{method_json}]; if (typeof fn !== 'function') throw new Error('Bridge method is unavailable: ' + {method_json}); const value = await fn.apply(api, {args_json}); return {{ __myjamBridgeResult: true, ok: true, value: value === undefined ? null : value }}; }} catch (error) {{ return {{ __myjamBridgeResult: true, ok: false, error: String(error?.stack ?? error), message: String(error?.message ?? error), code: typeof error?.code === 'string' ? error.code : null, details: error?.details ?? null }}; }} }})()"
+            "(async () => {{ try {{ const api = {api_expression}; if (!api) throw new Error('Bridge API is unavailable'); const fn = api[{method_json}]; if (typeof fn !== 'function') throw new Error('Bridge method is unavailable: ' + {method_json}); const value = await fn.apply(api, {args_json}); return {{ __attuneBridgeResult: true, ok: true, value: value === undefined ? null : value }}; }} catch (error) {{ return {{ __attuneBridgeResult: true, ok: false, error: String(error?.stack ?? error), message: String(error?.message ?? error), code: typeof error?.code === 'string' ? error.code : null, details: error?.details ?? null }}; }} }})()"
         );
         let invalid = || Error::InvalidBridgeResponse {
             method,
@@ -606,7 +606,7 @@ impl BridgeController {
         };
         let mut result = self.eval_value(&expression).await?.ok_or_else(invalid)?;
 
-        if result["__myjamBridgeResult"] != true {
+        if result["__attuneBridgeResult"] != true {
             return Err(invalid());
         }
         if result["ok"] != true {
@@ -954,7 +954,7 @@ mod tests {
 
     fn failed_envelope(code: Value, details: Value) -> Value {
         json!({
-            "__myjamBridgeResult": true,
+            "__attuneBridgeResult": true,
             "ok": false,
             "error": "Error: boom\n    at adapter.js:1:1",
             "message": "boom",

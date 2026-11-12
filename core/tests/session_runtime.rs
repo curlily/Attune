@@ -11,7 +11,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use jam_core::{
+use attune_core::{
     Error, Result,
     bridge_controller::{ApplyOutcome, BridgeEvent, Interruption},
     network::{ReconnectPolicy, SessionClientConfig},
@@ -734,7 +734,7 @@ async fn provider_settings_are_switched_off_for_a_session_and_restored_after() {
         ["prepare", r#"restore {"shuffle":true}"#]
     );
 
-    // So does closing MyJam without leaving (the handle is dropped).
+    // So does closing Attune without leaving (the handle is dropped).
     drop(s.a);
     eventually("A restored after being dropped", || {
         settings_log(&s.a_provider).len() == 2
@@ -746,7 +746,7 @@ async fn provider_settings_are_switched_off_for_a_session_and_restored_after() {
 async fn a_failed_join_restores_the_settings_it_changed() {
     let server = TestServer::start().await;
     let provider = FakeProvider::new(&["s1"]);
-    let code = jam_core::network::JoinCredentials::from_code("ZZZZ").expect("code");
+    let code = attune_core::network::JoinCredentials::from_code("ZZZZ").expect("code");
     SessionRuntime::join(provider.clone(), config(&server, "b"), code)
         .await
         .err()

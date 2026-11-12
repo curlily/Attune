@@ -1,5 +1,5 @@
 //! Desktop side of session networking: a provider-independent WebSocket
-//! client for the MyJam relay server. It never touches a music provider;
+//! client for the Attune relay server. It never touches a music provider;
 //! applying what it receives is the session runtime's job.
 
 mod client;

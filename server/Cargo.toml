@@ -1,20 +1,20 @@
 [package]
-name = "jam-server"
+name = "attune-server"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "MyJam session relay: an in-memory WebSocket server around jam-protocol's coordinator."
+description = "Attune session relay: an in-memory WebSocket server around attune-protocol's coordinator."
 
 [lib]
-name = "jam_server"
+name = "attune_server"
 path = "src/lib.rs"
 
 [[bin]]
-name = "jam-server"
+name = "attune-server"
 path = "src/main.rs"
 
 [dependencies]
-jam-protocol = { path = "../protocol" }
+attune-protocol = { path = "../protocol" }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws"] }
 futures-util.workspace = true
 serde_json.workspace = true
@@ -25,6 +25,6 @@ uuid.workspace = true
 
 [dev-dependencies]
 # Tests drive the server with the real desktop client.
-jam-core = { path = "../core" }
+attune-core = { path = "../core" }
 tokio = { workspace = true, features = ["test-util"] }
 tokio-tungstenite.workspace = true

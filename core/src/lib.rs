@@ -7,7 +7,7 @@ pub mod providers;
 pub mod session;
 pub mod structs;
 
-/// Shared session protocol (re-exported so dependents need only `jam-core`).
-pub use jam_protocol as protocol;
+/// Shared session protocol (re-exported so dependents need only `attune-core`).
+pub use attune_protocol as protocol;
 
 pub use error::{Error, Result};

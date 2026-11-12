@@ -2,16 +2,16 @@
 //!
 //! Start the daemon once; it attaches to the provider and keeps the bridge:
 //!
-//!     cargo run -p jam-core --example live -- daemon tidal
+//!     cargo run -p attune-core --example live -- daemon tidal
 //!
 //! Then send commands from another shell:
 //!
-//!     cargo run -p jam-core --example live -- state
-//!     cargo run -p jam-core --example live -- events
-//!     cargo run -p jam-core --example live -- test-partial
-//!     cargo run -p jam-core --example live -- test-missing-current
-//!     cargo run -p jam-core --example live -- op '{"type":"playback.setPlaying","isPlaying":false}'
-//!     cargo run -p jam-core --example live -- quit
+//!     cargo run -p attune-core --example live -- state
+//!     cargo run -p attune-core --example live -- events
+//!     cargo run -p attune-core --example live -- test-partial
+//!     cargo run -p attune-core --example live -- test-missing-current
+//!     cargo run -p attune-core --example live -- op '{"type":"playback.setPlaying","isPlaying":false}'
+//!     cargo run -p attune-core --example live -- quit
 //!
 //! `events` returns (and clears) the bridge events seen since the last call.
 
@@ -20,7 +20,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use jam_core::{
+use attune_core::{
     bridge_controller::{BridgeController, BridgeEvent},
     protocol::{QueueEntry, SessionMusicState, SessionOperation, SessionSnapshot, TrackDescriptor},
     providers,
@@ -225,7 +225,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         [mode, provider] if mode == "daemon" => {
             tracing_subscriber::fmt()
                 .with_env_filter(
-                    std::env::var("RUST_LOG").unwrap_or_else(|_| "jam_core=info".into()),
+                    std::env::var("RUST_LOG").unwrap_or_else(|_| "attune_core=info".into()),
                 )
                 .with_writer(std::io::stderr)
                 .init();

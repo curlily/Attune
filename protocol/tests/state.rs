@@ -2,14 +2,14 @@ mod common;
 
 use std::collections::HashSet;
 
-use common::{DURATION_MS, empty, entry, ids, state};
-use jam_protocol::{
+use attune_protocol::{
     SessionOperation as Op,
     state::{
         MAX_QUEUE_ENTRIES, StateError, apply, is_noop, position_at, reinsert_unavailable,
         validate_state,
     },
 };
+use common::{DURATION_MS, empty, entry, ids, state};
 
 const NOW: u64 = 10_000;
 
@@ -71,7 +71,7 @@ fn duplicate_entry_ids_are_rejected_but_duplicate_tracks_are_allowed() {
     assert_eq!(validate_state(&same_track_twice), Ok(()));
 }
 
-type TrackMutation = fn(&mut jam_protocol::TrackDescriptor);
+type TrackMutation = fn(&mut attune_protocol::TrackDescriptor);
 
 #[test]
 fn track_fields_are_bounded() {
@@ -679,11 +679,11 @@ fn unavailable(list: &[&str]) -> HashSet<String> {
     list.iter().map(|s| (*s).to_owned()).collect()
 }
 
-fn queue(list: &[&str]) -> Vec<jam_protocol::QueueEntry> {
+fn queue(list: &[&str]) -> Vec<attune_protocol::QueueEntry> {
     list.iter().map(|id| entry(id)).collect()
 }
 
-fn entry_ids(entries: &[jam_protocol::QueueEntry]) -> Vec<&str> {
+fn entry_ids(entries: &[attune_protocol::QueueEntry]) -> Vec<&str> {
     entries.iter().map(|e| e.entry_id.as_str()).collect()
 }
 

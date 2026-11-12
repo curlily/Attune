@@ -75,7 +75,7 @@
 <div class="connect scroll">
   <p class="section-title">Connect your music app</p>
   <p class="muted intro">
-    MyJam follows along in your own app. You keep using it for play, pause, skip
+    Attune follows along in your own app. You keep using it for play, pause, skip
     and the queue.
   </p>
 

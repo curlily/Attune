@@ -1,11 +1,11 @@
 [package]
-name = "jam-core"
+name = "attune-core"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 
 [dependencies]
-jam-protocol = { path = "../protocol" }
+attune-protocol = { path = "../protocol" }
 chromiumoxide.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true

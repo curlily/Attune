@@ -1,18 +1,18 @@
-//! `jam-server` executable.
+//! `attune-server` executable.
 //!
 //! Configuration (environment variable, or the flag where noted):
-//! - `JAM_BIND` / `--bind <addr>`: listen address, default `127.0.0.1:8787`.
+//! - `ATTUNE_BIND` / `--bind <addr>`: listen address, default `127.0.0.1:8787`.
 //!   Behind Cloudflare Tunnel or another reverse proxy, keep it on loopback.
-//! - `JAM_MAX_SESSIONS` (default 100), `JAM_MAX_PARTICIPANTS` (default 16)
-//! - `JAM_RECONNECT_GRACE_SECS` (default 60)
-//! - `JAM_JOIN_ATTEMPTS_PER_MINUTE` (default 10): failed joins allowed per
+//! - `ATTUNE_MAX_SESSIONS` (default 100), `ATTUNE_MAX_PARTICIPANTS` (default 16)
+//! - `ATTUNE_RECONNECT_GRACE_SECS` (default 60)
+//! - `ATTUNE_JOIN_ATTEMPTS_PER_MINUTE` (default 10): failed joins allowed per
 //!   IP address. Behind a reverse proxy every client shares the proxy's
 //!   address, so raise it there.
 //! - `RUST_LOG` for log filtering, default `info`.
 
 use std::{env, error::Error, process::ExitCode, time::Duration};
 
-use jam_server::{ServerConfig, serve};
+use attune_server::{ServerConfig, serve};
 use tokio::net::TcpListener;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -32,30 +32,30 @@ fn env_number<T: std::str::FromStr>(name: &str) -> Result<Option<T>, String> {
 fn bind_address() -> Result<String, String> {
     let args: Vec<String> = env::args().skip(1).collect();
     match args.as_slice() {
-        [] => Ok(env::var("JAM_BIND").unwrap_or_else(|_| DEFAULT_BIND.to_owned())),
+        [] => Ok(env::var("ATTUNE_BIND").unwrap_or_else(|_| DEFAULT_BIND.to_owned())),
         [flag, address] if flag == "--bind" => Ok(address.clone()),
         [flag] if flag == "-h" || flag == "--help" => {
             println!(
-                "Usage: jam-server [--bind <addr>]\nSee the README for environment variables."
+                "Usage: attune-server [--bind <addr>]\nSee the README for environment variables."
             );
             std::process::exit(0);
         }
-        _ => Err("usage: jam-server [--bind <addr>]".to_owned()),
+        _ => Err("usage: attune-server [--bind <addr>]".to_owned()),
     }
 }
 
 fn config() -> Result<ServerConfig, String> {
     let mut config = ServerConfig::default();
-    if let Some(value) = env_number("JAM_MAX_SESSIONS")? {
+    if let Some(value) = env_number("ATTUNE_MAX_SESSIONS")? {
         config.max_sessions = value;
     }
-    if let Some(value) = env_number("JAM_MAX_PARTICIPANTS")? {
+    if let Some(value) = env_number("ATTUNE_MAX_PARTICIPANTS")? {
         config.max_participants = value;
     }
-    if let Some(seconds) = env_number("JAM_RECONNECT_GRACE_SECS")? {
+    if let Some(seconds) = env_number("ATTUNE_RECONNECT_GRACE_SECS")? {
         config.reconnect_grace = Duration::from_secs(seconds);
     }
-    if let Some(value) = env_number("JAM_JOIN_ATTEMPTS_PER_MINUTE")? {
+    if let Some(value) = env_number("ATTUNE_JOIN_ATTEMPTS_PER_MINUTE")? {
         config.join_attempts_per_minute = value;
     }
     Ok(config)
@@ -69,7 +69,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         address = %listener.local_addr()?,
         max_sessions = config.max_sessions,
         max_participants = config.max_participants,
-        "MyJam relay listening (WebSocket endpoint: /ws)"
+        "Attune relay listening (WebSocket endpoint: /ws)"
     );
     serve(listener, config, async {
         let _ = tokio::signal::ctrl_c().await;
@@ -90,7 +90,7 @@ async fn main() -> ExitCode {
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            error!(%error, "jam-server failed");
+            error!(%error, "attune-server failed");
             ExitCode::FAILURE
         }
     }

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use jam_protocol::{
+use attune_protocol::{
     ClientHello, PROTOCOL_VERSION, QueueEntry, SessionMusicState, SessionPlayback, TrackDescriptor,
 };
 

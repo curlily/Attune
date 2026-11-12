@@ -2,9 +2,9 @@
 
 use std::{net::IpAddr, sync::Arc};
 
+use attune_protocol::{ClientMessage, ErrorCode, ServerMessage};
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt, stream::SplitStream};
-use jam_protocol::{ClientMessage, ErrorCode, ServerMessage};
 use tokio::{sync::mpsc, time::timeout};
 use tracing::debug;
 

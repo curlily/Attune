@@ -5,7 +5,7 @@ mod support;
 
 use std::time::Duration;
 
-use jam_core::{
+use attune_core::{
     Error,
     network::{
         CloseReason, JoinCredentials, ReconnectPolicy, SessionClient, SessionClientConfig,
