@@ -34,8 +34,8 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
 | Playback needs a gesture | A browser refuses to start playback from a script until the page had a user gesture. Desktop apps allow it. | Verified live (YouTube Music) | Calls are evaluated as user gestures; the browser is launched with `--autoplay-policy=no-user-gesture-required` |
 | Leave dialog | A page that is playing can block its reload with a "Leave site?" dialog | Verified live (YouTube Music) | `install_bridge` confirms `beforeunload` dialogs |
 | Interruptions | Advertisements take over playback for a while | Verified live (YouTube Music) | Adapter sends `Interruption`; the runtime steps out and rejoins after |
-| Background timers | While the app's window is hidden and nothing plays, Chromium runs the page's timers once a second (a 25 ms timeout took 1000 ms). Polling loops slow down exactly while a track loads paused. | Verified live (TIDAL; Spotify, **also while playing**, as its sound is native). YouTube Music: assumed, not measured | Waits react to the app's own signals, with a 250 ms fallback check: TIDAL store changes (`waitFor`, `holdUntil`); Spotify `update`/`queue_update` events (`watchPlayer`); YouTube Music store changes and `<video>` media events, caught in the capture phase (`watchPage`). Timers remain only for timeouts and stable periods, and the 150–180 ms debounce of local changes |
-| Comparing after a remote change | The app's state keeps changing for about a second after an action, which can push a debounce past a fixed suppression window; the delayed comparison then sees our own change as the user's. **With throttled timers it always happens:** the debounce takes a second, so it always fires after the 300 ms window | Verified live (TIDAL, Spotify). YouTube Music: mock only | Every adapter resets the comparison base to the state the remote change produced: TIDAL `rebaseLocalChanges`, Spotify and YouTube Music `rebase()` at the end of `asRemoteChange`. Removing it makes both new tests publish an echo. **The rebase is only as good as the wait before it:** Spotify's queue write used to count as done while the old items still showed, and an echo followed (verified live, fixed) |
+| Background timers | While the app's window is hidden and nothing plays, Chromium runs the page's timers once a second (a 25 ms timeout took 1000 ms). Polling loops slow down exactly while a track loads paused. | Verified live (TIDAL; Spotify, **also while playing**, as its sound is native; YouTube Music, where sound from the page lifts it, and selecting a song always starts sound). Hidden for more than 5 minutes, chained timers run **once a minute** (verified live, YouTube Music) | Waits react to the app's own signals, with a 250 ms fallback check: TIDAL store changes (`waitFor`, `holdUntil`); Spotify `update`/`queue_update` events (`watchPlayer`); YouTube Music store changes and `<video>` media events, caught in the capture phase (`watchPage`). Timers remain only for timeouts and stable periods, and the 150–180 ms debounce of local changes |
+| Comparing after a remote change | The app's state keeps changing for about a second after an action, which can push a debounce past a fixed suppression window; the delayed comparison then sees our own change as the user's. **With throttled timers it always happens:** the debounce takes a second, so it always fires after the 300 ms window | Verified live (TIDAL, Spotify, YouTube Music) | Every adapter resets the comparison base to the state the remote change produced: TIDAL `rebaseLocalChanges`, Spotify and YouTube Music `rebase()` at the end of `asRemoteChange`. Removing it makes both new tests publish an echo. **The rebase is only as good as the wait before it:** Spotify's queue write used to count as done while the old items still showed, and an echo followed (verified live, fixed) |
 
 ## 2. TIDAL
 
@@ -406,7 +406,7 @@ Signing in is optional: the page also plays signed out. The launch command is
 - The position is read live (`getCurrentTime()`, seconds); there is no sync timestamp.
   Seeks don't pass through the store. The adapter learns of them from the `<video>`'s
   `seeked` event (listened for in the capture phase on `window`, since media events don't
-  bubble; mock only) and checks the position every 500 ms as a fallback.
+  bubble; verified live) and checks the position every 500 ms as a fallback.
 - Durations in the queue are whole seconds ("3:22").
 - **Song end:** `SET_INDEX` to the next item, which starts about 0.6 s later.
 - **End of the queue** (autoplay off): the player stops on the last track (state 0).
@@ -447,22 +447,40 @@ Signing in is optional: the page also plays signed out. The launch command is
 - Titles differ again: "Shoong! (feat. 리사 (LISA))".
 - The network manager caches responses, so a repeated lookup costs nothing.
 
-**Waiting and echoes** (checked by reading the adapter and with mocked tests; the app
-window wasn't open, so nothing here was measured live)
-- **Timers:** the waits and holds used to poll every 25 ms (`waitFor`, `holdPlayback`,
-  `settle`). An app window that is hidden and silent (a song held paused, or nothing
-  loaded) runs its timers at 1 Hz (assumed, as in TIDAL). In the mock a paused join then
-  took 3.0 s. Now they check on store changes and the player's media events (`watchPage`),
-  and `holdUntil` replaces the polling hold: 1.0 s in the same mock. All of that is the
-  hold's 500 ms stable period, which is itself a timer and takes a second while throttled.
-  Whether the `<video>` element's events reach a capture listener on `window` in the real
-  page (no shadow DOM around the player) is assumed.
-- **Echoes:** not affected, as with Spotify: `asRemoteChange` already rebased when an
-  action finished (mock only). A test dispatches unrelated store changes every 100 ms for
-  1.2 s after a pause and a removal: nothing is published; without the rebase both are.
-- **Left to check live:** timer throttling of the app window, and whether the signed-in
-  server queue rewrites queue items some time after a store edit. New item numbers would
-  be new entries, published as a replacement of the queue.
+**Waiting and echoes** (verified live against `WEB_REMIX 1.20261110.04.00` in Edge 157,
+signed out, in an app window launched like Attune does, minimized through CDP; the adapter
+was injected into the running page and driven step by step from outside; afterwards it
+was disposed, the test queue cleared and the window restored)
+- **Signed out plays fine.** Google's cookie screen ("Before you continue") came first in
+  the fresh profile; "Reject all" leads to the app. No advertisement came up in these runs.
+- **Timers while hidden:** visible, a 25 ms timeout took 26 ms; minimized and silent,
+  about 1,000 ms. **Playing sound lifts it at once**, and selecting a song always starts
+  it playing, so a paused join or advance runs its hold mostly unthrottled (25–33 ms
+  timeouts right after). Unlike TIDAL, the paused hold is not where throttling hurts.
+- **Where it does:** steps that start from a silent, hidden page. A paused advance took
+  0.99 s with the new adapter and 2.0 s with the old one (waiting for the track and the
+  hold's stable period, which is still a timer). Seeks, inserts, removals and pauses take
+  1–8 ms either way (the change is visible at once). A play from silence took about
+  280 ms in both: the sound lifts the throttling before the old polling noticed.
+- **Hidden for more than 5 minutes** (and silent), Chromium also limits **chained** timers
+  to one wake-up a minute: the sixth and later nested 25 ms timeouts took 21–60 s. A
+  single timeout still took about 1 s. In that state a paused seek took 1 ms, a paused
+  advance 2.0 s, and the user's seek on the `<video>` was published. Code that re-arms its
+  own timer (the fallback checks, the 500 ms position poll) runs once a minute then;
+  the waits don't depend on it. **Timers set by code that itself runs in a long timer
+  chain inherit that limit:** a test script that slept between steps in the page made
+  every adapter timer take 60 s (a paused join 55 s, a play wait 60 s, followed by a
+  published `setPlaying` when the song finally started). Attune calls the adapter
+  through `Runtime.evaluate`, which starts no chain.
+- **User changes:** a seek on the `<video>` element was published after 21–190 ms
+  through the `seeked` event (capture listener on `window`), so media events do reach
+  it. The user's play and pause were published.
+- **Echoes:** none, in five runs of join, seek, remove, play, pause and advance, plus
+  inserts, with the window hidden. A song that played to its end during a test was
+  published as an advance, as it should be.
+- **Left to check live:** the signed-in server queue rewriting items some time after a
+  store edit (new item numbers would be new entries, published as a replacement of the
+  queue), and advertisements during a hold.
 
 **Timings measured:** adapter ready 0.8–1.0 s after the reload; a 5-song snapshot with a
 paused start 2.9 s (four searches); a queue edit 0–4 ms, or 450 ms with one lookup;
