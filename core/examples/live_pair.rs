@@ -1,18 +1,18 @@
-//! Live two-provider session: Spotify and YouTube Music in one jam.
+//! Live two-provider session, e.g. Spotify and YouTube Music in one jam.
 //!
-//!     cargo run -p attune-core --example live_pair -- daemon ws://127.0.0.1:8787/ws
+//!     cargo run -p attune-core --example live_pair -- daemon ws://127.0.0.1:8787/ws [<host> <guest>]
 //!
-//! Attaches to both clients, creates a session on Spotify through
-//! `SessionRuntime` (the app's code path) and joins it from YouTube Music.
+//! Providers are `spotify`, `youtube` and `tidal` (default: spotify youtube).
+//! Attaches to both clients, creates a session on the host through
+//! `SessionRuntime` (the app's code path) and joins it from the guest.
 //! Every operation either provider publishes and every status change is
 //! logged with a timestamp. Commands from another shell:
 //!
 //!     cargo run -p attune-core --example live_pair -- state
 //!     cargo run -p attune-core --example live_pair -- log
-//!     cargo run -p attune-core --example live_pair -- eval spotify <js>
-//!     cargo run -p attune-core --example live_pair -- eval youtube <js>
-//!     cargo run -p attune-core --example live_pair -- stepout youtube
-//!     cargo run -p attune-core --example live_pair -- resync youtube
+//!     cargo run -p attune-core --example live_pair -- eval <provider> <js>
+//!     cargo run -p attune-core --example live_pair -- stepout <provider>
+//!     cargo run -p attune-core --example live_pair -- resync <provider>
 //!     cargo run -p attune-core --example live_pair -- quit
 //!
 //! `log` returns (and clears) what happened since the last call.
@@ -28,6 +28,7 @@ use attune_core::{
     protocol::SessionMusicState,
     providers,
     session::SessionRuntime,
+    structs::ProviderConfig,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -37,6 +38,7 @@ use tokio::{
 const CONTROL: &str = "127.0.0.1:9334";
 
 type Log = Arc<Mutex<Vec<String>>>;
+type Outcome<T> = Result<T, Box<dyn std::error::Error>>;
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -125,22 +127,34 @@ fn watch_runtime(name: &'static str, runtime: &SessionRuntime, log: Log) {
     });
 }
 
+/// One participant: its provider and its session runtime.
+struct Member {
+    name: &'static str,
+    bridge: Arc<BridgeController>,
+    runtime: SessionRuntime,
+}
+
 struct Pair {
-    spotify: Arc<BridgeController>,
-    youtube: Arc<BridgeController>,
-    spotify_runtime: SessionRuntime,
-    youtube_runtime: SessionRuntime,
+    members: Vec<Member>,
     log: Log,
 }
 
 impl Pair {
-    fn runtime(&self, name: &str) -> Result<&SessionRuntime, String> {
-        match name {
-            "spotify" => Ok(&self.spotify_runtime),
-            "youtube" => Ok(&self.youtube_runtime),
-            other => Err(format!("unknown provider {other:?}")),
-        }
+    fn member(&self, name: &str) -> Result<&Member, String> {
+        self.members
+            .iter()
+            .find(|member| member.name == name)
+            .ok_or_else(|| format!("unknown provider {name:?}"))
     }
+}
+
+fn provider(name: &str) -> Outcome<(&'static str, ProviderConfig)> {
+    Ok(match name {
+        "spotify" => ("spotify", providers::spotify()?),
+        "youtube" => ("youtube", providers::youtube_music()?),
+        "tidal" => ("tidal", providers::tidal()?),
+        other => return Err(format!("unknown provider {other:?}").into()),
+    })
 }
 
 async fn run_command(pair: &Pair, line: &str) -> (String, bool) {
@@ -148,21 +162,20 @@ async fn run_command(pair: &Pair, line: &str) -> (String, bool) {
     let result: Result<String, String> = async {
         match command {
             "state" => {
-                let spotify = pair
-                    .spotify
-                    .get_session_state()
-                    .await
-                    .map_err(|e| format!("{e:?}"))?;
-                let youtube = pair
-                    .youtube
-                    .get_session_state()
-                    .await
-                    .map_err(|e| format!("{e:?}"))?;
-                Ok(format!(
-                    "SPOTIFY {}\nYOUTUBE {}",
-                    summary(&spotify),
-                    summary(&youtube)
-                ))
+                let mut out = String::new();
+                for member in &pair.members {
+                    let state = member
+                        .bridge
+                        .get_session_state()
+                        .await
+                        .map_err(|e| format!("{e:?}"))?;
+                    out.push_str(&format!(
+                        "{} {}\n",
+                        member.name.to_uppercase(),
+                        summary(&state)
+                    ));
+                }
+                Ok(out)
             }
             "log" => {
                 let drained: Vec<String> =
@@ -174,15 +187,11 @@ async fn run_command(pair: &Pair, line: &str) -> (String, bool) {
                 })
             }
             "eval" => {
-                let (target, expression) = argument
-                    .split_once(' ')
-                    .ok_or("eval <spotify|youtube> <js>")?;
-                let controller = match target {
-                    "spotify" => &pair.spotify,
-                    "youtube" => &pair.youtube,
-                    other => return Err(format!("unknown provider {other:?}")),
-                };
-                let value = controller
+                let (target, expression) =
+                    argument.split_once(' ').ok_or("eval <provider> <js>")?;
+                let value = pair
+                    .member(target)?
+                    .bridge
                     .eval_value(expression)
                     .await
                     .map_err(|e| format!("{e:?}"))?;
@@ -194,14 +203,16 @@ async fn run_command(pair: &Pair, line: &str) -> (String, bool) {
                 ))
             }
             "stepout" => {
-                pair.runtime(argument)?
+                pair.member(argument)?
+                    .runtime
                     .step_out()
                     .await
                     .map_err(|e| format!("{e:?}"))?;
                 Ok(format!("{argument} stepped out\n"))
             }
             "resync" => {
-                pair.runtime(argument)?
+                pair.member(argument)?
+                    .runtime
                     .resync()
                     .await
                     .map_err(|e| format!("{e:?}"))?;
@@ -218,44 +229,61 @@ async fn run_command(pair: &Pair, line: &str) -> (String, bool) {
     )
 }
 
-async fn daemon(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn daemon(url: &str, host: &str, guest: &str) -> Outcome<()> {
     let log: Log = Arc::default();
-    eprintln!("[pair] attaching to Spotify and YouTube Music ...");
-    let (spotify, youtube) = tokio::join!(
-        BridgeController::initialise(providers::spotify()?),
-        BridgeController::initialise(providers::youtube_music()?),
+    let (host_name, host_config) = provider(host)?;
+    let (guest_name, guest_config) = provider(guest)?;
+    eprintln!("[pair] attaching to {host_name} and {guest_name} ...");
+    let (host_bridge, guest_bridge) = tokio::join!(
+        BridgeController::initialise(host_config),
+        BridgeController::initialise(guest_config),
     );
-    let spotify = Arc::new(spotify?);
-    let youtube = Arc::new(youtube?);
-    watch_bridge("spotify", &spotify, log.clone());
-    watch_bridge("youtube", &youtube, log.clone());
+    let host_bridge = Arc::new(host_bridge?);
+    let guest_bridge = Arc::new(guest_bridge?);
+    watch_bridge(host_name, &host_bridge, log.clone());
+    watch_bridge(guest_name, &guest_bridge, log.clone());
 
-    eprintln!("[pair] creating the session on Spotify ...");
-    let mut host = SessionClientConfig::new(url.to_owned(), new_client_id(), "Live Spotify");
-    host.provider = Some("spotify".to_owned());
-    let spotify_runtime = SessionRuntime::create(spotify.clone(), host).await?;
-    watch_runtime("spotify", &spotify_runtime, log.clone());
+    eprintln!("[pair] creating the session on {host_name} ...");
+    let mut config =
+        SessionClientConfig::new(url.to_owned(), new_client_id(), format!("Live {host_name}"));
+    config.provider = Some(host_name.to_owned());
+    let host_runtime = SessionRuntime::create(host_bridge.clone(), config).await?;
+    watch_runtime(host_name, &host_runtime, log.clone());
 
-    eprintln!("[pair] joining from YouTube Music ...");
-    let mut guest = SessionClientConfig::new(url.to_owned(), new_client_id(), "Live YouTube");
-    guest.provider = Some("youtube".to_owned());
-    let youtube_runtime = SessionRuntime::join(
-        youtube.clone(),
-        guest,
-        spotify_runtime.credentials().clone(),
+    eprintln!("[pair] joining from {guest_name} ...");
+    let joined_at = now_ms();
+    let mut config = SessionClientConfig::new(
+        url.to_owned(),
+        new_client_id(),
+        format!("Live {guest_name}"),
+    );
+    config.provider = Some(guest_name.to_owned());
+    let guest_runtime = SessionRuntime::join(
+        guest_bridge.clone(),
+        config,
+        host_runtime.credentials().clone(),
     )
     .await?;
-    watch_runtime("youtube", &youtube_runtime, log.clone());
+    watch_runtime(guest_name, &guest_runtime, log.clone());
     eprintln!(
-        "[pair] both in session {}; control port {CONTROL}",
-        spotify_runtime.status().session_id
+        "[pair] both in session {} (join took {} ms); control port {CONTROL}",
+        host_runtime.status().session_id,
+        now_ms() - joined_at
     );
 
     let pair = Pair {
-        spotify,
-        youtube,
-        spotify_runtime,
-        youtube_runtime,
+        members: vec![
+            Member {
+                name: host_name,
+                bridge: host_bridge,
+                runtime: host_runtime,
+            },
+            Member {
+                name: guest_name,
+                bridge: guest_bridge,
+                runtime: guest_runtime,
+            },
+        ],
         log,
     };
     let listener = TcpListener::bind(CONTROL).await?;
@@ -271,12 +299,13 @@ async fn daemon(url: &str) -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
     }
-    let _ = tokio::time::timeout(Duration::from_secs(5), pair.youtube_runtime.leave()).await;
-    let _ = tokio::time::timeout(Duration::from_secs(5), pair.spotify_runtime.leave()).await;
+    for member in pair.members.into_iter().rev() {
+        let _ = tokio::time::timeout(Duration::from_secs(5), member.runtime.leave()).await;
+    }
     Ok(())
 }
 
-async fn send(command: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn send(command: &str) -> Outcome<()> {
     let mut stream = TcpStream::connect(CONTROL).await?;
     stream.write_all(format!("{command}\n").as_bytes()).await?;
     let mut response = String::new();
@@ -286,19 +315,28 @@ async fn send(command: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Outcome<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.as_slice() {
-        [mode, url] if mode == "daemon" => {
-            tracing_subscriber::fmt()
-                .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| {
-                    "attune_core::session=debug,attune_core=info,warn,chromiumoxide::handler=error".into()
-                }))
-                .with_writer(std::io::stderr)
-                .init();
-            daemon(url).await
-        }
-        [] => Err("usage: live_pair daemon <ws-url> | live_pair <command> [argument]".into()),
-        _ => send(&args.join(" ")).await,
+    if args.first().map(String::as_str) == Some("daemon") {
+        let (url, host, guest) = match &args[1..] {
+            [url] => (url.as_str(), "spotify", "youtube"),
+            [url, host, guest] => (url.as_str(), host.as_str(), guest.as_str()),
+            _ => return Err("usage: live_pair daemon <ws-url> [<host> <guest>]".into()),
+        };
+        tracing_subscriber::fmt()
+            .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| {
+                "attune_core::session=debug,attune_core=info,warn,chromiumoxide::handler=error"
+                    .into()
+            }))
+            .with_writer(std::io::stderr)
+            .init();
+        return daemon(url, host, guest).await;
     }
+    if args.is_empty() {
+        return Err(
+            "usage: live_pair daemon <ws-url> [<host> <guest>] | live_pair <command> [argument]"
+                .into(),
+        );
+    }
+    send(&args.join(" ")).await
 }

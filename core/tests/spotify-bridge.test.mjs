@@ -748,3 +748,23 @@ test("A removal counts once the state shows it, not when the queue's revision ch
     await sleep(1_500);
     assert.deepEqual(operations(events), []);
 });
+
+test("A new queue starts its current song before the rest is looked up", async () => {
+    // Songs from other providers have no ISRC: one search each, four at a time.
+    const searchedAfter = new Map();
+    const { bridge, spotify } = await loadAdapter(spotify => {
+        const search = spotify.graphql;
+        spotify.graphql = (operation, variables) => {
+            searchedAfter.set(variables.searchTerm, spotify.calls.length);
+            return search(operation, variables);
+        };
+    });
+
+    await loadSession(bridge, ["a", "b", "c"]);
+
+    assert.equal(spotify.calls[0]?.play, "spotify:track:a");
+    for (const term of ["Song B Artist B", "Song C Artist C"]) {
+        assert.ok(searchedAfter.get(term) >= 1, `"${term}" is looked up after the current song started`);
+    }
+    assert.deepEqual(entryIds(bridge.getState()), ["session-a", "session-b", "session-c"]);
+});

@@ -1058,10 +1058,28 @@ impl<B: ProviderBridge> Worker<B> {
         // Translate first: the provider's view lacks the entries it couldn't
         // find, so its echo of a remote change only matches the session once
         // they are put back (verified live).
+        let operation = match self.for_empty_session(operation).await {
+            Some(operation) => operation,
+            None => return,
+        };
         let operation = self.session_operation(operation);
         if state::is_noop(&self.mirror, &operation, self.server_now()) {
             debug!("Dropping a local change that matches the session (echo)");
             return;
+        }
+        // An entry the session already has (published with the provider's
+        // whole queue, see `for_empty_session`) can't be inserted again;
+        // the server would refuse it and the refusal cost a resync.
+        if let SessionOperation::QueueInsert { entry, .. } = &operation {
+            if self
+                .mirror
+                .queue
+                .iter()
+                .any(|e| e.entry_id == entry.entry_id)
+            {
+                debug!("Dropping a local insert of an entry the session has");
+                return;
+            }
         }
         let previous_current = self.mirror.current_entry_id.clone();
         let replaced = matches!(operation, SessionOperation::QueueReplace { .. });
@@ -1069,16 +1087,45 @@ impl<B: ProviderBridge> Worker<B> {
             && replaced
             && self.mirror.current_entry_id != previous_current
         {
-            self.publish_resumed_position().await;
+            self.publish_actual_playback().await;
         }
     }
 
-    /// A new current song starts at 0 in the session, but a provider may
-    /// resume it part-way: Spotify continues an album or playlist where it
-    /// was left (verified live: 48 s and 164 s in). Left alone, the others
-    /// play that far behind, and the next resync throws this provider back
-    /// to the session's position, which sounds like the song restarting.
-    async fn publish_resumed_position(&mut self) {
+    /// While the session has nothing to play, what the provider plays
+    /// becomes its queue. A provider that joined an empty session keeps
+    /// its own queue, so its later changes (inserts, a play) refer to songs
+    /// the session doesn't have: the server refused each, and each refusal
+    /// resynced to the empty session, which pauses (verified live: Spotify
+    /// starting a playlist was paused five times in a row and nothing was
+    /// shared). `None`: nothing to publish.
+    async fn for_empty_session(&self, operation: SessionOperation) -> Option<SessionOperation> {
+        if !self.mirror.queue.is_empty()
+            || matches!(operation, SessionOperation::QueueReplace { .. })
+        {
+            return Some(operation);
+        }
+        let local = self.bridge.get_state().await.ok()?;
+        if local.queue.is_empty() {
+            return None;
+        }
+        let mut entries = local.queue;
+        entries.truncate(state::MAX_QUEUE_ENTRIES);
+        let current_entry_id = local
+            .current_entry_id
+            .filter(|id| entries.iter().any(|entry| &entry.entry_id == id));
+        Some(SessionOperation::QueueReplace {
+            entries,
+            current_entry_id,
+        })
+    }
+
+    /// A new current song starts at 0 and playing in the session, but the
+    /// provider may differ: Spotify resumes an album or playlist part-way
+    /// (verified live: 48 s and 164 s in), and a provider sharing its queue
+    /// into an empty session may be paused. Left alone, the others play
+    /// that far behind, and the next resync throws this provider back to
+    /// the session's position, which sounds like the song restarting.
+    async fn publish_actual_playback(&mut self) {
         let Ok(local) = self.bridge.get_state().await else {
             return;
         };
@@ -1091,18 +1138,23 @@ impl<B: ProviderBridge> Worker<B> {
         let local_now = now_ms();
         let here = state::position_at(&local, local_now);
         let session = state::position_at(&self.mirror, self.clock().server_time(local_now));
-        if here.abs_diff(session) <= state::POSITION_TOLERANCE_MS {
-            return;
+        if here.abs_diff(session) > state::POSITION_TOLERANCE_MS {
+            debug!(
+                here,
+                session, "Provider is elsewhere in the new song; publishing its position"
+            );
+            self.submit_local(SessionOperation::PlaybackSeek {
+                entry_id,
+                position_ms: here,
+            })
+            .await;
         }
-        debug!(
-            here,
-            session, "Provider resumed the new song part-way; publishing its position"
-        );
-        self.submit_local(SessionOperation::PlaybackSeek {
-            entry_id,
-            position_ms: here,
-        })
-        .await;
+        if local.playback.is_playing != self.mirror.playback.is_playing {
+            self.submit_local(SessionOperation::PlaybackSetPlaying {
+                is_playing: local.playback.is_playing,
+            })
+            .await;
+        }
     }
 
     /// Submit a change made in the provider (already translated). Returns

@@ -788,3 +788,52 @@ async fn a_new_song_resumed_part_way_is_published_at_its_position() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_provider_in_an_empty_session_shares_what_it_starts() {
+    // A joins an empty session with songs of its own; its later changes
+    // refer to them. Each was refused and resynced to the empty session,
+    // which paused A (verified live with Spotify).
+    let server = TestServer::start().await;
+    let host = FakeProvider::new(&[]);
+    let host_runtime = SessionRuntime::create(host.clone(), config(&server, "host"))
+        .await
+        .expect("create");
+    let a_provider = FakeProvider::new(&["s1", "s2"]);
+    a_provider.state.lock().unwrap().playback.is_playing = false;
+    let a = SessionRuntime::join(
+        a_provider.clone(),
+        config(&server, "a"),
+        host_runtime.credentials().clone(),
+    )
+    .await
+    .expect("join");
+    let session_id = a.credentials().code.clone();
+
+    // A starts a playlist: its queue changes and it reports an insert.
+    let mut playlist = music(&["p1", "p2", "p3"]);
+    playlist.playback.position_ms = 30_000;
+    playlist.playback.position_captured_at_ms = now_ms();
+    *a_provider.state.lock().unwrap() = playlist.clone();
+    a_provider.emit(Op::QueueInsert {
+        entry: entry("p2"),
+        index: 1,
+    });
+    a_provider.emit(Op::QueueInsert {
+        entry: entry("p3"),
+        index: 2,
+    });
+
+    eventually("the session has A's playlist where A is", || {
+        let state = server.session_state(&session_id);
+        let ids: Vec<&str> = state.queue.iter().map(|e| e.entry_id.as_str()).collect();
+        ids == ["p1", "p2", "p3"]
+            && state.playback.is_playing
+            && state::position_at(&state, now_ms()).abs_diff(30_000) < 5_000
+    })
+    .await;
+    eventually("the host follows", || host.ids() == ["p1", "p2", "p3"]).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(a.status().sync, SyncState::Synced, "no resync");
+    assert!(a_provider.playing(), "A was not paused");
+}

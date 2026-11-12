@@ -828,3 +828,34 @@ test("TIDAL turns off shuffle, repeat and autoplay for a session and puts them b
     await sleep(STORE_EVENT_SETTLE_MS);
     assert.deepEqual(operations(events), []);
 });
+
+test("TIDAL starts the current song before looking up the rest of a new queue", async () => {
+    // Text searches run one at a time; a long playlist used to wait for all of them.
+    const store = createStore();
+    const order = [];
+    const dispatch = store.dispatch;
+    store.dispatch = action => {
+        if (action?.type === "search/SEARCH_FOR") order.push(`search:${action.payload.query}`);
+        if (action?.type === "playQueue/RESET") order.push(`reset:${action.payload.elements.length}`);
+        if (action?.type === "playQueue/APPEND_ELEMENTS") order.push(`append:${action.payload.elements.length}`);
+        return dispatch(action);
+    };
+    const { bridge } = await loadAdapter({ store });
+
+    const outcome = await bridge.applySnapshot({
+        queue: [
+            { entryId: "session-current", track: repeatedTrack },
+            { entryId: "session-third", track: thirdTrack },
+            { entryId: "session-ghost", track: ghostTrack },
+        ],
+        currentEntryId: "session-current",
+        playback: playback(),
+    });
+
+    const reset = order.indexOf("reset:1");
+    const thirdSearch = order.findIndex(step => step.startsWith("search:Third Track"));
+    assert.ok(reset >= 0 && thirdSearch > reset, `the current song is loaded first: ${order}`);
+    assert.equal(order.at(-1), "append:1", `the rest is appended behind it: ${order}`);
+    assert.deepEqual([...outcome.unavailableEntryIds], ["session-ghost"]);
+    assert.deepEqual(entryIds(bridge.getState()), ["session-current", "session-third"]);
+});

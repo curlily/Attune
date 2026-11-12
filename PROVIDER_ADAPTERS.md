@@ -35,7 +35,10 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
 | Leave dialog | A page that is playing can block its reload with a "Leave site?" dialog | Verified live (YouTube Music) | `install_bridge` confirms `beforeunload` dialogs |
 | Interruptions | Advertisements take over playback for a while | Verified live (YouTube Music) | Adapter sends `Interruption`; the runtime steps out and rejoins after |
 | Background timers | While the app's window is hidden and nothing plays, Chromium runs the page's timers once a second (a 25 ms timeout took 1000 ms). Polling loops slow down exactly while a track loads paused. | Verified live (TIDAL; Spotify, **also while playing**, as its sound is native; YouTube Music, where sound from the page lifts it, and selecting a song always starts sound). Hidden for more than 5 minutes, chained timers run **once a minute** (verified live, YouTube Music) | Waits react to the app's own signals, with a 250 ms fallback check: TIDAL store changes (`waitFor`, `holdUntil`); Spotify `update`/`queue_update` events (`watchPlayer`); YouTube Music store changes and `<video>` media events, caught in the capture phase (`watchPage`). Timers remain only for timeouts and stable periods, and the 150–180 ms debounce of local changes |
-| Resuming a new list part-way | A new current song starts at 0 in the session (`queue.replace`), but **Spotify resumes an album or playlist where it was left** (seen 48 s, 164 s and 176 s in). The others then played that far behind, and the next resync (a stale queue edit, a rejoin) threw Spotify back to the session's position: heard as the song restarting, again on every resync | Verified live (Spotify + YouTube Music session), fixed | After a local replace that changes the current song, the runtime compares the provider's position with the session's and publishes a seek (`publish_resumed_position`). Covers any provider |
+| Resuming a new list part-way | A new current song starts at 0 in the session (`queue.replace`), but **Spotify resumes an album or playlist where it was left** (seen 48 s, 164 s and 176 s in). The others then played that far behind, and the next resync (a stale queue edit, a rejoin) threw Spotify back to the session's position: heard as the song restarting, again on every resync | Verified live (Spotify + YouTube Music session), fixed | After a local replace that changes the current song, the runtime compares the provider's position with the session's and publishes a seek, and its play state if that differs (`publish_actual_playback`). Covers any provider |
+| Joining an empty session | A provider that joins a session with an empty queue keeps its own queue. Its later changes (inserts, a play) refer to songs the session doesn't have: the server refused each, each refusal resynced to the empty session, and that **pauses**. Spotify starting a playlist was paused five times in a row and nothing was shared | Verified live (YouTube Music hosting after a reload, Spotify joining), fixed | While the session queue is empty, a local change publishes the provider's whole queue instead (`for_empty_session`), then its position and play state; inserts of entries the session already has are dropped |
+| Long new queues | Every adapter used to look up all songs of a new queue before starting the current one. Songs from another provider carry no ISRC, so each is a text search: four at a time (Spotify, YouTube Music) or **one at a time** (TIDAL) | Verified live, fixed | All three start the current song first and look up the rest after it. Live: YouTube Music in sync after 1.5 s (81 songs, the rest 15 s later), Spotify playing after 0.9 s (49 songs, the rest 5 s later), TIDAL playing after 2 s (81 songs, the rest 38 s later) |
+| Following a replace, then its seek | A follower applies session changes one at a time. When a provider shares a new list resumed part-way, the seek that follows the replace waits until the follower has looked up the whole list: YouTube Music played the 50-song list from 0 for 8 s, then jumped to Spotify's 1:35 | Verified live, open | Would need the replace to carry its position (protocol v2) |
 | Comparing after a remote change | The app's state keeps changing for about a second after an action, which can push a debounce past a fixed suppression window; the delayed comparison then sees our own change as the user's. **With throttled timers it always happens:** the debounce takes a second, so it always fires after the 300 ms window | Verified live (TIDAL, Spotify, YouTube Music) | Every adapter resets the comparison base to the state the remote change produced: TIDAL `rebaseLocalChanges`, Spotify and YouTube Music `rebase()` at the end of `asRemoteChange`. Removing it makes both new tests publish an echo. **The rebase is only as good as the wait before it:** Spotify's queue write used to count as done while the old items still showed, and an echo followed (verified live, fixed) |
 
 ## 2. TIDAL
@@ -171,9 +174,11 @@ The adapter was injected into the running app and driven directly, not through
 ### How the adapter handles it now
 
 - **Replacing the queue:** keeps the current song with CLEAR_UPCOMING +
-  APPEND_ELEMENTS when it stays, otherwise RESET (loads paused), then
-  `startLoadedTrack` holds position and play state. An empty session queue is
-  CLEAR_QUEUE.
+  APPEND_ELEMENTS when it stays, otherwise RESET with only the current song (loads
+  paused), then `startLoadedTrack` holds position and play state. The rest is looked
+  up after that and added with CLEAR_UPCOMING + APPEND_ELEMENTS (`appendUpcoming`),
+  if the song is still current. Joining an 81-song Spotify queue (no ISRCs) played
+  after 2 s; the lookups took another 36 s. An empty session queue is CLEAR_QUEUE.
 - **Entry IDs live in the uids** (`pq__attune__<entryId>`). TIDAL saves its queue
   with them, so they survive a bridge reload.
 - **Lookups:** ISRCs in batches of 20 first (cached per ISRC), text search one at a
@@ -326,7 +331,7 @@ went both ways without echoes; YouTube Music trailed by 0.1–1.2 s.
 7. **Changing shuffle, repeat or autoplay during a jam** isn't detected (same as TIDAL).
 8. **Debug port:** Attune's config expects Spotify on 9223. `--remote-debugging-port=<port>` needs the `=`; with a space Spotify ignores it without a word.
 9. **Store version:** still unchecked.
-10. **Not done yet:** a two-person session with TIDAL, and a song missing on the Spotify side. Spotify + YouTube Music was run live (`live_pair`).
+10. **Not done yet:** a song missing on the Spotify side. Sessions with YouTube Music and with TIDAL were run live (`live_pair`).
 
 ## 4. YouTube Music
 
@@ -526,7 +531,7 @@ selecting another song 0.9–1.7 s.
 7. **Signed out, age-restricted and region-blocked videos** weren't tested.
 8. **Podcasts and uploads** in the queue weren't tested.
 9. **Other browsers:** only Edge was tested. Chrome and Brave take the same flags.
-10. **Not done yet:** a two-person session with TIDAL (one with Spotify was run live, `live_pair`), launching the
+10. **Not done yet:** a session with TIDAL (one with Spotify was run live, `live_pair`), launching the
     browser from Attune (the code path exists, the test used a window started by hand),
     and the connect screen's sign-in button in the running app.
 

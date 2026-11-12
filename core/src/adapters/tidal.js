@@ -983,35 +983,57 @@
         // Entries before currentEntryId are history, not upcoming queue items.
         const orderedEntries = entries.slice(selectedIndex);
 
-        // Resolve every recording before replacing the active queue, so an
-        // unplayable current track leaves the user's queue intact. The current
-        // entry goes first: if it can't play, don't search for the rest.
+        // The current entry first, before the user's queue is touched: if it
+        // can't play, nothing changes and the rest isn't searched for. It
+        // starts before the rest is looked up. Text searches run one at a
+        // time here, and songs from other providers often carry no ISRC, so
+        // a long playlist took seconds to look up while nothing played.
         const known = loadedProductIds();
         const [current] = await resolveEntries([orderedEntries[0]], known);
         if (current.error) {
             throw trackUnavailableError([current]);
         }
-        const upcoming = await resolveEntries(orderedEntries.slice(1), known);
-        const failures = upcoming.filter(result => result.error);
-        const loaded = [current, ...upcoming.filter(result => !result.error)];
-
         // The player needs TIDAL's metadata for every element.
-        const missing = new Set(await ensureMediaItems(loaded.map(result => result.productId)));
-        if (missing.has(String(current.productId))) {
+        if ((await ensureMediaItems([current.productId])).length) {
             throw trackUnavailableError([{
                 entry: current.entry,
                 error: new TrackLookupError(`TIDAL could not load track ${current.productId}`),
             }]);
         }
-        const playable = loaded.filter(result => !missing.has(String(result.productId)));
-        const unloadable = loaded.filter(result => missing.has(String(result.productId)));
 
-        writeQueue(playable);
+        writeQueue([current]);
         if (playback) await startLoadedTrack(current.productId, playback, calledAt);
+
+        const upcoming = await resolveEntries(orderedEntries.slice(1), known);
+        const failures = upcoming.filter(result => result.error);
+        const found = upcoming.filter(result => !result.error);
+        const missing = new Set(await ensureMediaItems(found.map(result => result.productId)));
+        const playable = found.filter(result => !missing.has(String(result.productId)));
+        const unloadable = found.filter(result => missing.has(String(result.productId)));
+        appendUpcoming(current, playable);
 
         return {
             unavailableEntryIds: [...failures, ...unloadable].map(failure => failure.entry.entryId),
         };
+    }
+
+    /**
+     * Put `results` behind the current element, if it is still `current`
+     * (the song may have ended during the lookups; the session's own
+     * advance follows then). Verified live: `CLEAR_UPCOMING` and
+     * `APPEND_ELEMENTS` don't reach the player, so the song plays on.
+     */
+    function appendUpcoming(current, results) {
+        const queue = store.getState()?.playQueue;
+        const currentElement = queue?.elements?.[queue?.currentIndex];
+        if (String(currentElement?.mediaItemId) !== String(current.productId)) return;
+        const upcomingCount = (queue.elements?.length ?? 0) - queue.currentIndex - 1;
+        if (upcomingCount === 0 && results.length === 0) return;
+        setRemoteMutationWindow();
+        if (upcomingCount > 0) dispatch("playQueue/CLEAR_UPCOMING");
+        if (results.length) {
+            dispatch("playQueue/APPEND_ELEMENTS", { elements: results.map(queueElement) });
+        }
     }
 
     // Read in TIDAL's reducer (not tested live): while casting (TIDAL

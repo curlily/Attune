@@ -951,17 +951,16 @@
             return { unavailableEntryIds: [] };
         }
 
-        // Resolve everything before touching Spotify, the current entry
-        // first: if it can't play, don't search for the rest.
+        // The current entry first: if it can't play, nothing changes and the
+        // rest isn't searched for. It starts before the rest is looked up,
+        // which takes seconds for a long playlist (four searches at a time;
+        // songs from other providers carry no ISRC). Starting a single track
+        // keeps only queued items behind it, so nothing else plays from the
+        // old list meanwhile.
         const view = readPlayer();
         const known = knownUris(view);
         const [current] = await resolveEntries([entries[0]], known);
         if (current.error) throw trackUnavailableError([current]);
-        const upcoming = await resolveEntries(entries.slice(1), known);
-        const failures = upcoming.filter(result => result.error);
-        const wanted = upcoming
-            .filter(result => !result.error)
-            .map(result => ({ entryId: result.entry.entryId, uri: result.uri }));
 
         const now = readPlayer();
         const alreadyCurrent = now.current && !queueEndApplies(now) &&
@@ -974,8 +973,19 @@
             const started = readPlayer().current;
             if (started) entryIdByUid.set(started.uid, current.entry.entryId);
         }
-        await writeUpcoming(wanted);
         await alignPlayback(playback, calledAt);
+
+        const upcoming = await resolveEntries(entries.slice(1), known);
+        const failures = upcoming.filter(result => result.error);
+        const wanted = upcoming
+            .filter(result => !result.error)
+            .map(result => ({ entryId: result.entry.entryId, uri: result.uri }));
+        // The song may have ended during the lookups; the session's own
+        // advance follows then.
+        const playing = readPlayer().current;
+        if (playing && entryIdFor(playing.uid) === current.entry.entryId) {
+            await writeUpcoming(wanted);
+        }
 
         return { unavailableEntryIds: failures.map(failure => failure.entry.entryId) };
     }

@@ -710,3 +710,20 @@ test("Store changes that go on after a remote change aren't published as the use
     await settle();
     assert.deepEqual(operations(events), [{ type: "playback.setPlaying", isPlaying: true }]);
 }));
+
+test("A new queue starts its current song before the rest is looked up", () => withAdapter(page => {
+    const fetch = page.network.fetch;
+    page.searchedAfter = new Map();
+    page.network.fetch = (path, params) => {
+        if (path === "/search") page.searchedAfter.set(params.query, page.calls.filter(call => call.startsWith("select:")).length);
+        return fetch(path, params);
+    };
+}, async ({ bridge, page }) => {
+    await loadSession(bridge, ["a", "b", "c"]);
+
+    assert.equal(page.calls.find(call => call.startsWith("select:")), "select:a");
+    for (const [query, selects] of page.searchedAfter) {
+        if (!query.startsWith("Song A")) assert.ok(selects >= 1, `"${query}" is looked up after the current song started`);
+    }
+    assert.deepEqual(entryIds(bridge.getState()), ["session-a", "session-b", "session-c"]);
+}));
