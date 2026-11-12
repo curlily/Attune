@@ -1,5 +1,9 @@
-//! The widget window: frameless, opened next to the tray icon, hidden when
-//! it loses focus (unless pinned), and closing only hides it to the tray.
+//! The widget window: frameless, first opened next to the tray icon, moved
+//! by dragging its header, and closing only hides it to the tray.
+//!
+//! It doesn't hide when it loses focus (the user found that disruptive, and
+//! it fought with dragging). Once the user has moved it, it stays where they
+//! put it instead of jumping back to the tray each time it opens.
 
 use std::{
     sync::{
@@ -17,16 +21,20 @@ use tracing::warn;
 const MAIN: &str = "main";
 /// Space between the tray icon and the window.
 const GAP: i32 = 10;
-/// A tray click right after the window hid itself (because that same click
-/// took its focus) must not reopen it.
-const REOPEN_GUARD: Duration = Duration::from_millis(300);
+/// Clicking the tray icon takes focus from the window just before the click
+/// arrives; focus lost this recently still counts as "in front".
+const FOCUS_GRACE: Duration = Duration::from_millis(300);
 
 #[derive(Default)]
 pub struct WindowState {
     pinned: AtomicBool,
-    hidden_by_blur_at: Mutex<Option<Instant>>,
-    /// Where the tray icon was last seen, for showing from the menu.
+    focus_lost_at: Mutex<Option<Instant>>,
+    /// Where the tray icon was last seen, for the first opening.
     last_icon: Mutex<Option<IconRect>>,
+    /// Where we last put the window; a move elsewhere was the user's.
+    placed_at: Mutex<Option<(i32, i32)>>,
+    /// The user has moved the window: keep it where they put it.
+    user_placed: AtomicBool,
 }
 
 /// The tray icon's area in physical pixels.
@@ -108,6 +116,7 @@ fn move_near_icon<R: Runtime>(window: &WebviewWindow<R>, icon: IconRect) {
         height: work.size.height as i32,
     };
     let (x, y) = place(icon, (size.width as i32, size.height as i32), area);
+    *lock(&window.state::<WindowState>().placed_at) = Some((x, y));
     let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
@@ -118,8 +127,9 @@ pub fn show<R: Runtime>(app: &AppHandle<R>) {
         return;
     };
     if !window.is_visible().unwrap_or(false) {
-        if let Some(icon) = *lock(&app.state::<WindowState>().last_icon) {
-            if !app.state::<WindowState>().pinned.load(Ordering::Relaxed) {
+        let state = app.state::<WindowState>();
+        if !state.user_placed.load(Ordering::Relaxed) {
+            if let Some(icon) = *lock(&state.last_icon) {
                 move_near_icon(&window, icon);
             }
         }
@@ -143,20 +153,19 @@ pub fn remember_icon<R: Runtime>(app: &AppHandle<R>, rect: Rect) {
     }
 }
 
-/// Left click on the tray icon: open next to it, or close if open.
+/// Left click on the tray icon: hide the window if it's in front, otherwise
+/// show it (or bring it to the front from behind other windows).
 pub fn toggle_from_tray<R: Runtime>(app: &AppHandle<R>, rect: Rect) {
     let Some(window) = main_window(app) else {
         return;
     };
     remember_icon(app, rect);
     let state = app.state::<WindowState>();
-
-    let just_hidden = lock(&state.hidden_by_blur_at)
-        .take()
-        .is_some_and(|at| at.elapsed() < REOPEN_GUARD);
-    if window.is_visible().unwrap_or(false) {
+    let recently_focused = lock(&state.focus_lost_at).is_some_and(|at| at.elapsed() < FOCUS_GRACE);
+    let in_front = window.is_focused().unwrap_or(false) || recently_focused;
+    if window.is_visible().unwrap_or(false) && in_front {
         hide(app);
-    } else if !just_hidden {
+    } else {
         show(app);
     }
 }
@@ -170,23 +179,25 @@ pub fn set_pinned<R: Runtime>(app: &AppHandle<R>, pinned: bool) {
     }
 }
 
-/// Window events: close hides to the tray; losing focus hides unless pinned.
+/// Window events: close hides to the tray; a move we didn't make means the
+/// user placed the window; focus changes are noted for the tray toggle.
 pub fn on_event<R: Runtime>(window: &tauri::Window<R>, event: &WindowEvent) {
     if window.label() != MAIN {
         return;
     }
-    let app = window.app_handle();
+    let state = window.app_handle().state::<WindowState>();
     match event {
         WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
             let _ = window.hide();
         }
-        WindowEvent::Focused(false) => {
-            let state = app.state::<WindowState>();
-            if !state.pinned.load(Ordering::Relaxed) && window.is_visible().unwrap_or(false) {
-                *lock(&state.hidden_by_blur_at) = Some(Instant::now());
-                let _ = window.hide();
-            }
+        WindowEvent::Focused(focused) => {
+            *lock(&state.focus_lost_at) = (!focused).then(Instant::now);
+        }
+        WindowEvent::Moved(position)
+            if *lock(&state.placed_at) != Some((position.x, position.y)) =>
+        {
+            state.user_placed.store(true, Ordering::Relaxed);
         }
         _ => {}
     }
@@ -198,8 +209,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Pin the widget: it stays open and on top (and isn't moved back to the
-/// tray when shown again).
+/// Pin the widget: it stays on top of other windows.
 #[tauri::command]
 pub fn set_window_pinned(app: AppHandle, pinned: bool) {
     set_pinned(&app, pinned);

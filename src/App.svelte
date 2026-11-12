@@ -79,7 +79,7 @@
       {/if}
       <button
         class="icon-btn"
-        title={app.pinned ? "Unpin: hide when clicking elsewhere" : "Pin: keep open and on top"}
+        title={app.pinned ? "Unpin: stop keeping on top" : "Pin: keep on top of other windows"}
         aria-pressed={app.pinned}
         onclick={() => app.setPinned(!app.pinned)}
       >
