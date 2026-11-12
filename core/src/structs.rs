@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 pub enum ProviderId {
     Spotify,
     Tidal,
+    YoutubeMusic,
 }
 
 impl ProviderId {
@@ -14,6 +15,7 @@ impl ProviderId {
         match self {
             Self::Spotify => "spotify",
             Self::Tidal => "tidal",
+            Self::YoutubeMusic => "youtube-music",
         }
     }
 }
@@ -27,6 +29,22 @@ pub struct ProviderConfig {
     /// Dedicated loopback CDP port for this provider process.
     pub debugging_port: u16,
     pub bridge_script: String,
+    /// Set when the provider is a website in a browser rather than a
+    /// desktop app of its own.
+    pub browser: Option<BrowserPage>,
+}
+
+/// A provider that runs as a page in a Chromium browser.
+///
+/// The executable is the user's browser, so MyJam must never close it to
+/// restart it: it opens a window of its own, with a profile of its own
+/// (browsers ignore the debug port on the user's default profile).
+#[derive(Debug, Clone)]
+pub struct BrowserPage {
+    /// The page to open, as an app window.
+    pub start_url: String,
+    /// Browser profile used only for this provider.
+    pub profile_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -78,6 +78,7 @@ pub fn run() {
             commands::settings::update_settings,
             commands::playback::get_providers,
             commands::playback::connect_provider,
+            commands::playback::open_provider_sign_in,
             commands::playback::disconnect_provider,
             commands::playback::get_playstate,
             commands::playback::get_session_state,

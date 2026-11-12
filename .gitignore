@@ -25,3 +25,6 @@ dist-ssr
 
 # Rust build output
 /target
+
+# Browser profile for YouTube Music (holds the Google sign-in)
+/EdgeProfile/

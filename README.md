@@ -1,7 +1,7 @@
 # MyJam
 
 Listen together across music services. Everyone keeps using their own desktop
-client (TIDAL or Spotify, more later); MyJam watches play/pause, seeking, skips and
+client (TIDAL, Spotify or YouTube Music); MyJam watches play/pause, seeking, skips and
 queue edits there and mirrors them to everyone else in the session.
 
 ## Workspace
@@ -15,7 +15,7 @@ queue edits there and mirrors them to everyone else in the session.
 
 See [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCHITECTURE.md) for the provider bridge, and
 [PROVIDER_ADAPTERS.md](PROVIDER_ADAPTERS.md) for what is known about each music app's
-internals, open adapter problems and plans (Spotify rework, YouTube Music).
+internals and open adapter problems.
 
 ## Checks
 
@@ -28,8 +28,8 @@ npm test
 
 `cargo test` includes the coordinator rules, the client against a test-only
 WebSocket peer (`core/tests/support`), and the real server driven by the real
-client (`server/tests/e2e.rs`). `npm test` runs the mocked TIDAL/Spotify adapter
-tests. None of these replace a live test with the installed desktop clients.
+client (`server/tests/e2e.rs`). `npm test` runs the mocked TIDAL, Spotify and
+YouTube Music adapter tests. None of these replace a live test with the installed desktop clients.
 
 ## Running the relay server
 
@@ -97,6 +97,27 @@ cloudflared tunnel run myjam
 
 Clients then use `wss://jam.example.com/ws`. Cloudflare drops idle WebSockets after
 about 100 seconds; the client pings every 30 seconds, so sessions stay open.
+
+## Using YouTube Music
+
+YouTube Music has no desktop app, so MyJam opens it in a window of an installed
+browser (Microsoft Edge, Google Chrome or Brave), with a browser profile of its own.
+Your normal browser windows and profile are not touched.
+
+To listen with your account, sign in once before connecting:
+
+1. On the connect screen, choose **Sign in first** under YouTube Music.
+2. Sign in to your Google account in the window that opens.
+3. Close that window.
+4. Choose **Open YouTube Music**. MyJam remembers the sign-in from now on.
+
+The sign-in needs its own step because Google refuses sign-ins in the window MyJam
+connects to. If that window was left open, connecting fails with a message asking you
+to close it.
+
+Without a subscription YouTube Music plays advertisements. During one, MyJam steps
+out of the session and rejoins when it is over, so you may come back a little into
+the song the others are hearing.
 
 ## How a session works
 

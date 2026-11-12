@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::{error::AppError, state::AppState};
 use jam_core::{
-    bridge_controller::BridgeController,
+    bridge_controller::{open_sign_in_window, BridgeController},
     detect::{detect_providers, provider_config, ProviderAvailability},
     protocol::SessionMusicState,
     structs::{PlayState, ProviderId},
@@ -110,6 +110,14 @@ pub async fn connect_provider(
     id: ProviderId,
 ) -> Result<(), AppError> {
     connect(&app, &state, id).await
+}
+
+/// Open a browser-based music service in an ordinary window so the user
+/// can sign in. Needed once: Google refuses sign-ins in the window MyJam
+/// connects to. The user closes it again before connecting.
+#[tauri::command]
+pub async fn open_provider_sign_in(id: ProviderId) -> Result<(), AppError> {
+    Ok(open_sign_in_window(&provider_config(id)?)?)
 }
 
 #[tauri::command]

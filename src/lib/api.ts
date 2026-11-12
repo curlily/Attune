@@ -4,7 +4,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export type ProviderId = "Tidal" | "Spotify";
+export type ProviderId = "Tidal" | "Spotify" | "YoutubeMusic";
 
 export interface ProviderAvailability {
   id: ProviderId;
@@ -14,6 +14,8 @@ export interface ProviderAvailability {
   /** Running with MyJam's debug port: connecting won't restart it. */
   ready: boolean;
   unsupported: string | null;
+  /** A website MyJam opens in a browser window of its own. */
+  inBrowser: boolean;
 }
 
 export interface ProviderOverview {
@@ -140,6 +142,8 @@ export const api = {
 
   getProviders: () => invoke<ProviderOverview>("get_providers"),
   connectProvider: (id: ProviderId) => invoke<void>("connect_provider", { id }),
+  /** Open a browser-based service in an ordinary window, for signing in. */
+  openProviderSignIn: (id: ProviderId) => invoke<void>("open_provider_sign_in", { id }),
   disconnectProvider: () => invoke<void>("disconnect_provider"),
   /** Cover art of what the connected app is playing, if it has one. */
   coverUrl: async () => (await invoke<PlayState>("get_playstate")).track?.cover_url ?? null,

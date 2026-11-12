@@ -28,8 +28,10 @@ const MINI_HEIGHT = 96;
 export const PROVIDER_NAMES: Record<string, string> = {
   Tidal: "TIDAL",
   Spotify: "Spotify",
+  YoutubeMusic: "YouTube Music",
   tidal: "TIDAL",
   spotify: "Spotify",
+  "youtube-music": "YouTube Music",
 };
 
 class App {

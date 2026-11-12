@@ -394,6 +394,9 @@ struct Worker<B> {
     /// The user's provider settings from before the session, restored when
     /// it ends (however it ends).
     provider_settings: Value,
+    /// The provider was interrupted (e.g. by an advertisement) and this
+    /// runtime stepped out because of it; it rejoins when that is over.
+    interrupted: bool,
 }
 
 impl<B: ProviderBridge> Worker<B> {
@@ -438,6 +441,7 @@ impl<B: ProviderBridge> Worker<B> {
             reported_status: sync.participant_status(),
             participants: Vec::new(),
             provider_settings: Value::Null,
+            interrupted: false,
         };
         worker.publish();
         worker
@@ -490,7 +494,12 @@ impl<B: ProviderBridge> Worker<B> {
                 command = commands.recv() => match command {
                     None => break None, // handle dropped: close without leaving
                     Some(Command::Leave(reply)) => break Some(reply),
-                    Some(Command::StepOut) => { self.step_out().await; Flow::Continue }
+                    Some(Command::StepOut) => {
+                        // Their own choice now: don't rejoin for them.
+                        self.interrupted = false;
+                        self.step_out().await;
+                        Flow::Continue
+                    }
                     Some(Command::Resync) => { self.resync().await; Flow::Continue }
                     Some(Command::Edit(edit, reply)) => {
                         let _ = reply.send(self.edit(edit).await);
@@ -508,6 +517,10 @@ impl<B: ProviderBridge> Worker<B> {
                 },
                 event = self.bridge_events.recv() => match event {
                     Ok(BridgeEvent::Operation(operation)) => { self.on_local(operation).await; Flow::Continue }
+                    Ok(BridgeEvent::Interruption(interruption)) => {
+                        self.on_interruption(interruption.active).await;
+                        Flow::Continue
+                    }
                     Ok(_) => Flow::Continue,
                     Err(broadcast::error::RecvError::Lagged(missed)) => {
                         // Local changes were lost; the session's state wins.
@@ -658,6 +671,23 @@ impl<B: ProviderBridge> Worker<B> {
             SubmitOutcome::Rejected { code, message, .. } => {
                 Err(Error::EditRejected { code, message })
             }
+        }
+    }
+
+    /// The provider can't follow for a while (an advertisement), or can
+    /// again. The session goes on meanwhile: step out, and rejoin after.
+    /// Someone who stepped out themselves stays out.
+    async fn on_interruption(&mut self, active: bool) {
+        if active {
+            if matches!(self.sync, SyncState::SteppedOut | SyncState::Ended) {
+                return;
+            }
+            info!(session_id = %self.session_id, "The music client was interrupted; stepping out");
+            self.interrupted = true;
+            self.step_out().await;
+        } else if std::mem::take(&mut self.interrupted) {
+            info!(session_id = %self.session_id, "The interruption is over; rejoining");
+            self.resync().await;
         }
     }
 

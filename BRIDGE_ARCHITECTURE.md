@@ -11,17 +11,19 @@ Rust owns the CDP connection, bridge lifecycle, JSON transport, and event delive
 `BridgeController::initialise` performs the following steps:
 
 1. Checks the provider's configured loopback CDP port for a matching page target.
-2. If the target is unavailable, terminates the configured client process and launches it with `--remote-debugging-port=<port>`.
+2. If the target is unavailable, terminates the configured client process and launches it with `--remote-debugging-port=<port>`. A provider that is a page in a browser (`ProviderConfig::browser`) is never terminated: its page is opened as an app window in a browser profile of its own.
 3. Waits for the matching target to appear in `/json/list`.
 4. Connects with `chromiumoxide::Browser::connect` and runs the CDP handler stream in a Tokio task.
 5. Finds the page target by the configured URL and attaches a `Page` handle.
 6. Enables the Page, Runtime, and Log CDP domains; subscribes to binding, console, exception, and log events.
 7. Registers the `__jamEvent` CDP binding and the adapter through `evaluate_on_new_document`.
-8. Issues a raw CDP page reload so the adapter executes at document start, then waits for its `Ready` event and verifies protocol version 1.
+8. Issues a raw CDP page reload so the adapter executes at document start, then waits for its `Ready` event and verifies protocol version 1. A "Leave site?" dialog the page raises against the reload is confirmed.
+
+Calls into the page are evaluated as user gestures, because browsers refuse to start playback from a script otherwise.
 
 The Browser, Page, handler task, and event-forwarding task are retained by the controller. `dispose` calls the adapter's cleanup method and aborts both tasks; it does not terminate the music application.
 
-TIDAL uses port `9222`; Spotify uses `9223`. These values are provider configuration, not provider logic in the controller. Keeping them distinct allows both desktop clients to remain open without sharing one Chromium debugging listener.
+TIDAL uses port `9222`, Spotify `9223` and YouTube Music `9224`. These values are provider configuration, not provider logic in the controller. Keeping them distinct allows both desktop clients to remain open without sharing one Chromium debugging listener.
 
 ## Provider bridge contract v1
 
@@ -52,7 +54,7 @@ Renderer events are sent through the CDP binding as JSON:
 {"type":"Operation","data":{"type":"playback.setPlaying","isPlaying":false}}
 ```
 
-`BridgeController::subscribe()` exposes `Ready`, `Error`, legacy playback/queue events, and provider-independent `Operation` events through a Tokio broadcast channel. A future session/network component should subscribe here; it should not know about TIDAL Redux actions or Spotify URIs.
+`BridgeController::subscribe()` exposes `Ready`, `Error`, legacy playback/queue events, provider-independent `Operation` events, and `Interruption` events through a Tokio broadcast channel. An interruption (`{ active, reason }`) means the provider can't follow for a while, e.g. during an advertisement: the session runtime steps out and rejoins when it is over. A future session/network component should subscribe here; it should not know about TIDAL Redux actions or Spotify URIs.
 
 ## Shared session state
 
@@ -99,6 +101,16 @@ An important deliberate limitation: a TIDAL action that safely unloads an active
 
 The session queue is the current track plus Spotify's queued and playlist ("context") items. Recommendations ("autoplay") are left out, and autoplay is switched off during a session.
 
+## YouTube Music adapter notes
+
+`core/src/adapters/youtube_music.js` runs in music.youtube.com, opened in a Chromium browser. The page's script names are generated and its code is minified, so the adapter depends on neither. It reaches everything from the `ytmusic-player-bar` and `ytmusic-app` elements (all verified live, details and the one-time sign-in in [PROVIDER_ADAPTERS.md](PROVIDER_ADAPTERS.md)):
+
+- The app's Redux store for the queue, by action name: `UPDATE_ITEMS` (replace everything after the current item), `CLEAR`, `ADD_ITEMS`, and `SET_AUTOPLAY_ENABLED` / `SET_REPEAT` for the neutral state.
+- The queue service's `selectQueueItem` to make an item current and start it.
+- The YouTube player API (`playVideo`, `pauseVideo`, `seekTo`, `getCurrentTime`, `getPlayerState`).
+- The app's network manager for song search (`/search`) and for queue items by video ID (`/music/get_queue`).
+- `player.adPlaying` in the store, reported as an `Interruption`.
+
 ## Validation
 
 Run:
@@ -107,4 +119,4 @@ Run:
 npm test
 ```
 
-This runs the mocked TIDAL and Spotify adapter tests (shared API, skipping tracks the provider can't find, the structured `trackUnavailable` error, paused joins, queue edits that keep the song playing, and that remote applies are not echoed as local operations) plus JavaScript syntax checks for both scripts. The mocks stand in for the providers' private renderer interfaces, so they do not replace a live test against the installed desktop clients. Run `cargo test --workspace` for the Rust side.
+This runs the mocked TIDAL, Spotify and YouTube Music adapter tests (shared API, skipping tracks the provider can't find, the structured `trackUnavailable` error, paused joins, queue edits that keep the song playing, and that remote applies are not echoed as local operations) plus JavaScript syntax checks for the scripts. The mocks stand in for the providers' private renderer interfaces, so they do not replace a live test against the installed desktop clients. Run `cargo test --workspace` for the Rust side.

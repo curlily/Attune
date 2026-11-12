@@ -158,6 +158,7 @@ async fn daemon(provider: &str) -> Result<(), Box<dyn std::error::Error>> {
     let config = match provider {
         "tidal" => providers::tidal()?,
         "spotify" => providers::spotify()?,
+        "youtube" => providers::youtube_music()?,
         other => return Err(format!("unknown provider {other:?}").into()),
     };
     eprintln!("[live] attaching to {provider} ...");
@@ -230,7 +231,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .init();
             daemon(provider).await
         }
-        [] => Err("usage: live daemon <tidal|spotify> | live <command> [argument]".into()),
+        [] => Err("usage: live daemon <tidal|spotify|youtube> | live <command> [argument]".into()),
         _ => send(&args.join(" ")).await,
     }
 }

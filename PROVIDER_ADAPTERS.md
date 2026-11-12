@@ -1,10 +1,10 @@
 # Provider adapters: known behaviour, problems and plans
 
 MyJam controls music apps through their *private* internals (TIDAL's Redux store,
-Spotify's PlayerAPI), injected over the Chrome DevTools Protocol. These internals
+Spotify's PlayerAPI, YouTube Music's store and player), injected over the Chrome DevTools Protocol. These internals
 are undocumented and full of timing quirks. This file collects everything learned
 about them, what is still broken or unverified, and how to make adapters robust,
-so the next adapter (Spotify rework, YouTube Music) starts from what we know.
+so the next adapter starts from what we know.
 
 How things are marked:
 
@@ -31,6 +31,9 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
 | Child process stdio | A launched client inheriting our stdio kept our pipes open after exit | Verified live, fixed | Launch with null stdio |
 | Microsoft Store installs | Packaged apps live under `WindowsApps` and are launched through aliases. Passing the debug port is untested. | Assumed | Detected and reported as unsupported |
 | chromiumoxide noise | Logs warnings for CDP messages it can't parse from newer Chromium | Verified live | Log filter `chromiumoxide::handler=error` |
+| Playback needs a gesture | A browser refuses to start playback from a script until the page had a user gesture. Desktop apps allow it. | Verified live (YouTube Music) | Calls are evaluated as user gestures; the browser is launched with `--autoplay-policy=no-user-gesture-required` |
+| Leave dialog | A page that is playing can block its reload with a "Leave site?" dialog | Verified live (YouTube Music) | `install_bridge` confirms `beforeunload` dialogs |
+| Interruptions | Advertisements take over playback for a while | Verified live (YouTube Music) | Adapter sends `Interruption`; the runtime steps out and rejoins after |
 
 ## 2. TIDAL
 
@@ -169,18 +172,157 @@ reading its code and recording its events. Not yet run through `SessionRuntime`
 9. **Store version:** still unchecked.
 10. **Not done yet:** the `live_session` example and a two-person jam (TIDAL + Spotify), with a missing song on each side.
 
-## 4. YouTube Music (planned)
+## 4. YouTube Music
 
-- **Client: the browser** (decided with the user). There's no official desktop app, and a Chromium browser on music.youtube.com is attached over CDP just like the Electron apps.
-  - **Profile:** Chrome 136+ ignores `--remote-debugging-port` on the user's *default* profile (a security change), so MyJam would launch the browser with its own `--user-data-dir`. The user signs in to YouTube there once. Check whether Edge behaves the same.
-  - **Launching:** detection and launching differ from desktop apps. MyJam would look for an installed Chromium browser (Chrome, Edge, Brave) and open a dedicated window on `music.youtube.com`, instead of starting a known exe.
+Built and tested live against music.youtube.com (client `WEB_REMIX 1.20261110.04.00`) in
+Microsoft Edge 157, on an account without a subscription (so with advertisements), by
+attaching over CDP, reading the page's code and recording its store actions. The Rust
+controller attached to it and applied changes (`live` example). Not yet run through
+`SessionRuntime` (the `live_session` example) or in a two-person jam.
 
-Open questions before writing any code:
+### One-time setup
 
-- **Internals:** YouTube Music is built with Polymer/Lit web components and has a player API on the `ytmusic-player-bar` / `#movie_player` elements (`getCurrentTime`, `seekTo`, `playVideo`, `pauseVideo`). The queue lives in the `ytmusic-player-queue` component's store. All unverified; study the client code first (5.4).
-- **Ads:** they interrupt playback for non-Premium users, so treat them like a temporary "waiting" state.
-- **Search:** song vs music video results, region locks.
-- **The runtime side needs no protocol change:** the `ProviderBridge` trait is the extension point. Only `BridgeController`'s launch/attach assumptions (one desktop exe, fixed page URL) need generalizing.
+YouTube Music has no desktop app. MyJam opens it as an app window of an installed
+Chromium browser (Edge, Chrome or Brave), in a browser profile kept only for this
+(`%LOCALAPPDATA%\MyJam\YouTubeMusicProfile`, or `MYJAM_YOUTUBE_MUSIC_PROFILE`).
+
+1. **Sign in first, in a window without the debug port.** Google refuses sign-ins in a
+   browser started with a debug port (verified live by the user). The connect screen's
+   "Sign in first" button opens the same profile without it.
+2. **Close that window.** While it is open, a new launch joins it and gets no debug port.
+   MyJam then reports that it couldn't connect to the window.
+3. **Connect.** MyJam starts the window with the debug port; the sign-in is remembered in
+   the profile.
+
+Signing in is optional: the page also plays signed out. The launch command is
+
+```
+<browser> --user-data-dir=<profile> --remote-debugging-port=9224
+          --autoplay-policy=no-user-gesture-required
+          --no-first-run --no-default-browser-check --app=https://music.youtube.com
+```
+
+- Browsers ignore `--remote-debugging-port` on the user's default profile, hence the
+  profile of its own.
+- MyJam never closes the browser to restart it: it holds the user's other windows.
+- The profile holds the Google sign-in. Keep it out of version control (`/EdgeProfile/`
+  is ignored in this repository for that reason).
+
+### Verified behaviour
+
+**Where things live**
+- Script and file names are generated (`/s/player/fad7e4e9/…`, `/s/3d91f0af/…`) and the
+  code is minified, so nothing depends on either. Everything is reached from two custom
+  elements with fixed tag names and their named properties:
+  - `ytmusic-player-bar`: `.inst.store` (Redux store), `.inst.queue` (queue service),
+    `.inst.playerApi` (the YouTube player API).
+  - `ytmusic-app`: `.inst.networkManager` (signed-in requests to YouTube's API).
+  - Elements forward to a controller in `.inst`; the adapter falls back to the element.
+- Some properties do have generated names (`JSC$13963_playerController`). They are not used.
+- The player API is ready about 0.9 s after a reload.
+
+**The queue**
+- `store.getState().queue`: `items`, `selectedItemIndex`, `nextQueueItemId`,
+  `automixItems` (the autoplay list), `autoplay`, `repeatMode` (`NONE`, `ALL`, `ONE`),
+  `shuffleEnabled`.
+- An item is `{ playlistPanelVideoRenderer }` (title, byline, length, video ID), or a
+  `playlistPanelVideoWrapperRenderer` around one when a song also has a video version.
+- Each item has a number of its own in `navigationEndpoint.watchEndpoint.index`, handed
+  out from `nextQueueItemId`. **The numbers start again from 0 when the queue is cleared**,
+  so they identify an item only until then.
+- Items before the current one are kept as history.
+- **`selectedItemIndex` is left behind when the queue is replaced** (seen: 1 item, index 6).
+  The current item is the one with `selected: true`; the queue service's
+  `getCurrentItemIndex()` knows.
+- The player follows the store. The action names are plain strings in the reducer:
+  - `UPDATE_ITEMS { currentIndex, items, shouldAssignIds, nextQueueItemId }` replaces
+    everything after the current item and never touches playback.
+  - `CLEAR`, `ADD_ITEMS { items, index, shouldAssignIds, nextQueueItemId }`,
+    `MOVE_ITEM { fromIndex, toIndex }`, `REMOVE_ITEM index`, `SET_INDEX index`.
+  - The queue service's `selectQueueItem(item)` makes an item current and starts it.
+- Queue items for video IDs come from `music/get_queue { videoIds }` (100 ms for four),
+  which is what the app itself uses for "add to queue".
+- Edits are instant (0–4 ms) when the songs are already in the queue.
+- **Server queues:** the signed-in app also keeps the queue on the server
+  (`serverQueuesEnabled`). Store edits bypass that. No effect was seen within a session.
+
+**Loading and play state**
+- **Starting playback needs a user gesture.** Without one, the track loads and stays
+  "unstarted" (player state -1). MyJam launches the browser with
+  `--autoplay-policy=no-user-gesture-required` and marks its calls as user gestures
+  (`Runtime.evaluate` with `userGesture`), which also covers a window the user started.
+- Selecting an item always starts it **from 0, playing**; a paused start wasn't found.
+  The adapter re-applies position and play state until they hold (like TIDAL). A paused
+  join landed at 30.000 s.
+- A track starts in 0.5–0.9 s. Meanwhile the player still reports the previous video.
+- Player states: -1 unstarted, 0 ended, 1 playing, 2 paused, 3 buffering, 5 cued.
+- The position is read live (`getCurrentTime()`, seconds); there is no sync timestamp.
+  Seeks don't pass through the store, so the adapter looks at the position every 500 ms.
+- Durations in the queue are whole seconds ("3:22").
+- **Song end:** `SET_INDEX` to the next item, which starts about 0.6 s later.
+- **End of the queue** (autoplay off): the player stops on the last track (state 0).
+- **`Leave site?` dialog:** while a song plays, the page blocks unloading, which holds
+  up the reload MyJam attaches with. The controller confirms the dialog.
+- **After a reload** the page restores its last song (the URL is `/watch?v=…`) and, with
+  playback allowed, starts it, possibly behind an advertisement. `settle` pauses either.
+
+**Advertisements**
+- `store.getState().player.adPlaying` is true for the length of an advertisement
+  (15 s seen, before a song). The song waits underneath in state -1.
+- `player.isPlaying` follows the advertisement meanwhile; `pauseVideo()` pauses it.
+- A seek during the advertisement moves the song, which then starts there.
+- Afterwards the song starts by itself.
+- **Handling:** the adapter sends an `Interruption` event when one starts and ends. The
+  runtime steps out and rejoins after it (the user asked for this). Nothing the page
+  does meanwhile is published, so a click during an advertisement is undone by the
+  rejoin. A session change that arrives during one waits for it (up to 2 minutes).
+
+**Autoplay, repeat, shuffle**
+- Autoplay: `SET_AUTOPLAY_ENABLED bool`. Repeat: `SET_REPEAT mode`. Both are saved by the app.
+- **Starting a song turns autoplay back on**, unless `hasUserChangedDefaultAutoplayMode`
+  is set (`HAS_USER_CHANGED_DEFAULT_AUTOPLAY_MODE`, what the app's own toggle does). The
+  adapter sets it for a session, switches autoplay off again should it come back, and
+  restores both afterwards.
+- With autoplay off the autoplay list is still fetched (49 items) but not played.
+- Shuffle is a one-time reordering of the queue, not a mode. Nothing to switch off.
+
+**Search**
+- `networkManager.fetch("/search", { query, params })` with the "Songs" filter
+  (`EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D`): 460 ms, 20 rows.
+- A row has the video ID, title, and a byline whose links mark artists
+  (`MUSIC_PAGE_TYPE_ARTIST`) and the album (`MUSIC_PAGE_TYPE_ALBUM`), then the length.
+- **The ranking is poor:** for "Blinding Lights The Weeknd" the original was fourth,
+  behind covers. The adapter scores every row (title, artist, album, length).
+- Music videos (`MUSIC_VIDEO_TYPE_OMV`) have no album and no artist links; their byline
+  is "Artist & Other • 2.1B views".
+- Titles differ again: "Shoong! (feat. 리사 (LISA))".
+- The network manager caches responses, so a repeated lookup costs nothing.
+
+**Timings measured:** adapter ready 0.8–1.0 s after the reload; a 5-song snapshot with a
+paused start 2.9 s (four searches); a queue edit 0–4 ms, or 450 ms with one lookup;
+selecting another song 0.9–1.7 s.
+
+### Open problems
+
+1. **No ISRC.** The page doesn't expose ISRCs, and whether its search finds them wasn't
+   tested. Lookups are by title and artist only.
+2. **Covers and versions.** With a poor ranking and no ISRC, a cover with the same title
+   and artist name can win. Album and length decide between candidates when the session
+   carries them.
+3. **Advertisements cost a rejoin.** After one, the session state is applied again. If
+   the same song is still current that is a seek; otherwise the song is loaded, which can
+   trigger another advertisement. Not yet observed how often that chains.
+4. **A paused start is audible for a moment:** the song plays from 0 until it is paused
+   and sought (a few hundred ms).
+5. **Local-change suppression is partly time-based** (300 ms after a remote change).
+6. **Server queue:** store edits aren't sent to the server queue. Effects across a
+   reload or on other devices weren't tested.
+7. **Signed out, age-restricted and region-blocked videos** weren't tested.
+8. **Podcasts and uploads** in the queue weren't tested.
+9. **Other browsers:** only Edge was tested. Chrome and Brave take the same flags.
+10. **Not done yet:** the `live_session` example and a two-person jam, launching the
+    browser from MyJam (the code path exists, the test used a window started by hand),
+    and the connect screen's sign-in button in the running app.
 
 ## 5. Preventing these problems instead of patching them
 

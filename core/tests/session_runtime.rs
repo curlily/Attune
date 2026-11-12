@@ -13,7 +13,7 @@ use std::{
 
 use jam_core::{
     Error, Result,
-    bridge_controller::{ApplyOutcome, BridgeEvent},
+    bridge_controller::{ApplyOutcome, BridgeEvent, Interruption},
     network::{ReconnectPolicy, SessionClientConfig},
     protocol::{
         ParticipantStatus, QueueEntry, SessionMusicState, SessionOperation as Op, SessionPlayback,
@@ -127,6 +127,14 @@ impl FakeProvider {
             state::apply(&self.snapshot(), &operation, now_ms()).expect("local change applies");
         *self.state.lock().unwrap() = next;
         let _ = self.events.send(BridgeEvent::Operation(operation));
+    }
+
+    /// The music client is taken over by an advertisement, or released.
+    fn interruption(&self, active: bool) {
+        let _ = self.events.send(BridgeEvent::Interruption(Interruption {
+            active,
+            reason: "advertisement".to_owned(),
+        }));
     }
 
     /// The music client reports a change without it being applied here.
@@ -485,6 +493,38 @@ async fn stepping_out_stops_following_until_resync() {
     sync_is(&s.b, SyncState::Synced).await;
     assert!(!s.b_provider.playing());
     assert_eq!(s.b_provider.ids(), ["s1", "s2", "s3"]);
+}
+
+#[tokio::test]
+async fn an_interruption_steps_out_and_rejoins_when_it_is_over() {
+    let s = session(&[]).await;
+    s.b_provider.interruption(true);
+    sync_is(&s.b, SyncState::SteppedOut).await;
+
+    // The session goes on without B.
+    s.a_provider
+        .local(Op::PlaybackSetPlaying { is_playing: false });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        s.b_provider.playing(),
+        "not following during the interruption"
+    );
+
+    s.b_provider.interruption(false);
+    sync_is(&s.b, SyncState::Synced).await;
+    assert!(!s.b_provider.playing(), "caught up afterwards");
+}
+
+#[tokio::test]
+async fn an_interruption_does_not_rejoin_someone_who_stepped_out() {
+    let s = session(&[]).await;
+    s.b.step_out().await.expect("step out");
+    sync_is(&s.b, SyncState::SteppedOut).await;
+
+    s.b_provider.interruption(true);
+    s.b_provider.interruption(false);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(s.b.status().sync, SyncState::SteppedOut);
 }
 
 #[tokio::test]

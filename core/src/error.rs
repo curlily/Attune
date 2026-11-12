@@ -44,6 +44,14 @@ pub enum Error {
     #[error("{exe} is still running after {timeout_secs} seconds")]
     ProcessStillRunning { exe: String, timeout_secs: u64 },
 
+    /// The provider's browser window didn't come up with the debug port.
+    /// Usually a window of the same profile is already open without it
+    /// (e.g. the one used for signing in).
+    #[error(
+        "{name} didn't open in a window MyJam can connect to. Close every {name} window MyJam opened and try again."
+    )]
+    BrowserWindowUnavailable { name: String },
+
     // --- CDP / browser transport ----------------------------------------
     #[error("CDP request failed while trying to {context}")]
     Cdp {

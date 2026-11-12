@@ -8,10 +8,13 @@ use std::{
 use chromiumoxide::cdp::{
     browser_protocol::{
         log::{EnableParams as LogEnableParams, EventEntryAdded},
-        page::{EnableParams as PageEnableParams, ReloadParams},
+        page::{
+            DialogType, EnableParams as PageEnableParams, EventJavascriptDialogOpening,
+            HandleJavaScriptDialogParams, ReloadParams,
+        },
     },
     js_protocol::runtime::{
-        AddBindingParams, EnableParams as RuntimeEnableParams, EventBindingCalled,
+        AddBindingParams, EnableParams as RuntimeEnableParams, EvaluateParams, EventBindingCalled,
         EventConsoleApiCalled, EventExceptionThrown,
     },
 };
@@ -30,7 +33,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     Error, Result,
     protocol::{SessionMusicState, SessionOperation, SessionSnapshot},
-    structs::{PlayState, ProviderConfig, QueueState, Track},
+    structs::{BrowserPage, PlayState, ProviderConfig, QueueState, Track},
 };
 
 /// Attach a static context to a chromiumoxide failure.
@@ -54,7 +57,18 @@ pub enum BridgeEvent {
     PlaystateChange(PlayState),
     QueueChange(QueueState),
     Operation(SessionOperation),
+    /// The provider can't follow the session for a while, or can again.
+    Interruption(Interruption),
     Error(String),
+}
+
+/// Something outside the user's control took over playback, e.g. an
+/// advertisement. The session goes on without this client meanwhile.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Interruption {
+    pub active: bool,
+    #[serde(default)]
+    pub reason: String,
 }
 
 pub struct BridgeController {
@@ -82,6 +96,14 @@ impl BridgeController {
             // moment (e.g. mid-reload). It comes back by itself; restarting
             // here killed the user's client for nothing (seen live).
             info!(provider = %config.display_name, "Debug port open; waiting for the page");
+        } else if let Some(browser) = &config.browser {
+            // A page in the user's browser: open a window of our own and
+            // never close the browser, which holds their other windows.
+            launch_browser_page(
+                &config.executable_path,
+                browser,
+                Some(config.debugging_port),
+            )?;
         } else {
             // Not running, or running without the debug port: (re)start it
             // with the port. Interrupts playback once, when MyJam first
@@ -92,12 +114,22 @@ impl BridgeController {
         }
 
         // Wait for CDP to be ready
-        wait_for_cdp(
+        let waited = wait_for_cdp(
             config.debugging_port,
             &config.page_url,
             Duration::from_secs(30),
         )
-        .await?;
+        .await;
+        match waited {
+            // A window of this profile that is already open without the
+            // debug port swallows the launch: the new window joins it.
+            Err(Error::Timeout { .. }) if config.browser.is_some() => {
+                return Err(Error::BrowserWindowUnavailable {
+                    name: config.display_name.clone(),
+                });
+            }
+            other => other?,
+        }
 
         let mut controller = Self {
             config,
@@ -329,6 +361,14 @@ impl BridgeController {
             .event_listener::<EventEntryAdded>()
             .await
             .map_err(cdp("subscribe to Chromium log events"))?;
+        // A page that is playing may ask "Leave site?" before it reloads
+        // (YouTube Music does, verified live), which would hold up the
+        // reload below until someone answers.
+        let mut dialog_events = page
+            .event_listener::<EventJavascriptDialogOpening>()
+            .await
+            .map_err(cdp("subscribe to page dialog events"))?;
+        let dialog_page = page.clone();
 
         page.execute(AddBindingParams::new("__jamEvent"))
             .await
@@ -346,6 +386,7 @@ impl BridgeController {
         let event_task = tokio::spawn(async move {
             let (mut binding_open, mut console_open, mut exception_open, mut log_open) =
                 (true, true, true, true);
+            let mut dialog_open = true;
 
             loop {
                 if !(binding_open || console_open || exception_open || log_open) {
@@ -353,6 +394,22 @@ impl BridgeController {
                 }
 
                 tokio::select! {
+                    event = dialog_events.next(), if dialog_open => {
+                        match event {
+                            Some(event) if event.r#type == DialogType::Beforeunload => {
+                                debug!("Confirming the page's leave dialog");
+                                if let Err(error) = dialog_page
+                                    .execute(HandleJavaScriptDialogParams::new(true))
+                                    .await
+                                {
+                                    warn!(%error, "Could not confirm the page's leave dialog");
+                                }
+                            }
+                            Some(_) => {}
+                            None => dialog_open = false,
+                        }
+                    }
+
                     event = binding_events.next(), if binding_open => {
                         match event {
                             Some(event) if event.name == "__jamEvent" => {
@@ -496,8 +553,18 @@ impl BridgeController {
 
     pub async fn eval_value(&self, expression: &str) -> Result<Option<Value>> {
         let page = self.page()?;
+        // Marked as a user gesture: browsers refuse to start playback from
+        // a script otherwise (verified live with YouTube Music), and the
+        // calls made here are the user's session at work.
+        let params = EvaluateParams::builder()
+            .expression(expression)
+            .await_promise(true)
+            .return_by_value(true)
+            .user_gesture(true)
+            .build()
+            .map_err(|message| Error::BridgeReported { message })?;
         let result = page
-            .evaluate_expression(expression)
+            .evaluate(params)
             .await
             .map_err(cdp("evaluate a renderer expression"))?;
 
@@ -729,6 +796,57 @@ fn launch_music_client(path: &Path, debugging_port: u16) -> Result<()> {
         .unwrap_or("music client");
     info!("Launching {executable_name} with remote debugging enabled");
     Ok(())
+}
+
+/// Open a provider's page as an app window of the browser, in the profile
+/// kept for it. Without a debug port the window is an ordinary one, which is
+/// what signing in needs: Google refuses sign-ins in a debugged browser.
+fn launch_browser_page(
+    path: &Path,
+    browser: &BrowserPage,
+    debugging_port: Option<u16>,
+) -> Result<()> {
+    let launch_failed = |source| Error::LaunchFailed {
+        path: path.to_path_buf(),
+        source,
+    };
+    std::fs::create_dir_all(&browser.profile_dir).map_err(launch_failed)?;
+
+    let mut command = Command::new(path);
+    command.arg(format!("--user-data-dir={}", browser.profile_dir.display()));
+    if let Some(port) = debugging_port {
+        command
+            .arg(format!("--remote-debugging-port={port}"))
+            // Lets the session start playback without a click in the page.
+            .arg("--autoplay-policy=no-user-gesture-required");
+    }
+    command
+        .args(["--no-first-run", "--no-default-browser-check"])
+        .arg(format!("--app={}", browser.start_url))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(launch_failed)?;
+    info!(
+        debugging = debugging_port.is_some(),
+        "Opened {} in a browser window", browser.start_url
+    );
+    Ok(())
+}
+
+/// Open the provider's page in an ordinary window of its browser profile,
+/// so the user can sign in. Does nothing for desktop apps.
+///
+/// Signing in has to happen here, once: Google blocks sign-ins in a
+/// browser that was started with a debug port. The window must be closed
+/// again before connecting, because a later launch would join it instead
+/// of starting with the debug port.
+pub fn open_sign_in_window(config: &ProviderConfig) -> Result<()> {
+    match &config.browser {
+        Some(browser) => launch_browser_page(&config.executable_path, browser, None),
+        None => Ok(()),
+    }
 }
 
 /// Whether something answers the CDP HTTP endpoint on `debugging_port`.

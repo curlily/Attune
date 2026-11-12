@@ -29,6 +29,9 @@ pub struct ProviderAvailability {
     pub ready: bool,
     /// Why MyJam can't use this install, if it can't (shown as is).
     pub unsupported: Option<String>,
+    /// A website in a browser window MyJam opens itself. Signing in to it
+    /// is a separate, one-time step (see `open_sign_in_window`).
+    pub in_browser: bool,
 }
 
 /// Check every known provider.
@@ -38,13 +41,34 @@ pub async fn detect_providers() -> Result<Vec<ProviderAvailability>> {
             ProcessRefreshKind::nothing().with_exe(sysinfo::UpdateKind::OnlyIfNotSet),
         ));
     let mut found = Vec::new();
-    for config in [providers::tidal()?, providers::spotify()?] {
+    for config in [
+        providers::tidal()?,
+        providers::spotify()?,
+        providers::youtube_music()?,
+    ] {
         found.push(detect(&system, &config).await);
     }
     Ok(found)
 }
 
 async fn detect(system: &System, config: &ProviderConfig) -> ProviderAvailability {
+    // A page in a browser: the browser running says nothing about the page.
+    // It counts as running only once MyJam's own window is up.
+    if config.browser.is_some() {
+        let ready = music_client_running(config.debugging_port, &config.page_url)
+            .await
+            .unwrap_or(false);
+        return ProviderAvailability {
+            id: config.id,
+            display_name: config.display_name.clone(),
+            installed: config.executable_path.is_file(),
+            running: ready,
+            ready,
+            unsupported: None,
+            in_browser: true,
+        };
+    }
+
     let exe_name = config
         .executable_path
         .file_name()
@@ -79,6 +103,7 @@ async fn detect(system: &System, config: &ProviderConfig) -> ProviderAvailabilit
         running,
         ready,
         unsupported,
+        in_browser: false,
     }
 }
 
@@ -103,6 +128,7 @@ pub fn provider_config(id: ProviderId) -> Result<ProviderConfig> {
     match id {
         ProviderId::Tidal => providers::tidal(),
         ProviderId::Spotify => providers::spotify(),
+        ProviderId::YoutubeMusic => providers::youtube_music(),
     }
 }
 

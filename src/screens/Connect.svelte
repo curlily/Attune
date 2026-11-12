@@ -22,6 +22,17 @@
   function describe(provider: ProviderAvailability): { state: string; note?: string; action?: string } {
     if (provider.unsupported) return { state: "Not supported", note: provider.unsupported };
     if (provider.ready) return { state: "Ready", action: "Connect" };
+    if (provider.inBrowser) {
+      if (!provider.installed)
+        return { state: "No browser", note: "Needs Microsoft Edge, Google Chrome or Brave." };
+      return {
+        state: "Not open",
+        note:
+          `${provider.displayName} opens in a browser window of its own. To use your account, ` +
+          "sign in once first, then close that window and connect.",
+        action: `Open ${provider.displayName}`,
+      };
+    }
     if (provider.running)
       return {
         state: "Running",
@@ -30,6 +41,15 @@
       };
     if (provider.installed) return { state: "Not open", action: `Open ${provider.displayName}` };
     return { state: "Not installed" };
+  }
+
+  async function signIn(id: ProviderId) {
+    error = null;
+    try {
+      await api.openProviderSignIn(id);
+    } catch (failure) {
+      error = { id, text: errorText(failure) };
+    }
   }
 
   async function connect(id: ProviderId) {
@@ -84,6 +104,11 @@
           {:else}
             {info.action}
           {/if}
+        </button>
+      {/if}
+      {#if provider.inBrowser && provider.installed && !provider.ready}
+        <button class="btn ghost wide" disabled={connecting !== null} onclick={() => signIn(provider.id)}>
+          Sign in first
         </button>
       {/if}
       {#if error?.id === provider.id}
