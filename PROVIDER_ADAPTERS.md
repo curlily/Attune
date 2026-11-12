@@ -34,45 +34,127 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
 | Playback needs a gesture | A browser refuses to start playback from a script until the page had a user gesture. Desktop apps allow it. | Verified live (YouTube Music) | Calls are evaluated as user gestures; the browser is launched with `--autoplay-policy=no-user-gesture-required` |
 | Leave dialog | A page that is playing can block its reload with a "Leave site?" dialog | Verified live (YouTube Music) | `install_bridge` confirms `beforeunload` dialogs |
 | Interruptions | Advertisements take over playback for a while | Verified live (YouTube Music) | Adapter sends `Interruption`; the runtime steps out and rejoins after |
+| Background timers | While the app's window is hidden and nothing plays, Chromium runs the page's timers once a second (a 25 ms timeout took 1000 ms). Polling loops slow down exactly while a track loads paused. | Verified live (TIDAL); likely for YouTube Music's window too, unchecked | TIDAL: waits react to store changes (`waitFor`, `holdUntil`). Spotify and YouTube Music still poll |
+| Comparing after a remote change | The app's state keeps changing for about a second after an action, which can push a debounce past a fixed suppression window; the delayed comparison then sees our own change as the user's | Verified live (TIDAL) | TIDAL: the comparison base is reset to the state the remote change produced |
 
 ## 2. TIDAL
+
+Reworked and tested live against TIDAL 2.48.0 (Electron 43.8.3, Chrome 150), by
+attaching over CDP, reading its bundles (the `playQueue` and `playbackControls`
+reducers, the player sagas, the player SDK) and recording store and media-element
+traces. The account had no active subscription, so only 30-second previews played.
+The adapter was injected into the running app and driven directly, not through
+`SessionRuntime` (the `live_session` example) or a two-person jam.
 
 ### Verified behaviour
 
 **Store and actions**
 - Store discovery scans loaded modules for the `No global store set` accessor.
 - Action types are written as template literals in the bundle, e.g. `` A(`playQueue/…`) ``.
-- `playQueue.type` is `"local"` for normal queues.
+- Sagas dispatch through the middleware, not through `store.dispatch`: wrapping
+  `store.dispatch` only sees the UI's and our own actions.
 - `playQueue.currentIndex` marks the current element; elements before it are history.
+- **Queue types** (`playQueue.type`, from the reducer): `"local"` (normal), `"cloud"`
+  (TIDAL Connect, Chromecast or Sonos: the queue lives on that device and most queue
+  actions are ignored), `"cloudV2"` (a queue kept on TIDAL's servers, behind the
+  server flag `cloud-queue-v2`, which was off). The adapter refuses to rewrite the
+  queue while it is `"cloud"`. `"cloudV2"` is untested.
+- An element is `{ context, mediaItemId, priority, uid }`. `priority` is
+  `priority_none`, `priority_keep` ("play next" items, which TIDAL keeps together
+  when skipping ahead) or `priority_history`. TIDAL's uids are `pq__<hex>__<n>`; it
+  parses that prefix only in its cloud-queue code. **Any uid works** in a local queue.
 
-**Queue edits that keep the current track playing**
-- `playQueue/ADD_AT_INDEX {context, index, mediaItemIds}`: `index` is absolute, history included.
-- `playQueue/REMOVE_ELEMENT {uid}`: not for the current element.
-- `playQueue/MOVE_TRACK {fromIndex, toIndex}`: inserts and then removes, so forward moves need `target + 1`. It may give the element a new uid.
-- `playQueue/ADD_MEDIA_ITEMS_TO_QUEUE` with `overwritePlayQueue: true, position: "now"`
-  replaces the queue but **restarts the current track**. Use it only when a full
-  replacement is unavoidable.
+**Writing the queue** (all verified live)
+- `playQueue/RESET { currentIndex, elements }` sets the elements as given, uids
+  included. The player saga then loads the current element **without playing it**
+  (the SDK's `load(…, prefetch = true)`): a paused join is never heard.
+- RESET doesn't keep a song that is already playing. TIDAL's "the player already
+  has it" check reads `localStorage.playerState`, which it only writes when the
+  window is hidden or shown, so in most tries it reloaded the song paused from 0.
+- **Keeping the current song:** `playQueue/CLEAR_UPCOMING` keeps only the current
+  element, `playQueue/APPEND_ELEMENTS { elements }` adds ours. Neither reaches the
+  player; the song played on without a gap.
+- `playQueue/CLEAR_QUEUE` empties the queue and **unloads the current track**: media
+  product `null`, `IDLE`, sound gone within 0.3 s. It also resets shuffle and repeat.
+- `playQueue/ADD_MEDIA_ITEMS_TO_QUEUE` with `overwritePlayQueue` (the old way)
+  restarts the current song and starts a new one playing. No longer used.
+- In-place edits still used for single changes: `ADD_AT_INDEX {context, index,
+  mediaItemIds}` (`index` absolute, history included; gives a `priority_keep`
+  element with TIDAL's uid), `REMOVE_ELEMENT {uid}` (not the current element),
+  `MOVE_TRACK {fromIndex, toIndex}` (inserts then removes, so forward moves need
+  `target + 1`; the element gets a new uid when it becomes `priority_keep`).
+- The player needs TIDAL's metadata for every element (`content.mediaItems`).
+  `content/LOAD_SINGLE_MEDIA_ITEM { id, itemType: "track" }` fetches one: three in
+  parallel took 150 ms.
 
-**Search**
+**Loading a track at a position**
+- After RESET, `playbackControls.prefilled` is true until the player has the track
+  (MEDIA_PRODUCT_TRANSITION, 40–200 ms). A SEEK before that goes to the previous
+  track and is lost; a PLAY waits for the load.
+- The track loaded paused keeps the previous track's `desiredPlaybackState:
+  PLAYING`, so the store looks like it is playing.
+- **Seek, then PLAY right away** is reliable: PLAY on a track loaded paused
+  ("prefetched") makes the SDK reload it from the position the seek has just set
+  (170 ms). A playing join or an advance starts at the right place 0.3–0.4 s after
+  the request.
+- **Paused at a position is not reliable in one step:**
+  - A seek right after the load was undone about 230 ms later, when the player
+    finished loading.
+  - The player's own position (`activePlayer.getPosition()`) and the store's
+    disagreed after that, in both directions (player 0 and store 12 s, and the other
+    way round).
+  - PLAY then sometimes reloaded the track twice, the second time from 0 (seen with
+    every song loaded right after another one had played).
+  - **Handled by:** the hold checks both positions; on a session PLAY the adapter
+    seeks to the store's position first and holds again. All four test variants then
+    resumed at 12 s. In the double-reload case the song may be heard from 0 for a
+    moment before the seek.
+- Resuming after 40 s paused reloads the stream (180 ms) and keeps the position.
+- **Auto-resume after a reload** (`Ybt` in the bundle): at start-up TIDAL loads the
+  `playerState` track at its saved position and plays it only if it was playing and
+  the state is less than 15 s old.
+
+**Search and lookups**
 - Only the latest `search/SEARCH_FOR` survives: a new search cancels one still in flight. Searches must run one at a time.
 - Results are at `content.trackLists["search/tracks/" + encodeURIComponent(query)].sorted.defaultSort.items`.
 - An empty result is `items: []` with `loading: false`. Anything else that's empty is still loading.
+- **TIDAL lists the same recording more than once** (single and album: same ISRC,
+  title, artists and length). The old adapter rejected the tie as "ambiguous", which
+  is why "Shoong!" was never found. Now TIDAL's best-ranked one is taken.
+- **ISRC lookup:** TIDAL's open-API client (an RTK Query API object with
+  `reducerPath: "tidalOpenPlatformApi"`, found among the module exports) has
+  `getTracks` with `filter[isrc]` and `filter[id]`. At most **20 values** per request
+  (more is a 400 `INVALID_ARRAY_LENGTH`). 20 ISRCs took 360 ms; results come in any
+  order, with title, ISO 8601 duration (`PT3M41S`), `availability` (`STREAM`) and,
+  with `include: ["artists", "albums"]`, names. Lookups may run in parallel.
+- The ISRC can match several releases (e.g. two of "Blinding Lights"). Album and
+  length decide, otherwise any of them is the same recording.
 
 **Play state**
 - A pause is `playbackState: "NOT_PLAYING"` (`"PAUSED"` hasn't been seen).
 - `playbackState` leaves `"PLAYING"` while a track loads.
-- `desiredPlaybackState` stays `"PLAYING"` while loading *and* after a PAUSE action, so neither field alone is reliable. See `isPlaying()`.
+- From the reducer: only PAUSE, STOP and SET_DESIRED_PAUSE_STATE set
+  `desiredPlaybackState` to `NOT_PLAYING`; SET_PLAYBACK_STATE with `PLAYING` or
+  `STALLED` sets it back to `PLAYING`. After a PAUSE the player confirms with
+  `playbackState` up to a second later. So a requested pause counts at once (see
+  `isPlaying()`).
 - After switching tracks, the **previous track's `PLAYING` lingers** for a moment, so "same track and PLAYING" doesn't mean the new track has started.
 
 **Position**
 - `latestCurrentTime` is in seconds and valid *at* `latestCurrentTimeSyncTimestamp` (epoch ms).
 - It is updated only on play, pause, seek and track changes, so reading it later needs extrapolation.
+- After a seek TIDAL writes the new position once the player has sought, up to a
+  second later.
+- `playbackControls/TIME_UPDATE <seconds>` only sets the store's position (nothing
+  in the player reacts to it).
 - When a track actually starts, TIDAL resets the position to 0 (sometimes about 3 s after the request). This is not a seek: the adapter ignores it for 10 s after a track change.
 
-**Loading a queue**
-- A queue loaded with `position: "now"` starts its first track **once it has loaded, from 0**, undoing a PAUSE or SEEK dispatched before that.
-- This made joining a paused jam resume it for everyone.
-- Fixed in `startLoadedTrack`: the adapter re-applies the position and play state until they hold for 500 ms.
+**Timers while TIDAL is in the background**
+- While TIDAL's window is hidden and nothing plays, Chromium runs the page's timers
+  **once a second** (a 25 ms timeout took 1000 ms); with sound playing they run
+  normally. Polling waits therefore took up to a second per step exactly while a
+  track loaded paused. Store notifications aren't delayed (they come from media and
+  network events), so the adapter waits on store changes instead of polling.
 
 **Other details**
 - **Shuffle, repeat and autoplay** (verified live; found by reading the bundle):
@@ -80,23 +162,54 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
   - **Repeat and autoplay actions:** `playQueue/SET_REPEAT_MODE` with the mode number, and `settings/SET_AUTOPLAY` with a boolean.
   - **Shuffle actions:** `playQueue/ENABLE_SHUFFLE_MODE` and `playQueue/DISABLE_SHUFFLE_MODE` only flip the flag, with no payload. TIDAL's own buttons use `…_AND_SHUFFLE_ITEMS` / `…_AND_UNSHUFFLE_ITEMS`, which reorder the queue.
   - **Persistence:** all of them are saved by TIDAL (`LOAD_PLAYER_SETTINGS_FROM_LOCAL_STORAGE_SUCCESS`).
+- End of the queue (from the saga): with autoplay on, TIDAL starts a radio of the last
+  track; otherwise it pauses.
 - Covers: `mediaItem.album.cover` is a UUID; the image is `https://resources.tidal.com/images/<uuid with / for ->/320x320.jpg`. Assumed from the API format, and it showed correctly in the app.
 - An inactive subscription plays only 30-second previews, which limits testing positions past 30 s.
 
+### How the adapter handles it now
+
+- **Replacing the queue:** keeps the current song with CLEAR_UPCOMING +
+  APPEND_ELEMENTS when it stays, otherwise RESET (loads paused), then
+  `startLoadedTrack` holds position and play state. An empty session queue is
+  CLEAR_QUEUE.
+- **Entry IDs live in the uids** (`pq__attune__<entryId>`). TIDAL saves its queue
+  with them, so they survive a bridge reload.
+- **Lookups:** ISRCs in batches of 20 first (cached per ISRC), text search one at a
+  time for the rest. Titles are compared without "(feat. …)".
+- **No echoes, measured live:** after every remote change the comparison base for
+  local changes is reset to the state that change produced (the store kept changing
+  for about a second, which pushed the debounce past the 300 ms window). A position
+  jump to where our last seek should land is ours. In a scripted run (join, replace
+  keeping the song, advance, pause, seek, empty) nothing was published; the user's
+  pause, seek, play, skip and removal in TIDAL were.
+- **Timings measured** (TIDAL hidden): join playing 0.9 s, paused join 1.0–2.6 s,
+  replace keeping the song 0.5–0.7 s (no gap), advance 0.9 s (sound after 0.34 s),
+  seek 15 ms, empty queue 25 ms, resume after a paused join 0.7–1.2 s.
+
 ### Open problems
 
-1. **TIDAL can't always find its own tracks.**
-   - What happens: the session carries only title, artists, ISRC, album and duration. So even a TIDAL user receiving a track another TIDAL user queued must search for it.
-   - Seen live: "Shoong!" from TIDAL's own queue wasn't found on rejoin.
-   - Prevention: per-provider IDs in the protocol (see 5.1).
-2. **Joining with a big queue is slow.**
-   - What happens: songs are looked up one at a time. 48 songs took about 24 s on rejoin, and hundreds take minutes.
-   - Options: load the current song plus the next ~20 first and the rest in the background, skip searches with per-provider IDs (5.1), or find a batch lookup in TIDAL's internals.
-3. **Search query building.** The query is `title + artists`, then a scored match (normalized title, overlapping artist, conflicting ISRCs rejected). Titles with punctuation or features ("(feat. …)", "Remastered", non-Latin scripts) probably miss. TIDAL's own search may support ISRC lookup; that's worth checking in the client code.
-4. **No safe "unload the current track"** action is known, so an empty session queue can't be applied while something plays (an error is reported instead).
-5. **Some edits fall back to full replacement, which restarts the song.** This happens for moving the current song behind upcoming ones, seeking a track that isn't current, and queue types other than `"local"` (album, playlist or radio context?). Check which `playQueue.type` values exist.
-6. **The local-change suppression windows are time-based** (300 ms, and up to 5.5 s while holding a loaded track). A real user action inside a window is lost. Prevention: tag our own dispatches (5.3).
-7. **Autoplay, shuffle and repeat aren't synced.** Mitigated: they're turned off for the length of a jam (see 5.9). Changing them in TIDAL during a jam isn't detected yet.
+1. **Per-provider IDs.** The session still carries only title, artists, ISRC, album
+   and duration. With an ISRC, TIDAL now finds the exact recording; without one (e.g.
+   from Spotify, which has none) it falls back to text search. Per-provider IDs (5.1)
+   would remove the lookup for same-provider groups.
+2. **Big queues without ISRCs** are still searched one song at a time (about 0.5 s
+   each while TIDAL plays, longer while it's hidden and silent).
+3. **A paused join can be heard from 0 for a moment** when the session resumes, in
+   the double-reload case above. Why the player sometimes loads twice isn't known.
+4. **Some edits still replace the whole queue:** inserting at the front, removing or
+   moving the current song, and anything while the queue isn't a direct view of
+   TIDAL's (a track played outside the queue). With RESET these no longer start the
+   song playing, but a new current song is reloaded.
+5. **Local-change suppression is still partly time-based** (300 ms after a remote
+   change, and while holding a loaded track). A real user action inside that window
+   is lost.
+6. **Autoplay, shuffle and repeat aren't synced.** Mitigated: they're turned off for the length of a jam (see 5.9). Changing them in TIDAL during a jam isn't detected yet.
+7. **Casting and the cloud queue:** writes are refused while casting; `cloudV2`
+   (server queue) is untested and RESET is not synced to the server there.
+8. **Not done yet:** the `live_session` example and a two-person jam with the reworked
+   adapter, and a test with a full subscription (positions past 30 s, the native
+   player used for lossless).
 
 ## 3. Spotify
 
@@ -328,7 +441,7 @@ selecting another song 0.9–1.7 s.
 
 1. **Per-provider IDs in tracks.** Add an optional `providerIds: { tidal?: string, spotify?: string, youtube?: string }` to `TrackDescriptor` (protocol v2). Whoever has the track fills its own ID; same-provider clients skip search entirely, and others fill theirs in after a successful lookup. This fixes TIDAL problems 1 and 2 for same-provider groups and cuts search load in general. Unknown fields are dropped by v1 clients, hence v2.
 2. **Record real traces to build mocks.** A debug mode in the adapter that records every store action and state diff (or PlayerAPI event) with timestamps during a scripted live run (load a queue, pause, seek, skip, song end). Mocks built from these traces behave like the real app. The paused-join bug passed its first fix because the mock was "politer" than TIDAL.
-3. **Tag our own dispatches instead of time windows.** If the store lets us add a marker to actions (or we wrap `dispatch`), state changes caused by Attune can be told apart from the user's exactly, replacing the 300 ms and 5.5 s suppression windows.
+3. **Tag our own dispatches instead of time windows.** If the store lets us add a marker to actions (or we wrap `dispatch`), state changes caused by Attune can be told apart from the user's exactly, replacing the 300 ms and 5.5 s suppression windows. Partly done for TIDAL: the comparison base is reset after each remote change, and a position jump to where our last seek should land is recognised as ours. Wrapping `dispatch` alone can't do it there, as the app's sagas dispatch past it.
 4. **Read the clients' own code more.**
    - Look for the action creators the app uses itself: its playback state machine, a queue "clear current" action, ISRC search, batch lookups, autoplay settings.
    - Prefer the app's own intent actions over raw state writes.
@@ -341,7 +454,7 @@ selecting another song 0.9–1.7 s.
    - track-start reset isn't a seek
    - lookups one at a time
    A new adapter is done when it passes the suite *and* a scripted live run.
-6. **A shared "hold until stable" helper.** TIDAL's adapter now has `holdUntil({matches, correct, stableMs, timeoutMs})`, used by `startLoadedTrack` and `settle`: it re-applies the target state until it holds. Every provider will likely need it, so move it into a small shared library injected with each adapter.
+6. **A shared "hold until stable" helper.** TIDAL's adapter now has `holdUntil({matches, correct, stableMs, timeoutMs})`, used by `startLoadedTrack` and `settle`: it re-applies the target state until it holds. It is checked on every store change, not only on a timer (background timers run once a second). Every provider will likely need it, so move it into a small shared library injected with each adapter.
 7. **Capability flags per adapter.** For example: `incrementalQueue`, `canUnloadTrack`, `fullQueue`, `providerIds`. Then the runtime can choose operations, such as avoiding full replacements, instead of discovering failures at runtime.
 8. **Drift measurement (phase 7d).** Measuring each client's real position against the session shows timing problems (load delays, lost seeks) as numbers, not anecdotes.
 9. **A neutral state.** Proposed by the user; **done for TIDAL and Spotify**. Adapter contract:

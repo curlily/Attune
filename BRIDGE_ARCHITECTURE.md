@@ -39,7 +39,7 @@ The controller invokes these methods through CDP. Calls return an explicit succe
 
 ### Tracks a provider cannot find
 
-Each queue entry is looked up separately. A lookup failure (no match, ambiguous match, search timeout) affects only that entry:
+Each queue entry is looked up separately. A lookup failure (no match, search timeout, metadata that can't be loaded) affects only that entry:
 
 - **Upcoming entry not found:** it is left out of the provider's queue, everything else is loaded, and its ID is returned in `unavailableEntryIds`. It stays in the session for everyone else.
 - **Current entry not found:** nothing is changed and the adapter throws an error with `code: "trackUnavailable"` and `details: { entryIds }` (every unfound entry). Rust maps it to `Error::TrackUnavailable`.
@@ -75,17 +75,22 @@ Everything learned about the providers' behaviour, open problems, the Spotify re
 
 The adapter is self-contained because it is injected as one renderer script. It discovers the Redux store at runtime by scanning loaded script modules for the semantic `No global store set` accessor signature, rather than hard-coding minified bundle names. It validates the discovered store methods before using it.
 
-The current implementation uses these private TIDAL application interfaces observed and tested during reverse engineering:
+It also finds two optional helpers among the module exports: TIDAL's open-API client (an RTK Query API object, by its `reducerPath`) and the player SDK's position getter (by its code). Without them the adapter falls back to text search and the store's position.
 
-- `search/SEARCH_FOR`, with results at `state.content.trackLists["search/tracks/" + encodeURIComponent(query)]` and metadata in `state.content.mediaItems`.
-- `content/FETCH_AND_PLAY_MEDIA_ITEM` to play a recording that has not previously been loaded.
-- `playQueue/ADD_MEDIA_ITEMS_TO_QUEUE` with `overwritePlayQueue: true` to replace the queue.
-- `playbackControls/PLAY`, `PAUSE`, `SEEK`, and `SKIP_NEXT` for playback controls.
-- `playQueue.currentIndex` to discard TIDAL's played-history prefix when normalizing its queue.
+The current implementation uses these private TIDAL application interfaces (all verified live against TIDAL 2.48, details in [PROVIDER_ADAPTERS.md](PROVIDER_ADAPTERS.md)):
 
-These are undocumented application internals, not a supported TIDAL API. Runtime feature checks and explicit errors reduce the chance of silent corruption, but cannot guarantee compatibility with future TIDAL releases. Track matching requires normalized title and artist agreement; conflicting ISRCs are rejected, exact ISRCs are preferred, and album/duration are tie-breakers. All recordings are resolved before a destructive queue replacement.
+- `playQueue/RESET` to write the whole queue with uids of our own, which carry the session entry IDs. The player loads the new current track paused.
+- `playQueue/CLEAR_UPCOMING` and `APPEND_ELEMENTS` to replace everything after a current song that stays, without touching playback.
+- `playQueue/CLEAR_QUEUE` to unload the current track for an empty session queue.
+- `playQueue/ADD_AT_INDEX`, `REMOVE_ELEMENT` and `MOVE_TRACK` for single upcoming-queue edits.
+- `playbackControls/PLAY`, `PAUSE`, `SEEK` and `TIME_UPDATE` (store only), plus `playbackControls.prefilled` to know when a loaded track can be sought.
+- The open API's `getTracks` with `filter[isrc]` (20 per request) to find recordings by ISRC, and `content/LOAD_SINGLE_MEDIA_ITEM` to give TIDAL their metadata.
+- `search/SEARCH_FOR`, with results at `state.content.trackLists["search/tracks/" + encodeURIComponent(query)]` and metadata in `state.content.mediaItems`, for songs without an ISRC hit.
+- `playQueue.currentIndex` to discard TIDAL's played-history prefix when normalizing its queue, and `playQueue.type` to refuse writes while TIDAL plays on another device.
 
-An important deliberate limitation: a TIDAL action that safely unloads an active track to produce a truly empty queue has not been verified. When an empty state is requested while a track is still active, the adapter reports an error instead of dispatching an assumed `CLEAR_QUEUE` action.
+These are undocumented application internals, not a supported TIDAL API. Runtime feature checks and explicit errors reduce the chance of silent corruption, but cannot guarantee compatibility with future TIDAL releases. An exact ISRC identifies the recording; otherwise matching requires normalized title (featured artists ignored) and artist agreement, conflicting ISRCs are rejected, and album/duration are tie-breakers. All recordings are resolved before the queue is replaced.
+
+Waits in the adapter react to store changes instead of polling, because TIDAL's page runs timers only once a second while its window is hidden and silent.
 
 ## Spotify adapter notes
 

@@ -22,7 +22,9 @@
     // Holding a loaded track at the session's state: done once it matched
     // this long; re-applied at most this often; this close counts as a match.
     const TRACK_HOLD_STABLE_MS = 500;
-    const TRACK_HOLD_RETRY_MS = 250;
+    const TRACK_HOLD_PAUSED_STABLE_MS = 1_000;
+    const TRACK_HOLD_RETRY_MS = 100;
+    const PLAY_STATE_RETRY_MS = 1_000;
     const TRACK_HOLD_TOLERANCE_MS = 1_000;
     // Waiting for TIDAL's restore after attaching: done once its queue and play
     // state stopped changing for this long (longer while the queue is empty).
@@ -98,6 +100,8 @@
     // ---------------------------------------------------------------------
 
     let store = null;
+    let openApi = null;
+    let getPlayerPosition = null;
     let storeUnsubscribe = null;
     let storeEventTimer = null;
     let pendingStoreState = null;
@@ -115,8 +119,45 @@
             typeof candidate.subscribe === "function";
     }
 
+    // TIDAL's client for its open API (an RTK Query API object). Found by its
+    // reducer path, not by minified export names. Optional: without it,
+    // tracks are found by text search only.
+    function findOpenApi(modules) {
+        for (const module of modules) {
+            for (const exported of Object.values(module)) {
+                try {
+                    if (exported && typeof exported === "object" &&
+                        exported.reducerPath === "tidalOpenPlatformApi" &&
+                        typeof exported.endpoints?.getTracks?.initiate === "function") {
+                        return exported;
+                    }
+                } catch {
+                    // A getter on some export may throw. Ignore it.
+                }
+            }
+        }
+        return null;
+    }
+
+    // TIDAL's player SDK exports a getter for the active player's position
+    // (`return x.activePlayer?.getPosition()??0`), found by that code.
+    // Optional: the store's position is used without it.
+    function findPlayerPosition(modules) {
+        for (const module of modules) {
+            for (const exported of Object.values(module)) {
+                if (typeof exported !== "function") continue;
+                const source = Function.prototype.toString.call(exported);
+                if (source.length < 200 && source.includes(".activePlayer?.getPosition()")) return exported;
+            }
+        }
+        return null;
+    }
+
     async function discoverStore() {
-        for (const module of await importTidalModules()) {
+        const modules = await importTidalModules();
+        openApi ??= findOpenApi(modules);
+        getPlayerPosition ??= findPlayerPosition(modules);
+        for (const module of modules) {
             for (const exported of Object.values(module)) {
                 if (typeof exported !== "function") continue;
 
@@ -160,6 +201,43 @@
         store.dispatch(payload === undefined ? { type } : { type, payload });
     }
 
+    /**
+     * Resolve to true once `predicate(state)` holds, or false after
+     * `timeoutMs`. Checked on every store change rather than on a timer.
+     *
+     * Verified live: while TIDAL's window is hidden and nothing plays,
+     * Chromium runs the page's timers once a second (a 25 ms timeout took
+     * 1000 ms), so polling waits took up to a second each step. Store
+     * changes come from TIDAL's own media and network events and aren't
+     * delayed.
+     */
+    function waitFor(predicate, timeoutMs) {
+        return new Promise(resolve => {
+            let done = false;
+            let timer = null;
+            let unsubscribe = () => {};
+            const holds = () => {
+                try {
+                    return Boolean(store && predicate(store.getState()));
+                } catch {
+                    return false;
+                }
+            };
+            const finish = value => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                unsubscribe();
+                resolve(value);
+            };
+            if (holds()) return finish(true);
+            unsubscribe = store.subscribe(() => {
+                if (holds()) finish(true);
+            });
+            timer = setTimeout(() => finish(holds()), timeoutMs);
+        });
+    }
+
     function getMediaItem(state, productId) {
         const record = state?.content?.mediaItems?.[String(productId)];
         return record?.item ?? record?.mediaItem ?? record ?? null;
@@ -169,8 +247,8 @@
     // Track metadata and matching
     // ---------------------------------------------------------------------
 
-    // A recording could not be identified (no match, ambiguous, search timed
-    // out). Unlike other failures this is expected and per-track: the rest of
+    // A recording could not be identified (no match, search timed out, or
+    // TIDAL couldn't load it). Unlike other failures this is expected and per-track: the rest of
     // the queue can still be loaded.
     class TrackLookupError extends Error {
         constructor(message) {
@@ -238,13 +316,22 @@
         return descriptor;
     }
 
+    // Services disagree on where featured artists go: "Shoong!" on one is
+    // "Shoong! (feat. LISA of BLACKPINK)" on another (verified live, same
+    // rule as the Spotify adapter).
+    function normalizeTitle(value) {
+        return normalize(String(value ?? "")
+            .replace(/[([][^)\]]*\b(feat|ft|featuring|with)\b[^)\]]*[)\]]/gi, " ")
+            .replace(/\s[-–]\s*(feat|ft|featuring)\b.*$/i, " "));
+    }
+
     function artistOverlap(trackA, trackB) {
         const artistsA = new Set((trackA.artists ?? []).map(normalize).filter(Boolean));
         return (trackB.artists ?? []).map(normalize).some(name => artistsA.has(name));
     }
 
     function scoreCandidate(source, candidate) {
-        if (normalize(source.title) !== normalize(candidate.track.title)) return -1;
+        if (normalizeTitle(source.title) !== normalizeTitle(candidate.track.title)) return -1;
         if (!artistOverlap(source, candidate.track)) return -1;
 
         let score = 10; // Exact title and at least one matching artist.
@@ -303,14 +390,138 @@
             types: ["TRACKS"],
         });
 
-        const deadline = performance.now() + SEARCH_TIMEOUT_MS;
-        while (performance.now() < deadline) {
-            const ids = getSearchResultIds(query);
-            if (ids) return ids;
-            await new Promise(resolve => setTimeout(resolve, 100));
+        if (await waitFor(() => getSearchResultIds(query) != null, SEARCH_TIMEOUT_MS)) {
+            return getSearchResultIds(query);
         }
-
         throw new TrackLookupError(`TIDAL search timed out for "${query}"`);
+    }
+
+    // -----------------------------------------------------------------
+    // ISRC lookup through TIDAL's open API (verified live, TIDAL 2.48)
+    // -----------------------------------------------------------------
+    //
+    // `GET /tracks?filter[isrc]=a,b,…&include=artists,albums` takes at most
+    // 20 values (more is a 400 INVALID_ARRAY_LENGTH) and answered 20 in
+    // 360 ms, where each text search takes about 500 ms and has to wait for
+    // the previous one. Results come back in any order; one ISRC can have
+    // several tracks (single and album). Lookups may run in parallel.
+
+    const ISRC_BATCH_SIZE = 20;
+    const MEDIA_ITEM_TIMEOUT_MS = 8_000;
+    // ISRC -> Promise<candidates[]>
+    const isrcCandidates = new Map();
+
+    function normalizeIsrc(value) {
+        return typeof value === "string" ? value.replace(/[^A-Za-z0-9]/g, "").toUpperCase() : "";
+    }
+
+    // ISO 8601 durations as the open API gives them ("PT3M41S").
+    function isoDurationMs(value) {
+        const match = /^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/.exec(String(value ?? ""));
+        if (!match) return null;
+        const [hours, minutes, seconds] = match.slice(1).map(part => Number(part ?? 0));
+        return Math.round(((hours * 60 + minutes) * 60 + seconds) * 1000);
+    }
+
+    // Open API result (JSON:API) -> candidates with the same descriptor
+    // shape as TIDAL's media items.
+    function candidatesFromDocument(document) {
+        const included = new Map((document?.included ?? []).map(item => [`${item.type}:${item.id}`, item]));
+        const related = (track, name) => (track.relationships?.[name]?.data ?? [])
+            .map(link => included.get(`${link.type}:${link.id}`))
+            .filter(Boolean);
+        return (document?.data ?? [])
+            .filter(track => track?.type === "tracks" && track.attributes)
+            .map(track => ({
+                productId: String(track.id),
+                streamable: !Array.isArray(track.attributes.availability) ||
+                    track.attributes.availability.includes("STREAM"),
+                track: {
+                    title: track.attributes.title,
+                    artists: related(track, "artists").map(artist => artist.attributes?.name).filter(Boolean),
+                    isrc: track.attributes.isrc ?? null,
+                    album: related(track, "albums")[0]?.attributes?.title ?? null,
+                    durationMs: isoDurationMs(track.attributes.duration),
+                },
+            }));
+    }
+
+    async function fetchIsrcBatch(isrcs) {
+        const countryCode = store.getState()?.session?.countryCode;
+        const result = await store.dispatch(openApi.endpoints.getTracks.initiate(
+            { countryCode, filter: { isrc: isrcs }, include: ["artists", "albums"] },
+            { subscribe: false },
+        ));
+        if (result?.error) {
+            throw new Error(`TIDAL ISRC lookup failed: ${JSON.stringify(result.error).slice(0, 200)}`);
+        }
+        return candidatesFromDocument(result?.data);
+    }
+
+    /**
+     * Look up ISRCs not looked up before, in batches. Fills `isrcCandidates`;
+     * a failed batch leaves an empty list for its ISRCs (text search then
+     * takes over).
+     */
+    function prefetchIsrcs(values) {
+        if (!openApi) return;
+        const wanted = [...new Set(values.map(normalizeIsrc).filter(Boolean))]
+            .filter(isrc => !isrcCandidates.has(isrc));
+        for (let start = 0; start < wanted.length; start += ISRC_BATCH_SIZE) {
+            const batch = wanted.slice(start, start + ISRC_BATCH_SIZE);
+            const request = fetchIsrcBatch(batch).catch(error => {
+                console.warn("[Attune]", error.message);
+                return [];
+            });
+            batch.forEach(isrc => isrcCandidates.set(isrc, request.then(candidates =>
+                candidates.filter(candidate => normalizeIsrc(candidate.track.isrc) === isrc))));
+        }
+    }
+
+    /**
+     * The TIDAL track for `track` by its ISRC, or null. An exact ISRC is the
+     * same recording even when the titles differ between services; among
+     * several (single, album) the closest title, artist, album and length win.
+     */
+    async function resolveByIsrc(track) {
+        const isrc = normalizeIsrc(track.isrc);
+        if (!isrc || !openApi) return null;
+        prefetchIsrcs([isrc]);
+        const candidates = (await isrcCandidates.get(isrc)).filter(candidate => candidate.streamable);
+        if (!candidates.length) return null;
+
+        const score = candidate => {
+            const sameTitle = normalizeTitle(track.title) === normalizeTitle(candidate.track.title);
+            const sameArtist = artistOverlap(track, candidate.track);
+            // An ISRC hit with neither the title nor an artist in common is
+            // more likely a data error than the same song.
+            if (!sameTitle && !sameArtist) return -1;
+            let value = (sameTitle ? 10 : 0) + (sameArtist ? 5 : 0);
+            if (track.album && candidate.track.album &&
+                normalize(track.album) === normalize(candidate.track.album)) value += 3;
+            if (Number.isFinite(track.durationMs) && Number.isFinite(candidate.track.durationMs) &&
+                Math.abs(track.durationMs - candidate.track.durationMs) <= 2_000) value += 2;
+            return value;
+        };
+        return candidates
+            .map(candidate => ({ ...candidate, score: score(candidate) }))
+            .filter(candidate => candidate.score >= 0)
+            .sort((a, b) => b.score - a.score)[0] ?? null;
+    }
+
+    /**
+     * Make sure TIDAL has its own metadata for these tracks
+     * (`content.mediaItems`). The player can't load a queue element without
+     * it. `content/LOAD_SINGLE_MEDIA_ITEM` fetches one (150 ms for three in
+     * parallel, verified live). Resolves to the IDs still missing.
+     */
+    async function ensureMediaItems(productIds) {
+        const present = id => getMediaItem(store.getState(), id) != null;
+        const missing = [...new Set(productIds.map(String))].filter(id => !present(id));
+        if (!missing.length) return [];
+        missing.forEach(id => dispatch("content/LOAD_SINGLE_MEDIA_ITEM", { id, itemType: "track" }));
+        await waitFor(() => missing.every(present), MEDIA_ITEM_TIMEOUT_MS);
+        return missing.filter(id => !present(id));
     }
 
     async function resolveTrack(track) {
@@ -329,6 +540,14 @@
 
         if (resolvedTrackCache.has(cacheKey)) {
             return resolvedTrackCache.get(cacheKey);
+        }
+
+        // The exact recording by ISRC first; text search if that finds
+        // nothing TIDAL can play.
+        const byIsrc = await resolveByIsrc(track);
+        if (byIsrc && (await ensureMediaItems([byIsrc.productId])).length === 0) {
+            resolvedTrackCache.set(cacheKey, byIsrc.productId);
+            return byIsrc.productId;
         }
 
         const query = `${track.title} ${(track.artists ?? []).join(" ")}`.trim();
@@ -362,9 +581,11 @@
         if (!ranked.length) {
             throw new TrackLookupError(`No matching TIDAL recording found for "${track.title}"`);
         }
-        if (ranked.length > 1 && ranked[0].score === ranked[1].score) {
-            throw new TrackLookupError(`TIDAL returned an ambiguous match for "${track.title}"; add an ISRC or album`);
-        }
+        // Equal scores used to be rejected as ambiguous, which is why
+        // "Shoong!" was never found (verified live): TIDAL lists the same
+        // recording on the single and the album (same ISRC, title, artists,
+        // length). Like the Spotify adapter, take TIDAL's best-ranked one
+        // (the sort is stable).
 
         const productId = ranked[0].productId;
         resolvedTrackCache.set(cacheKey, productId);
@@ -377,6 +598,10 @@
     // returned per entry; any other error (e.g. the store disappeared) is
     // rethrown.
     async function resolveEntries(entries, known) {
+        // One ISRC request per 20 songs, instead of a search each.
+        prefetchIsrcs(entries
+            .filter(entry => !known.has(entry.entryId))
+            .map(entry => entry.track?.isrc));
         return Promise.all(entries.map(async entry => {
             const loadedProductId = known.get(entry.entryId);
             if (loadedProductId != null) return { entry, productId: loadedProductId };
@@ -411,8 +636,26 @@
             queueElement?.item?.id ?? null;
     }
 
+    // Queue elements Attune writes carry the session entry ID in their uid,
+    // so they keep it across a bridge reload (TIDAL saves its queue, uids
+    // included). TIDAL itself only parses uids starting with `pq__` in its
+    // cloud queue code, as keys it may not know; ours keep that prefix.
+    const ATTUNE_UID_PREFIX = "pq__attune__";
+
+    function uidForEntry(entryId) {
+        return ATTUNE_UID_PREFIX + entryId;
+    }
+
     function makeEntryId(queueElement, productId, index) {
         const uid = queueElement?.uid;
+        // A kept current element may carry an older entry's uid; the
+        // mapping made when keeping it wins.
+        if (uid != null && entryIdByQueueUid.has(String(uid))) {
+            return entryIdByQueueUid.get(String(uid));
+        }
+        if (typeof uid === "string" && uid.startsWith(ATTUNE_UID_PREFIX)) {
+            return uid.slice(ATTUNE_UID_PREFIX.length);
+        }
         const key = uid != null ? String(uid) : `${productId ?? "unknown"}:${index}`;
 
         if (!entryIdByQueueUid.has(key)) {
@@ -440,10 +683,17 @@
     const MAX_SYNC_SKEW_MS = 24 * 60 * 60 * 1000;
 
     // Verified live: `playbackState` leaves PLAYING while a track loads, and
-    // `desiredPlaybackState` stays PLAYING after a PAUSE action. Neither alone
-    // is reliable. Trust the explicit states and fall back to the intended
-    // state only in between (loading, stalled).
+    // `desiredPlaybackState` can be PLAYING after a PAUSE action (a STALLED
+    // or PLAYING report from the player after it sets it back). Neither
+    // alone is reliable. From TIDAL's reducer (TIDAL 2.48): only PAUSE, STOP
+    // and SET_DESIRED_PAUSE_STATE set the desired state to NOT_PLAYING, and
+    // the player confirms with `playbackState` up to a second later
+    // (verified live). Reading PLAYING meanwhile published our own pause as
+    // the user's, a second late. So a requested pause wins; otherwise trust
+    // the explicit states, and the intended one in between (loading,
+    // stalled).
     function isPlaying(controls) {
+        if (controls.desiredPlaybackState === "NOT_PLAYING") return false;
         if (controls.playbackState === "PLAYING") return true;
         if (controls.playbackState === "PAUSED") return false;
         if (typeof controls.desiredPlaybackState === "string") {
@@ -508,14 +758,6 @@
 
     function getState() {
         return stateFromRedux(store.getState());
-    }
-
-    function rememberAppliedEntryIds(entries) {
-        const currentEntries = queueElements(store.getState());
-        entries.forEach((entry, index) => {
-            const uid = currentEntries[index]?.uid;
-            if (uid != null) entryIdByQueueUid.set(String(uid), entry.entryId);
-        });
     }
 
     // ---------------------------------------------------------------------
@@ -605,16 +847,83 @@
         suppressLocalChangesUntil = Date.now() + REMOTE_CHANGE_SUPPRESSION_MS;
     }
 
+    /**
+     * After a remote change: compare later store changes with the state it
+     * produced, not with the state before it.
+     *
+     * Verified live: TIDAL's store keeps changing for about a second after
+     * a PAUSE or CLEAR_QUEUE (player confirmations, other slices), which kept
+     * pushing the 180 ms debounce back until the suppression window had
+     * passed. The one comparison then made was against the state from
+     * before the change, so the change itself was published as the user's.
+     */
+    function rebaseLocalChanges() {
+        if (!store) return;
+        clearTimeout(storeEventTimer);
+        storeEventTimer = null;
+        pendingStoreState = null;
+        previousStoreState = store.getState();
+        noteActiveTrack(previousStoreState);
+        setRemoteMutationWindow();
+    }
+
     function setPlaying(isPlaying) {
         dispatch(isPlaying ? "playbackControls/PLAY" : "playbackControls/PAUSE");
     }
 
-    function seek(positionMs) {
+    /**
+     * Before resuming: put the player where the store (and so the session)
+     * says it is paused.
+     *
+     * Verified live: on a track loaded paused ("prefetched"), PLAY reloads
+     * the track from the player's position, and then TIDAL's play saga
+     * sometimes loads it once more, from 0 (seen with every song loaded
+     * right after another one had played). A seek right before PLAY covers
+     * the first; the hold in `playback.setPlaying` catches the second.
+     * `startLoadedTrack` leaves the store at the session's position.
+     */
+    function alignPlayerBeforePlay() {
+        if (!store) return;
+        const state = store.getState();
+        const playback = getPlayback(state);
+        if (playback.isPlaying || !state?.playbackControls?.mediaProduct) return;
+        // Not only when the player's position looks wrong: that position
+        // is cached by the SDK and was right in runs that still started at
+        // 0. While paused, a seek to the same spot can't be heard.
+        seek(playback.positionMs);
+    }
+
+    // Where Attune's last seek should land, so the position jump it causes
+    // isn't taken for the user's. Verified live: TIDAL writes the new
+    // position only once the player has sought, up to a second later.
+    const OWN_SEEK_MEMORY_MS = 5_000;
+    let ownSeek = null;
+
+    function seek(positionMs, { own = true } = {}) {
         if (!Number.isFinite(positionMs) || positionMs < 0) {
             throw new TypeError("positionMs must be a non-negative number");
         }
+        if (own) ownSeek = { positionMs, at: Date.now() };
         // TIDAL's internal seek action uses seconds, while Attune uses ms.
         dispatch("playbackControls/SEEK", positionMs / 1000);
+    }
+
+    function isOwnSeek(playback) {
+        if (!ownSeek || Date.now() - ownSeek.at > OWN_SEEK_MEMORY_MS) return false;
+        const expected = ownSeek.positionMs +
+            (playback.isPlaying ? Math.max(0, playback.positionCapturedAtMs - ownSeek.at) : 0);
+        return Math.abs(playback.positionMs - expected) <= TRACK_HOLD_TOLERANCE_MS;
+    }
+
+    /** Seek, and wait (at most 1.5 s) until TIDAL reports the new position. */
+    async function seekAndWait(positionMs) {
+        seek(positionMs);
+        const at = Date.now();
+        await waitFor(state => {
+            const now = getPlayback(state);
+            const target = positionMs + (now.isPlaying ? Date.now() - at : 0);
+            return Math.abs(livePositionMs(now) - target) <= TRACK_HOLD_TOLERANCE_MS;
+        }, 1_500);
     }
 
     async function playTrack(track) {
@@ -638,17 +947,20 @@
         if (!Array.isArray(entries)) {
             throw new TypeError("Queue entries must be an array");
         }
+        assertLocalPlayback();
         // The session keeps playing while songs are looked up and loaded.
         const calledAt = Date.now();
 
         if (entries.length === 0) {
-            // We have verified queue replacement, but not a TIDAL action that
-            // safely unloads the active item. Do not invent one or claim that
-            // an empty session queue was applied when playback still exists.
-            if (store.getState()?.playbackControls?.mediaProduct) {
-                throw new Error("TIDAL cannot safely unload the active track with the verified bridge actions");
+            // Verified live: CLEAR_QUEUE empties the queue, unloads the
+            // current track (media product null, IDLE) and stops the sound
+            // within 0.3 s. It also resets shuffle and repeat, which are off
+            // during a session anyway.
+            setRemoteMutationWindow();
+            if (store.getState()?.playbackControls?.mediaProduct ||
+                (store.getState()?.playQueue?.elements ?? []).length) {
+                dispatch("playQueue/CLEAR_QUEUE");
             }
-            setPlaying(false);
             return { unavailableEntryIds: [] };
         }
 
@@ -674,54 +986,207 @@
         const failures = upcoming.filter(result => result.error);
         const loaded = [current, ...upcoming.filter(result => !result.error)];
 
-        setRemoteMutationWindow();
-        dispatch("playQueue/ADD_MEDIA_ITEMS_TO_QUEUE", {
-            mediaItemIds: loaded.map(result => result.productId),
-            options: { overwritePlayQueue: true },
-            position: "now",
-            sourceContext: SOURCE_CONTEXT,
-        });
-        rememberAppliedEntryIds(loaded.map(result => result.entry));
+        // The player needs TIDAL's metadata for every element.
+        const missing = new Set(await ensureMediaItems(loaded.map(result => result.productId)));
+        if (missing.has(String(current.productId))) {
+            throw trackUnavailableError([{
+                entry: current.entry,
+                error: new TrackLookupError(`TIDAL could not load track ${current.productId}`),
+            }]);
+        }
+        const playable = loaded.filter(result => !missing.has(String(result.productId)));
+        const unloadable = loaded.filter(result => missing.has(String(result.productId)));
 
+        writeQueue(playable);
         if (playback) await startLoadedTrack(current.productId, playback, calledAt);
 
-        return { unavailableEntryIds: failures.map(failure => failure.entry.entryId) };
+        return {
+            unavailableEntryIds: [...failures, ...unloadable].map(failure => failure.entry.entryId),
+        };
+    }
+
+    // Read in TIDAL's reducer (not tested live): while casting (TIDAL
+    // Connect, Chromecast, Sonos) the queue type is "cloud" and the queue
+    // lives on the other device. TIDAL ignores most queue actions then, but
+    // RESET would still overwrite the local copy. The cloud queue
+    // ("cloudV2", behind a server flag that was off) keeps the queue on
+    // TIDAL's servers and is untested.
+    function assertLocalPlayback() {
+        if (store.getState()?.playQueue?.type === "cloud") {
+            throw new Error("TIDAL is playing on another device (TIDAL Connect or casting); Attune can only follow TIDAL playing on this computer");
+        }
+    }
+
+    function queueElement(result) {
+        return {
+            context: SOURCE_CONTEXT,
+            mediaItemId: String(result.productId),
+            priority: "priority_none",
+            uid: uidForEntry(result.entry.entryId),
+        };
+    }
+
+    /**
+     * Make `results` ({ entry, productId }, current first) TIDAL's whole
+     * queue. This replaced `ADD_MEDIA_ITEMS_TO_QUEUE` with
+     * `overwritePlayQueue`, which restarted the current song and started a
+     * new one playing. Verified live (TIDAL 2.48):
+     *
+     * - **The current song stays** (TIDAL's current element is that track
+     *   and the player has it): `CLEAR_UPCOMING` keeps only the current
+     *   element, `APPEND_ELEMENTS` adds the rest. Neither reaches the
+     *   player; the song played on without a gap.
+     * - **Another song**: `RESET` sets all elements. The player saga then
+     *   loads the current one *without playing it*, so a paused join is
+     *   never heard; `startLoadedTrack` then seeks and plays.
+     *   RESET doesn't keep a song that is already playing: TIDAL's "player
+     *   has it" check reads `localStorage.playerState`, which TIDAL only
+     *   writes when the window is hidden or shown. So it reloaded the song
+     *   paused from 0 in most tries, which is why the case above exists.
+     *
+     * Either way we choose the uids, so every element carries its session
+     * entry ID, which also survives a bridge reload.
+     */
+    function writeQueue(results) {
+        const state = store.getState();
+        const queue = state?.playQueue;
+        const controls = state?.playbackControls;
+        const firstId = String(results[0].productId);
+        const currentElement = queue?.elements?.[queue?.currentIndex];
+        const keepsTrack = currentElement != null &&
+            String(currentElement.mediaItemId) === firstId &&
+            String(controls?.mediaProduct?.productId) === firstId &&
+            controls?.mediaProduct?.referenceId === currentElement.uid &&
+            !controls?.prefilled;
+
+        setRemoteMutationWindow();
+        if (keepsTrack) {
+            dispatch("playQueue/CLEAR_UPCOMING");
+            if (results.length > 1) {
+                dispatch("playQueue/APPEND_ELEMENTS", { elements: results.slice(1).map(queueElement) });
+            }
+            entryIdByQueueUid.set(String(currentElement.uid), results[0].entry.entryId);
+        } else {
+            dispatch("playQueue/RESET", { currentIndex: 0, elements: results.map(queueElement) });
+        }
+    }
+
+    function livePositionMs(playback) {
+        return playback.positionMs + (playback.isPlaying ? Math.max(0, Date.now() - playback.positionCapturedAtMs) : 0);
+    }
+
+    /**
+     * Where the player really is, in ms: the SDK's own position if it was
+     * found, else the store's.
+     *
+     * Verified live: a track loaded paused (RESET) is "prefetched", and
+     * PLAY on it reloads it from the player's own position. A seek made
+     * before the player had finished loading was undone by the load (to 0)
+     * without the store hearing of it: the store said 12 s, the song then
+     * started at 0. Only the player's position shows that.
+     */
+    function actualPositionMs(state) {
+        if (getPlayerPosition) {
+            try {
+                const seconds = Number(getPlayerPosition());
+                if (Number.isFinite(seconds)) return Math.round(seconds * 1000);
+            } catch {
+                // Fall back to the store.
+            }
+        }
+        return livePositionMs(getPlayback(state));
     }
 
     /**
      * Bring a freshly loaded track to the session's position and play state,
      * and keep it there until it stays put.
      *
-     * Verified live: a queue loaded with position "now" starts its first track
-     * once it has loaded, from 0, undoing a pause or seek dispatched before
-     * that. Joining a paused jam therefore started playback. Which store
-     * states mark "loaded" isn't reliable (the previous track's PLAYING
-     * lingers), so instead of waiting for one signal, re-apply the position
-     * and play state whenever TIDAL differs, until it has matched for
-     * TRACK_HOLD_STABLE_MS. Local changes aren't reported meanwhile: none of
-     * this is the user's doing.
+     * Verified live (TIDAL 2.48, after `playQueue/RESET`):
+     * - The new track loads paused. `playbackControls.prefilled` is true from
+     *   the RESET until the player has it (MEDIA_PRODUCT_TRANSITION, 40–200
+     *   ms). A SEEK before that goes to the previous track and is lost; a
+     *   PLAY waits for the load.
+     * - Seeking a track that was loaded paused worked (15.000 s, then PLAY
+     *   continued from there), but once a seek was undone about 230 ms later,
+     *   when the player finished loading. So the hold re-applies until the
+     *   state stayed put; while paused it waits longer, as there is nothing
+     *   to hear meanwhile.
+     * - The seek can leave `playbackState` at STALLED, which sets
+     *   `desiredPlaybackState` back to PLAYING; the PAUSE dispatched after it
+     *   wins (`isPlaying` then reads false).
+     * Local changes aren't reported meanwhile: none of this is the user's
+     * doing.
      */
     async function startLoadedTrack(productId, playback, calledAt) {
-        const target = () => (playback.positionMs ?? 0) + (playback.isPlaying ? Date.now() - calledAt : 0);
-        const sameTrack = state =>
-            String(state?.playbackControls?.mediaProduct?.productId) === String(productId);
+        // `positionMs` is valid at `positionCapturedAtMs` (local clock; the
+        // runtime stamps snapshots so). Internal callers pass TIDAL's own
+        // playback, whose sync point can be seconds old: anchoring those
+        // at the call made a kept song jump back (verified live, 0.8 s).
+        const capturedAt = Number(playback.positionCapturedAtMs);
+        const anchor = Number.isFinite(capturedAt) && Math.abs(Date.now() - capturedAt) < MAX_SYNC_SKEW_MS
+            ? capturedAt
+            : calledAt;
+        const target = () => (playback.positionMs ?? 0) + (playback.isPlaying ? Math.max(0, Date.now() - anchor) : 0);
+        const wantPlaying = Boolean(playback.isPlaying);
+        const loaded = state =>
+            String(state?.playbackControls?.mediaProduct?.productId) === String(productId) &&
+            !state?.playbackControls?.prefilled;
+        // Verified live: a track loaded paused by RESET keeps the previous
+        // track's `desiredPlaybackState: PLAYING`, so `isPlaying` reads true
+        // although nothing plays. Playing counts only once the player says
+        // so; a pause once it was asked for.
+        const playStateHolds = state => wantPlaying
+            ? state.playbackControls.playbackState === "PLAYING"
+            : !isPlaying(state.playbackControls);
+        // The player's own position and the store's can disagree either way
+        // after a paused load (verified live: player 0 and store 12, and
+        // player 12 and store 0). The session follows the store and PLAY
+        // follows the player, so both have to be right.
+        const near = value => Math.abs(value - target()) <= TRACK_HOLD_TOLERANCE_MS;
+        const playerHolds = state => near(actualPositionMs(state));
+        const storeHolds = state => near(livePositionMs(getPlayback(state)));
+        const positionHolds = state => playerHolds(state) && storeHolds(state);
+        let commandedAt = null;
 
         await holdUntil({
             timeoutMs: TRACK_START_TIMEOUT_MS,
-            stableMs: TRACK_HOLD_STABLE_MS,
-            matches(state) {
-                const now = getPlayback(state);
-                const position = now.positionMs + (now.isPlaying ? Date.now() - now.positionCapturedAtMs : 0);
-                return sameTrack(state) &&
-                    now.isPlaying === Boolean(playback.isPlaying) &&
-                    Math.abs(position - target()) <= TRACK_HOLD_TOLERANCE_MS;
-            },
+            stableMs: wantPlaying ? TRACK_HOLD_STABLE_MS : TRACK_HOLD_PAUSED_STABLE_MS,
+            matches: state => loaded(state) && playStateHolds(state) && positionHolds(state),
             correct(state) {
-                if (!sameTrack(state)) return; // still loading
-                if (target() > TRACK_HOLD_TOLERANCE_MS) seek(target());
-                setPlaying(Boolean(playback.isPlaying));
+                if (!loaded(state)) return false; // a seek now would be lost
+                // First: seek, then play or pause (PLAY makes the player
+                // load the track for real, keeping the position: 170 ms).
+                if (commandedAt == null) {
+                    if (!positionHolds(state)) seek(target());
+                    setPlaying(wantPlaying);
+                    commandedAt = Date.now();
+                    return true;
+                }
+                if (!playStateHolds(state)) {
+                    // A PLAY on a stopped player reloads the track, so
+                    // don't repeat it while that's under way.
+                    if (Date.now() - commandedAt < PLAY_STATE_RETRY_MS) return false;
+                    setPlaying(wantPlaying);
+                    commandedAt = Date.now();
+                    return true;
+                }
+                if (!playerHolds(state)) {
+                    seek(target());
+                    return true;
+                }
+                if (!storeHolds(state)) {
+                    // The player is right: only tell the store (no seek).
+                    dispatch("playbackControls/TIME_UPDATE", target() / 1000);
+                    return true;
+                }
+                return false;
             },
         });
+        // If the player still isn't there, the store at least says where the
+        // session is; `alignPlayerBeforePlay` puts the player there on PLAY.
+        if (!wantPlaying && store && loaded(store.getState()) && !storeHolds(store.getState())) {
+            dispatch("playbackControls/TIME_UPDATE", target() / 1000);
+        }
     }
 
     /**
@@ -732,30 +1197,67 @@
      * signal, re-apply whenever it differs. Local changes aren't reported
      * meanwhile: none of this is the user's doing.
      */
-    async function holdUntil({ timeoutMs, stableMs, matches, correct }) {
+    //
+    // Checked on every store change, plus a timer for the stable period and
+    // retries (see `waitFor`: timers run once a second while TIDAL is hidden
+    // and silent, which is exactly while a track loads paused). `correct`
+    // returns whether it dispatched anything; only then is the next
+    // correction held back by TRACK_HOLD_RETRY_MS.
+    function holdUntil({ timeoutMs, stableMs, matches, correct }) {
         suppressLocalChangesUntil = Date.now() + timeoutMs + REMOTE_CHANGE_SUPPRESSION_MS;
         const deadline = Date.now() + timeoutMs;
-        let matchingSince = null;
-        let lastCorrected = 0;
-        try {
-            while (Date.now() < deadline) {
+        return new Promise((resolve, reject) => {
+            let matchingSince = null;
+            let lastCorrected = 0;
+            let timer = null;
+            let done = false;
+            let scheduled = false;
+            let unsubscribe = () => {};
+
+            const finish = (error, value) => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                unsubscribe();
+                setRemoteMutationWindow();
+                if (error) reject(error);
+                else resolve(value);
+            };
+            const check = () => {
+                scheduled = false;
+                if (done) return;
+                if (!store) return finish(null, false);
+                const now = Date.now();
+                if (now >= deadline) return finish(null, false);
                 const state = store.getState();
                 if (matches(state)) {
-                    matchingSince ??= Date.now();
-                    if (Date.now() - matchingSince >= stableMs) return true;
+                    matchingSince ??= now;
+                    if (now - matchingSince >= stableMs) return finish(null, true);
                 } else {
                     matchingSince = null;
-                    if (Date.now() - lastCorrected >= TRACK_HOLD_RETRY_MS) {
-                        correct(state);
-                        lastCorrected = Date.now();
+                    if (now - lastCorrected >= TRACK_HOLD_RETRY_MS) {
+                        try {
+                            if (correct(state)) lastCorrected = Date.now();
+                        } catch (error) {
+                            return finish(error);
+                        }
                     }
                 }
-                await new Promise(resolve => setTimeout(resolve, TRACK_START_POLL_MS));
-            }
-            return false;
-        } finally {
-            setRemoteMutationWindow();
-        }
+                clearTimeout(timer);
+                const wait = matchingSince != null
+                    ? stableMs - (Date.now() - matchingSince)
+                    : TRACK_HOLD_RETRY_MS - (Date.now() - lastCorrected);
+                timer = setTimeout(check, Math.max(TRACK_START_POLL_MS, Math.min(wait, deadline - Date.now())));
+            };
+            // Not inside TIDAL's dispatch: our corrections dispatch too.
+            const schedule = () => {
+                if (scheduled || done) return;
+                scheduled = true;
+                Promise.resolve().then(check);
+            };
+            unsubscribe = store.subscribe(schedule);
+            check();
+        });
     }
 
     // ---------------------------------------------------------------------
@@ -804,7 +1306,10 @@
                 timeoutMs: TRACK_START_TIMEOUT_MS,
                 stableMs: SETTLE_PAUSED_MS,
                 matches: state => !isPlaying(state?.playbackControls ?? {}),
-                correct: () => setPlaying(false),
+                correct: () => {
+                    setPlaying(false);
+                    return true;
+                },
             });
         } else {
             setRemoteMutationWindow();
@@ -856,6 +1361,8 @@
         );
     }
 
+    // The playback is re-stamped as of now, so callers can overwrite
+    // `positionMs` with a position meant as "now".
     function cloneState(state) {
         return {
             queue: state.queue.map(entry => ({
@@ -863,7 +1370,11 @@
                 track: { ...entry.track, artists: [...entry.track.artists] },
             })),
             currentEntryId: state.currentEntryId,
-            playback: { ...state.playback },
+            playback: {
+                ...state.playback,
+                positionMs: livePositionMs(state.playback),
+                positionCapturedAtMs: Date.now(),
+            },
         };
     }
 
@@ -886,7 +1397,7 @@
             case "queue.replace": {
                 const currentState = getState();
                 const currentEntryId = operation.currentEntryId ?? operation.entries[0]?.entryId ?? null;
-                const playback = { ...currentState.playback };
+                const playback = cloneState(currentState).playback;
                 if (currentEntryId !== currentState.currentEntryId) {
                     playback.positionMs = 0;
                     playback.isPlaying = true;
@@ -961,13 +1472,26 @@
                 if (operation.entryId !== state.currentEntryId) {
                     throw new Error("Cannot seek a track that is not currently playing");
                 }
-                seek(operation.positionMs);
+                await seekAndWait(operation.positionMs);
                 return { unavailableEntryIds: [] };
             }
 
-            case "playback.setPlaying":
-                setPlaying(Boolean(operation.isPlaying));
+            case "playback.setPlaying": {
+                const state = store.getState();
+                const productId = state?.playbackControls?.mediaProduct?.productId;
+                const paused = !getPlayback(state).isPlaying;
+                if (operation.isPlaying && paused && productId != null) {
+                    // Resuming can reload the track (see alignPlayerBeforePlay),
+                    // so hold it at the position like a freshly loaded one.
+                    const positionMs = getPlayback(state).positionMs;
+                    alignPlayerBeforePlay();
+                    const now = Date.now();
+                    await startLoadedTrack(productId, { isPlaying: true, positionMs, positionCapturedAtMs: now }, now);
+                } else {
+                    setPlaying(Boolean(operation.isPlaying));
+                }
                 return { unavailableEntryIds: [] };
+            }
 
             default:
                 throw new Error(`Unsupported Attune operation: ${operation.type}`);
@@ -1001,7 +1525,11 @@
     }
 
     function positionWasSought(before, after) {
+        // Without a current song (e.g. after CLEAR_QUEUE TIDAL still writes
+        // the old position, verified live) there is nothing to seek.
+        if (after.currentEntryId == null) return false;
         if (before.currentEntryId !== after.currentEntryId) return false;
+        if (isOwnSeek(after.playback)) return false;
         if (before.playback.isPlaying !== after.playback.isPlaying) return false;
         if (after.playback.positionMs <= TRACK_START_POSITION_MS &&
             Date.now() - activeTrackChangedAt < TRACK_START_GRACE_MS) {
@@ -1165,15 +1693,29 @@
         storeUnsubscribe = null;
         resourceObserver.disconnect();
         store = null;
+        openApi = null;
+        getPlayerPosition = null;
         previousStoreState = null;
         pendingStoreState = null;
         entryIdByQueueUid.clear();
         trackCache.clear();
         resolvedTrackCache.clear();
+        isrcCandidates.clear();
         bridge.ready = false;
 
         if (window[BRIDGE_KEY] === bridge) delete window[BRIDGE_KEY];
         if (window.bridge === bridge) delete window.bridge;
+    }
+
+    // Methods that change TIDAL on the session's behalf.
+    function remoteChange(apply) {
+        return async (...args) => {
+            try {
+                return await apply(...args);
+            } finally {
+                rebaseLocalChanges();
+            }
+        };
     }
 
     const bridge = {
@@ -1184,11 +1726,11 @@
         sendEvent,
         getState,
         getSnapshot: getState,
-        applySnapshot: applyState,
-        applyOperation,
-        settle,
-        prepareForSession,
-        restoreAfterSession,
+        applySnapshot: remoteChange(applyState),
+        applyOperation: remoteChange(applyOperation),
+        settle: remoteChange(settle),
+        prepareForSession: remoteChange(prepareForSession),
+        restoreAfterSession: remoteChange(restoreAfterSession),
 
         // Existing controller commands. Keeping these avoids breaking the
         // current Tauri UI while the session commands are integrated.
@@ -1196,7 +1738,8 @@
         playTrack,
         pause: async () => setPlaying(false),
         resume: async () => setPlaying(true),
-        seek,
+        // A seek from Attune's own controls is published like the user's.
+        seek: async positionMs => seek(positionMs, { own: false }),
         next: async () => dispatch("playbackControls/SKIP_NEXT"),
         previous: async () => dispatch("playQueue/MOVE_PREVIOUS"),
         addToQueue,
