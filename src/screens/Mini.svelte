@@ -1,20 +1,33 @@
 <script lang="ts">
   import { fade } from "svelte/transition";
   import { app } from "../lib/app.svelte";
+  import { currentCover, livePosition } from "../lib/current.svelte";
   import Icon from "../lib/Icon.svelte";
   import { ownBadge, participantBadge } from "../lib/status";
 
   let status = $derived(app.status);
   let current = $derived(status?.queue[0]);
   let badge = $derived(status ? ownBadge(status.sync) : null);
+  const cover = currentCover(() => status);
+  const playback = livePosition(() => status);
 </script>
 
 {#if status}
   <div class="mini" in:fade={{ duration: 200 }} data-tauri-drag-region>
+    <div class="art" data-tauri-drag-region>
+      {#if cover.url}
+        {#key cover.url}
+          <img src={cover.url} alt="" draggable="false" transition:fade={{ duration: 300 }} />
+        {/key}
+      {:else}
+        <Icon name="music" size={20} />
+      {/if}
+    </div>
     <div class="song" data-tauri-drag-region>
-      <span class="title">{current?.track.title ?? "Nothing queued"}</span>
-      <span class="artist">{current?.track.artists.join(", ") ?? ""}</span>
-      <span class="dots">
+      <span class="title" data-tauri-drag-region>{current?.track.title ?? "Nothing queued"}</span>
+      <span class="artist" data-tauri-drag-region>{current?.track.artists.join(", ") ?? ""}</span>
+      <span class="separator"></span>
+      <span class="dots" data-tauri-drag-region>
         {#each status.participants as person (person.clientId)}
           {@const state = participantBadge(person)}
           <span class="dot {state.tone}" title="{person.displayName}: {state.text}"></span>
@@ -24,19 +37,75 @@
         {/if}
       </span>
     </div>
-    <button class="icon-btn" title="Full view" onclick={() => app.setMini(false)}>
-      <Icon name="expand" label="Full view" />
-    </button>
+    <div class="actions">
+      <button
+        class="icon-btn"
+        title={app.pinned ? "Unpin: stop keeping on top" : "Pin: keep on top of other windows"}
+        aria-pressed={app.pinned}
+        onclick={() => app.setPinned(!app.pinned)}
+      >
+        <Icon name="pin" label="Pin" />
+      </button>
+      <button class="icon-btn" title="Full view" onclick={() => app.setMini(false)}>
+        <Icon name="expand" label="Full view" />
+      </button>
+    </div>
+    {#if current}
+      <div class="progress" aria-hidden="true">
+        <div class="bar" style:width="{playback.fraction * 100}%"></div>
+      </div>
+    {/if}
   </div>
 {/if}
 
 <style>
   .mini {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
     height: 100%;
-    padding: 0 10px 0 14px;
+    padding: 0 8px 0 14px;
+  }
+
+  .art {
+    position: relative;
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 60px;
+    height: 60px;
+    overflow: hidden;
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    color: var(--text-3);
+  }
+  .art img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .actions {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    align-self: center;
+  }
+
+  .progress {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    background: var(--surface-2);
+  }
+  .bar {
+    height: 100%;
+    background: var(--accent);
   }
 
   .song {
@@ -58,11 +127,15 @@
     font-size: 12px;
   }
 
+  .separator {
+    height: 1px;
+    margin: 6px 0;
+    background: var(--border-strong);
+  }
   .dots {
     display: flex;
     align-items: center;
     gap: 5px;
-    margin-top: 5px;
   }
   .dot {
     width: 8px;

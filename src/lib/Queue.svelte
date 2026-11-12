@@ -4,6 +4,7 @@
   import { api, errorText, type QueueItem, type RuntimeStatus } from "./api";
   import { app } from "./app.svelte";
   import Icon from "./Icon.svelte";
+  import Section from "./Section.svelte";
 
   let { status }: { status: RuntimeStatus } = $props();
 
@@ -110,13 +111,12 @@
   }
 </script>
 
-<section class="queue">
-  <p class="section-title">Up next · {order.length}</p>
+<Section id="queue" title="Up next" count={order.length} grow>
   {#if order.length === 0}
     <p class="empty muted">Queue songs in {app.providerName} and everyone gets them.</p>
   {/if}
   <ol style:--row="{ROW}px">
-    {#each shown as item, index (item.entryId)}
+    {#each shown as item (item.entryId)}
       {@const warning = warnings.get(item.entryId)}
       <li
         class:dragging={drag?.entryId === item.entryId}
@@ -136,7 +136,13 @@
         >
           <Icon name="grip" size={14} />
         </button>
-        <span class="number">{index + 1}</span>
+        <span class="cover" aria-hidden="true">
+          {#if item.track.coverUrl}
+            <img src={item.track.coverUrl} alt="" loading="lazy" draggable="false" />
+          {:else}
+            <Icon name="music" size={14} />
+          {/if}
+        </span>
         <div class="song">
           <span class="title">{item.track.title}</span>
           <span class="artist">
@@ -161,7 +167,7 @@
   {#if order.length > SHOWN}
     <p class="more muted">and {order.length - SHOWN} more</p>
   {/if}
-</section>
+</Section>
 
 <style>
   ol {
@@ -217,12 +223,24 @@
     cursor: grabbing;
   }
 
-  .number {
-    width: 18px;
+  .cover {
+    position: relative;
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 32px;
+    height: 32px;
+    overflow: hidden;
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
     color: var(--text-3);
-    font-size: 11.5px;
-    font-variant-numeric: tabular-nums;
-    text-align: right;
+  }
+  .cover img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
   }
 
   .song {
@@ -236,6 +254,9 @@
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+  .title {
+    font-weight: 600;
   }
   .artist {
     color: var(--text-2);

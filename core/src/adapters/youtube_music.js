@@ -242,6 +242,7 @@
             isrc: null,
             album,
             durationMs: parseDuration(runsText(renderer?.lengthText)),
+            coverUrl: renderer?.thumbnail?.thumbnails?.at(-1)?.url ?? null,
         };
     }
 

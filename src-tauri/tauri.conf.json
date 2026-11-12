@@ -28,7 +28,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: https://resources.tidal.com https://i.scdn.co; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost ws://localhost:1420"
+      "csp": "default-src 'self'; img-src 'self' data: https://resources.tidal.com https://i.scdn.co https://lh3.googleusercontent.com https://i.ytimg.com https://yt3.ggpht.com; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost ws://localhost:1420"
     }
   },
   "bundle": {

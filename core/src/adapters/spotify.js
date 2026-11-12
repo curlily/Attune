@@ -228,6 +228,7 @@
             isrc: null,
             album: item.album?.name ?? item.metadata?.album_title ?? null,
             durationMs: finiteOrNull(item.duration?.milliseconds ?? item.metadata?.duration),
+            coverUrl: imageUrl(item.metadata?.image_url ?? item.images?.[0]?.url),
         };
     }
 
@@ -243,6 +244,7 @@
             isrc: null,
             album: metadata.album_title ?? null,
             durationMs: finiteOrNull(metadata.duration),
+            coverUrl: imageUrl(metadata.image_url ?? metadata.image_large_url),
         };
     }
 

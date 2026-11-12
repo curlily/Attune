@@ -381,6 +381,7 @@ test("YouTube Music adapter exposes the shared bridge API", () => withAdapter(as
         isrc: null,
         album: "First Album",
         durationMs: 180_000,
+        coverUrl: "https://img.example/cur.jpg",
     });
     assert.equal(state.currentEntryId, state.queue[0].entryId);
     assert.equal(state.playback.isPlaying, true);

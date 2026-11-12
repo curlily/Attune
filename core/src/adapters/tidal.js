@@ -303,7 +303,16 @@
             isrc: item.isrc ?? null,
             album: item.album?.title ?? item.albumTitle ?? null,
             durationMs,
+            coverUrl: coverUrlOf(item.album?.cover, 160),
         };
+    }
+
+    // TIDAL's API gives album covers as a UUID; its image server takes the
+    // UUID with slashes instead of dashes.
+    function coverUrlOf(cover, size) {
+        return typeof cover === "string" && cover
+            ? `https://resources.tidal.com/images/${cover.replaceAll("-", "/")}/${size}x${size}.jpg`
+            : null;
     }
 
     function getTrackDescriptor(productId, state = store.getState()) {
@@ -1630,8 +1639,6 @@
         const productId = state.playbackControls?.mediaProduct?.productId;
         const track = productId != null ? getTrackDescriptor(productId, state) : null;
         const playback = getPlayback(state);
-        // TIDAL's API gives album covers as a UUID; its image server takes
-        // the UUID with slashes instead of dashes.
         const cover = productId != null ? getMediaItem(state, productId)?.album?.cover : null;
 
         return {
@@ -1639,9 +1646,7 @@
                 ...track,
                 provider: "Tidal",
                 provider_track_id: String(productId),
-                cover_url: typeof cover === "string"
-                    ? `https://resources.tidal.com/images/${cover.replaceAll("-", "/")}/320x320.jpg`
-                    : null,
+                cover_url: coverUrlOf(cover, 320),
             } : null,
             position_ms: playback.positionMs,
             timestamp_ms: playback.positionCapturedAtMs,

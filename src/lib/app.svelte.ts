@@ -12,6 +12,7 @@ import {
   type RuntimeStatus,
   type Settings,
 } from "./api";
+import { saveTheme, savedTheme, type ThemeChoice } from "./theme";
 
 export type Screen = "loading" | "firstRun" | "connect" | "lobby" | "jam";
 export type Tone = "info" | "success" | "warning" | "error";
@@ -46,6 +47,8 @@ class App {
   showSettings = $state(false);
   mini = $state(false);
   pinned = $state(false);
+  /** "auto" takes the connected music app's colour. */
+  theme = $state<ThemeChoice>(savedTheme());
   /** Join code from a attune:// link, joined as soon as the lobby can. */
   linkCode = $state<string | null>(null);
   /** Bumped each time the window is shown, to replay the opening animation. */
@@ -95,6 +98,11 @@ class App {
     this.loaded = true;
     const link = await api.takeJoinLink().catch(() => null);
     if (link) this.#onJoinLink(link);
+  }
+
+  setTheme(theme: ThemeChoice) {
+    this.theme = theme;
+    saveTheme(theme);
   }
 
   async setPinned(pinned: boolean) {
@@ -209,7 +217,7 @@ class App {
         this.toast(notice.message, "error");
         break;
       case "ended":
-        this.toast(notice.reason === "left" ? "You left the jam" : "The jam has ended", "info");
+        this.toast(notice.reason === "left" ? "You left the session" : "The session has ended", "info");
         break;
     }
   }

@@ -50,6 +50,7 @@ fn ghost(entry_id: &str) -> QueueEntry {
             isrc: None,
             album: None,
             duration_ms: None,
+            cover_url: None,
         },
     }
 }

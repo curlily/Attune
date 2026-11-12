@@ -13,6 +13,7 @@ pub fn track(title: &str) -> TrackDescriptor {
         isrc: None,
         album: Some("Album".to_owned()),
         duration_ms: Some(DURATION_MS),
+        cover_url: None,
     }
 }
 

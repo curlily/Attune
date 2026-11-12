@@ -1,7 +1,8 @@
 <script lang="ts">
   import { fade } from "svelte/transition";
-  import { api, type RuntimeStatus } from "./api";
+  import type { RuntimeStatus } from "./api";
   import { app } from "./app.svelte";
+  import { currentCover, livePosition } from "./current.svelte";
   import Icon from "./Icon.svelte";
   import { formatTime, ownBadge } from "./status";
 
@@ -10,101 +11,69 @@
   let current = $derived(status.queue[0]);
   let badge = $derived(ownBadge(status.sync));
   let warning = $derived(status.warnings.find((w) => w.songsAhead === 0));
-
-  // Cover art comes from this computer's music app while it plays the
-  // session's song. Remembered per song, so it stays when stepping out (the
-  // app may then play something else).
-  const covers = new Map<string, string>();
-  let cover = $state<string | null>(null);
-  $effect(() => {
-    const entryId = current?.entryId;
-    const playable = current?.playableHere && status.sync === "synced";
-    cover = entryId ? (covers.get(entryId) ?? null) : null;
-    if (!entryId || !playable || cover) return;
-    let cancelled = false;
-    // Give the app a moment to load the new track first.
-    const timer = setTimeout(async () => {
-      const url = await api.coverUrl().catch(() => null);
-      if (cancelled || !url) return;
-      covers.set(entryId, url);
-      cover = url;
-    }, 700);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  });
-
-  // Live position from the session's playback, redrawn every frame while
-  // playing. Playback is controlled in the music app, so this is display only.
-  let now = $state(Date.now());
-  $effect(() => {
-    if (!status.playback.isPlaying) return;
-    let frame = requestAnimationFrame(function tick() {
-      now = Date.now();
-      frame = requestAnimationFrame(tick);
-    });
-    return () => cancelAnimationFrame(frame);
-  });
-
-  let duration = $derived(current?.track.durationMs ?? 0);
-  let position = $derived.by(() => {
-    const { isPlaying, positionMs, positionCapturedAtMs } = status.playback;
-    const live = isPlaying ? positionMs + Math.max(0, now - positionCapturedAtMs) : positionMs;
-    return duration ? Math.min(live, duration) : live;
-  });
+  const cover = currentCover(() => status);
+  const playback = livePosition(() => status);
 </script>
 
 <section class="now">
-  {#if current}
-    <div class="art">
-      {#if cover}
-        <img src={cover} alt="" transition:fade={{ duration: 300 }} />
-      {:else}
-        <Icon name="music" size={22} />
-      {/if}
-    </div>
-    <div class="meta">
+  <div class="art">
+    {#if cover.url}
+      {#key cover.url}
+        <img src={cover.url} alt="" transition:fade={{ duration: 300 }} />
+      {/key}
+    {:else}
+      <Icon name="music" size={22} />
+    {/if}
+  </div>
+  <div class="meta">
+    {#if current}
       {#key current.entryId}
         <p class="title" in:fade={{ duration: 220 }}>{current.track.title}</p>
         <p class="artist" in:fade={{ duration: 220, delay: 40 }}>{current.track.artists.join(", ")}</p>
       {/key}
-    </div>
-  {:else}
-    <div class="art"><Icon name="music" size={22} /></div>
-    <div class="meta">
+    {:else}
       <p class="title">Nothing queued</p>
-      <p class="artist">Add songs in {app.providerName} and they'll show up here.</p>
-    </div>
-  {/if}
+    {/if}
+  </div>
 </section>
 
 {#if current}
   <div class="progress" aria-hidden="true">
-    <div class="bar" style:width="{duration ? (position / duration) * 100 : 0}%"></div>
+    <div class="bar" style:width="{playback.fraction * 100}%"></div>
   </div>
   <div class="times">
-    <span>{formatTime(position)}</span>
+    <span>{formatTime(playback.position)}</span>
     {#if !status.playback.isPlaying}<span class="paused">Paused</span>{/if}
-    <span>{duration ? formatTime(duration) : ""}</span>
+    <span>{playback.duration ? formatTime(playback.duration) : ""}</span>
   </div>
 {/if}
 
-<div class="badge {badge.tone}">
-  {#if badge.busy}<span class="spinner"></span>{:else}<Icon name={badge.icon} size={14} />{/if}
-  <span>{badge.text}</span>
-  {#if status.sync === "waitingForNextSong"}
-    <span class="hint">This song isn't on {app.providerName}.</span>
-  {:else if status.sync === "steppedOut"}
-    <span class="hint">Play anything; others won't hear it.</span>
-  {/if}
-</div>
+<!-- Being in sync shows next to "you" in the listeners; this space is for
+     anything else. -->
+{#if status.sync !== "synced"}
+  <div class="badge {badge.tone}">
+    {#if badge.busy}<span class="spinner"></span>{:else}<Icon name={badge.icon} size={14} />{/if}
+    <span>{badge.text}</span>
+    {#if status.sync === "waitingForNextSong"}
+      <span class="hint">This song isn't on {app.providerName}.</span>
+    {/if}
+  </div>
+{/if}
 
 {#if warning && warning.missingFor.length}
   <p class="warning"><Icon name="alert" size={13} /> {warning.missingFor.join(", ")} can't play this song</p>
 {/if}
 
 <style>
+  /* Laid out in the session view's column: never squeezed by the lists. */
+  .now,
+  .progress,
+  .times,
+  .badge,
+  p.warning {
+    flex: none;
+  }
+
   .now {
     display: flex;
     align-items: center;

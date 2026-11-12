@@ -68,6 +68,8 @@ export interface Track {
   isrc?: string;
   album?: string;
   durationMs?: number;
+  /** Album art from the provider that queued the song. */
+  coverUrl?: string;
 }
 
 export interface QueueItem {

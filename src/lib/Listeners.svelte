@@ -4,26 +4,38 @@
   import { cubicOut } from "svelte/easing";
   import type { RuntimeStatus } from "./api";
   import Icon from "./Icon.svelte";
+  import { PROVIDER_NAMES } from "./app.svelte";
   import ProviderLogo from "./ProviderLogo.svelte";
+  import Section from "./Section.svelte";
   import { participantBadge } from "./status";
+  import { providerColors } from "./theme";
 
   let { status }: { status: RuntimeStatus } = $props();
 </script>
 
-<section>
-  <p class="section-title">Listening · {status.participants.length}</p>
+<Section id="listeners" title="Listening" count={status.participants.length}>
   <ul>
     {#each status.participants as person (person.clientId)}
       {@const badge = participantBadge(person)}
+      {@const colors = providerColors(person.provider)}
       <li
         animate:flip={{ duration: 220 }}
         in:fly={{ x: -12, duration: 260, easing: cubicOut }}
         out:fly={{ x: 12, duration: 180 }}
       >
-        <span class="avatar" aria-hidden="true">{person.displayName.slice(0, 1).toUpperCase()}</span>
+        <span
+          class="avatar"
+          title={person.provider ? (PROVIDER_NAMES[person.provider] ?? person.provider) : undefined}
+          style:--brand={colors?.accent}
+        >
+          {#if colors}
+            <ProviderLogo provider={person.provider} size={12} />
+          {:else}
+            <span aria-hidden="true">{person.displayName.slice(0, 1).toUpperCase()}</span>
+          {/if}
+        </span>
         <span class="name">{person.displayName}</span>
         {#if person.clientId === status.clientId}<span class="you">you</span>{/if}
-        <span class="provider" title={person.provider}><ProviderLogo provider={person.provider} size={13} /></span>
         <span class="spacer"></span>
         <span class="state {badge.tone}">
           <Icon name={badge.icon} size={13} />
@@ -32,7 +44,7 @@
       </li>
     {/each}
   </ul>
-</section>
+</Section>
 
 <style>
   ul {
@@ -54,8 +66,9 @@
     width: 22px;
     height: 22px;
     border-radius: 50%;
-    background: var(--surface-3);
-    color: var(--text-2);
+    flex: none;
+    background: color-mix(in srgb, var(--brand, var(--text-2)) 16%, var(--surface-1));
+    color: var(--brand, var(--text-2));
     font-size: 11px;
     font-weight: 600;
   }
@@ -70,9 +83,6 @@
     background: var(--surface-2);
     color: var(--text-3);
     font-size: 11px;
-  }
-  .provider {
-    color: var(--text-3);
   }
   .spacer {
     flex: 1;

@@ -38,12 +38,12 @@
 
 {#if status}
   <div class="jam">
-    <div class="body scroll">
+    <div class="body">
       <NowPlaying {status} />
       <div class="divider"></div>
-      <Listeners {status} />
-      <div class="divider"></div>
       <Queue {status} />
+      <div class="divider"></div>
+      <Listeners {status} />
     </div>
     <footer>
       <button
@@ -58,7 +58,7 @@
       </button>
       <button class="btn danger" class:confirm={confirmLeave} onclick={leave}>
         <Icon name="logout" size={14} />
-        {confirmLeave ? "Leave the jam?" : "Leave"}
+        {confirmLeave ? "Leave the session?" : "Leave"}
       </button>
     </footer>
   </div>
@@ -72,10 +72,19 @@
   }
 
   .body {
-    padding: 14px 14px 18px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 14px 14px 12px;
+  }
+  /* The queue takes the room that's left; the listeners stay below it and
+     scroll once they'd take more than about a third. */
+  .body > :global(section:last-child) {
+    max-height: 36%;
   }
 
   .divider {
+    flex: none;
     height: 1px;
     margin: 14px 0 12px;
     background: var(--border);

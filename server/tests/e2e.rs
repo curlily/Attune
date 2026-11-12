@@ -77,6 +77,7 @@ fn entry(id: &str) -> QueueEntry {
             isrc: None,
             album: None,
             duration_ms: Some(200_000),
+            cover_url: None,
         },
     }
 }

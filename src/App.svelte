@@ -12,6 +12,7 @@
   import Jam from "./screens/Jam.svelte";
   import Mini from "./screens/Mini.svelte";
   import SettingsScreen from "./screens/Settings.svelte";
+  import { applyTheme } from "./lib/theme";
 
   let failure = $state<string | null>(null);
   let windowElement: HTMLDivElement;
@@ -30,12 +31,14 @@
     );
   });
 
+  $effect(() => applyTheme(app.theme, app.connected));
+
   onMount(() => {
     app.init().catch((error) => (failure = errorText(error)));
   });
 
   let title = $derived(
-    app.showSettings ? "Settings" : app.screen === "jam" ? "Jam" : "Attune",
+    app.showSettings ? "Settings" : "Attune",
   );
 </script>
 
@@ -149,7 +152,13 @@
     border-radius: 6px;
     background:
       radial-gradient(circle at 50% 50%, var(--bg) 0 2.5px, transparent 3px),
-      conic-gradient(from 210deg, var(--accent-strong), var(--accent), #b493ff, var(--accent-strong));
+      conic-gradient(
+        from 210deg,
+        var(--accent-strong),
+        var(--accent),
+        color-mix(in srgb, var(--accent) 60%, white),
+        var(--accent-strong)
+      );
   }
 
   h1 {

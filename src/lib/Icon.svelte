@@ -19,6 +19,7 @@
     logout: ["M14 4h5v16h-5", "M10 8l-4 4 4 4", "M6 12h9"],
     trash: ["M5 7h14", "M10 4h4", "M7 7l1 13h8l1-13"],
     pin: ["M9 4h6l-1 6 3 3H7l3-3z", "M12 13v7"],
+    chevron: ["M7 10l5 5 5-5"],
   } satisfies Record<string, string[]>;
 
   export type IconName = keyof typeof ICONS;

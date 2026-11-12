@@ -223,6 +223,7 @@ async fn main() -> Outcome {
             isrc: Some("USRC12204584".to_owned()),
             album: Some("SOS".to_owned()),
             duration_ms: Some(153_000),
+            cover_url: None,
         },
     };
     peer.submit(SessionOperation::QueueInsert {
@@ -241,6 +242,7 @@ async fn main() -> Outcome {
             isrc: None,
             album: None,
             duration_ms: None,
+            cover_url: None,
         },
     };
     peer.submit(SessionOperation::QueueInsert {

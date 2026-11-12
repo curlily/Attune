@@ -88,12 +88,22 @@
     disabled={autostart === null}
     onclick={toggleAutostart}
   >
-    <span>
-      <span class="switch-label">Start with Windows</span>
-      <span class="hint">Attune waits in the tray until you need it.</span>
-    </span>
+    <span class="switch-label">Start with Windows</span>
     <span class="switch" class:on={autostart === true}><span></span></span>
   </button>
+
+  <div class="divider"></div>
+
+  <p class="section-title">Theme</p>
+  <div class="segmented" role="radiogroup" aria-label="Theme">
+    <button role="radio" aria-checked={app.theme === "attune"} onclick={() => app.setTheme("attune")}>
+      Attune
+    </button>
+    <button role="radio" aria-checked={app.theme === "auto"} onclick={() => app.setTheme("auto")}>
+      {#if app.connected}<ProviderLogo provider={app.connected} size={13} />{/if}
+      Match {app.connected ? app.providerName : "music app"}
+    </button>
+  </div>
 
   <div class="divider"></div>
 
@@ -161,10 +171,8 @@
     background: none;
     text-align: left;
   }
-  .switch-row > span:first-child {
+  .switch-row > .switch-label {
     flex: 1;
-    display: flex;
-    flex-direction: column;
   }
   .switch-row:disabled {
     opacity: 0.55;
@@ -200,6 +208,44 @@
   .switch.on > span {
     transform: translateX(14px);
     background: var(--on-accent);
+  }
+
+  .segmented {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--surface-1);
+  }
+  .segmented button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-width: 0;
+    height: 28px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-2);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition:
+      background var(--fast),
+      color var(--fast);
+  }
+  .segmented button:hover {
+    color: var(--text);
+  }
+  .segmented button[aria-checked="true"] {
+    background: var(--accent-tint);
+    color: var(--accent);
   }
 
   .app-row {
