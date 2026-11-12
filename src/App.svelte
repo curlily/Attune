@@ -6,6 +6,7 @@
   import { FULL_HEIGHT, TINY_HEIGHT, app } from "./lib/app.svelte";
   import { api, errorText } from "./lib/api";
   import Icon from "./lib/Icon.svelte";
+  import Logo from "./lib/Logo.svelte";
   import Toasts from "./lib/Toasts.svelte";
   import FirstRun from "./screens/FirstRun.svelte";
   import Connect from "./screens/Connect.svelte";
@@ -103,7 +104,7 @@
   <div class="shell" in:fade={{ duration: 200 }}>
     <!-- No window frame: the header is where the window is dragged. -->
     <header data-tauri-drag-region>
-      <span class="mark" aria-hidden="true" data-tauri-drag-region></span>
+      <Logo />
       <h1 data-tauri-drag-region>{title}</h1>
       {#if app.screen === "jam" && app.code && !app.showSettings}
         <button
@@ -212,21 +213,6 @@
     height: 44px;
     padding: 0 6px 0 14px;
     border-bottom: 1px solid var(--border);
-  }
-
-  .mark {
-    width: 18px;
-    height: 18px;
-    border-radius: 6px;
-    background:
-      radial-gradient(circle at 50% 50%, var(--bg) 0 2.5px, transparent 3px),
-      conic-gradient(
-        from 210deg,
-        var(--accent-strong),
-        var(--accent),
-        color-mix(in srgb, var(--accent) 60%, white),
-        var(--accent-strong)
-      );
   }
 
   h1 {

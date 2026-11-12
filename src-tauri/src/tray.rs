@@ -1,4 +1,4 @@
-//! Tray icon: the Attune mark with a status dot, and a small menu.
+//! Tray icon: the app icon with a status dot, and a small menu.
 //!
 //! Left click shows or hides the widget next to the icon. The dot tells the
 //! state at a glance without opening anything: green in sync, amber catching
@@ -162,61 +162,38 @@ pub fn set_status<R: Runtime>(app: &AppHandle<R>, sync: Option<SyncState>) {
 }
 
 fn icon(status: TrayStatus) -> Image<'static> {
-    Image::new_owned(draw_icon(ICON_SIZE, status.dot()), ICON_SIZE, ICON_SIZE)
+    Image::new_owned(draw_icon(status.dot()), ICON_SIZE, ICON_SIZE)
 }
 
-/// The Attune mark (a rounded square with a violet sweep and a hole, as in the
-/// app header) with an optional status dot, as RGBA.
-pub fn draw_icon(size: u32, dot: Option<[u8; 3]>) -> Vec<u8> {
-    let s = size as f32;
-    let mut rgba = vec![0u8; (size * size * 4) as usize];
-    let stops: [[f32; 3]; 4] = [
-        [0x5f as f32, 0x6c as f32, 0xf5 as f32],
-        [0x7b as f32, 0x86 as f32, 0xff as f32],
-        [0xb4 as f32, 0x93 as f32, 0xff as f32],
-        [0x5f as f32, 0x6c as f32, 0xf5 as f32],
-    ];
-    let corner = s * 0.28;
-    let hole = s * 0.13;
+/// The app icon at tray size, generated with the others by `tauri icon`.
+const ICON_PNG: &[u8] = include_bytes!("../icons/32x32.png");
+
+/// The app icon with an optional status dot in its lower right corner, as
+/// ICON_SIZE × ICON_SIZE RGBA.
+pub fn draw_icon(dot: Option<[u8; 3]>) -> Vec<u8> {
+    let base = Image::from_bytes(ICON_PNG).expect("the bundled tray icon is a valid PNG");
+    debug_assert_eq!((base.width(), base.height()), (ICON_SIZE, ICON_SIZE));
+    let mut rgba = base.rgba().to_vec();
+    let Some(dot) = dot else {
+        return rgba;
+    };
+
+    let s = ICON_SIZE as f32;
     let (dot_center, dot_radius, ring) = (s * 0.80, s * 0.18, s * 0.06);
-
-    for y in 0..size {
-        for x in 0..size {
+    for y in 0..ICON_SIZE {
+        for x in 0..ICON_SIZE {
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            // Coverage of the rounded square (signed distance, 1 px soft edge).
-            let qx = (px - s / 2.0).abs() - (s / 2.0 - corner);
-            let qy = (py - s / 2.0).abs() - (s / 2.0 - corner);
-            let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0);
-            let mut alpha = (corner - outside).clamp(0.0, 1.0);
-            let (dx, dy) = (px - s / 2.0, py - s / 2.0);
-            alpha *= ((dx * dx + dy * dy).sqrt() - hole).clamp(0.0, 1.0);
-
-            // Conic gradient: angle from 0 to 1, starting at the top.
-            let turn = (dx.atan2(-dy) / std::f32::consts::TAU).rem_euclid(1.0) * 3.0;
-            let (i, t) = (turn.floor() as usize, turn.fract());
-            let mut color = [0.0; 3];
-            for (c, value) in color.iter_mut().enumerate() {
-                *value = stops[i][c] + (stops[i + 1][c] - stops[i][c]) * t;
+            let d = ((px - dot_center).powi(2) + (py - dot_center).powi(2)).sqrt();
+            let index = ((y * ICON_SIZE + x) * 4) as usize;
+            // A clear gap around the dot, so it reads on any taskbar colour.
+            let keep = (d - dot_radius - ring).clamp(0.0, 1.0);
+            let mut alpha = f32::from(rgba[index + 3]) / 255.0 * keep;
+            let dot_alpha = (dot_radius - d).clamp(0.0, 1.0);
+            if dot_alpha > 0.0 {
+                rgba[index..index + 3].copy_from_slice(&dot);
+                alpha = alpha.max(dot_alpha);
             }
-
-            if let Some(dot) = dot {
-                // A gap around the dot, so it reads on any taskbar colour.
-                let d = ((px - dot_center).powi(2) + (py - dot_center).powi(2)).sqrt();
-                alpha *= (d - dot_radius - ring).clamp(0.0, 1.0);
-                let dot_alpha = (dot_radius - d).clamp(0.0, 1.0);
-                if dot_alpha > 0.0 {
-                    for (c, value) in color.iter_mut().enumerate() {
-                        *value = f32::from(dot[c]);
-                    }
-                    alpha = alpha.max(dot_alpha);
-                }
-            }
-
-            let index = ((y * size + x) * 4) as usize;
-            rgba[index] = color[0] as u8;
-            rgba[index + 1] = color[1] as u8;
-            rgba[index + 2] = color[2] as u8;
-            rgba[index + 3] = (alpha * 255.0) as u8;
+            rgba[index + 3] = (alpha * 255.0).round() as u8;
         }
     }
     rgba
@@ -232,17 +209,17 @@ mod tests {
     }
 
     #[test]
-    fn the_mark_has_a_hole_and_transparent_corners() {
-        let rgba = draw_icon(32, None);
-        assert_eq!(pixel(&rgba, 32, 0, 0)[3], 0, "corner");
-        assert_eq!(pixel(&rgba, 32, 16, 16)[3], 0, "hole");
-        assert_eq!(pixel(&rgba, 32, 16, 4)[3], 255, "body");
+    fn the_icon_is_the_app_icon_without_a_status() {
+        let rgba = draw_icon(None);
+        assert_eq!(rgba.len(), (ICON_SIZE * ICON_SIZE * 4) as usize);
+        assert_eq!(pixel(&rgba, 32, 0, 0)[3], 0, "transparent corner");
+        assert_eq!(pixel(&rgba, 32, 16, 4)[3], 255, "opaque body");
     }
 
     #[test]
     fn the_dot_shows_the_status_colour() {
         let green = TrayStatus::Synced.dot();
-        let rgba = draw_icon(32, green);
+        let rgba = draw_icon(green);
         assert_eq!(pixel(&rgba, 32, 25, 25), [0x53, 0xc9, 0x8f, 255]);
         assert_eq!(TrayStatus::from_sync(None), TrayStatus::Idle);
         assert_eq!(
@@ -267,7 +244,7 @@ mod preview {
             ("stepped", super::TrayStatus::SteppedOut),
             ("error", super::TrayStatus::Error),
         ] {
-            let rgba = super::draw_icon(64, status.dot());
+            let rgba = super::draw_icon(status.dot());
             std::fs::write(format!("{dir}/{name}.rgba"), rgba).expect("write");
         }
     }
