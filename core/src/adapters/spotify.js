@@ -30,7 +30,11 @@
     const REMOTE_CHANGE_SUPPRESSION_MS = 300;
     // How long Spotify may take to show a change we asked for.
     const CHANGE_TIMEOUT_MS = 5_000;
-    const POLL_MS = 25;
+    // Waits check on Spotify's events (see `watchPlayer`); this is only a
+    // safety net for a change that came without one.
+    const FALLBACK_CHECK_MS = 250;
+    // How often a hold re-applies its target state at most.
+    const HOLD_RETRY_MS = 250;
     // Positions this close to the target are left alone.
     const POSITION_TOLERANCE_MS = 1_000;
     // A position jump larger than this is a seek.
@@ -594,14 +598,157 @@
         return run;
     }
 
+    /**
+     * Call `check` (in a microtask, outside Spotify's emitter) whenever
+     * Spotify's state may have changed. Returns a function that stops it.
+     *
+     * Verified live: the state changes only with an `update` event (the
+     * full queue with `queue_update`). Polling instead would run at 1 Hz
+     * while Spotify's window is hidden: Chromium runs a hidden page's timers
+     * once a second when the page itself is silent (verified live in TIDAL),
+     * and Spotify's sound comes from its native player, not the page
+     * (assumed: not measured in Spotify).
+     */
+    function watchPlayer(check) {
+        let scheduled = false;
+        let stopped = false;
+        let fallback = null;
+        const run = () => {
+            scheduled = false;
+            if (!stopped) check();
+        };
+        const schedule = () => {
+            if (scheduled || stopped) return;
+            scheduled = true;
+            Promise.resolve().then(run);
+        };
+        const events = player?.getEvents?.();
+        const names = ["update", "queue_update"];
+        const removers = events ? names.map(name => events.addListener(name, schedule)) : [];
+        const poll = () => {
+            schedule();
+            fallback = setTimeout(poll, FALLBACK_CHECK_MS);
+        };
+        fallback = setTimeout(poll, FALLBACK_CHECK_MS);
+        return () => {
+            stopped = true;
+            clearTimeout(fallback);
+            names.forEach((name, index) => {
+                if (typeof removers[index] === "function") removers[index]();
+                else events?.removeListener?.(name, schedule);
+            });
+        };
+    }
+
     /** Wait until Spotify's state satisfies `condition`. False on timeout. */
-    async function waitFor(condition, timeoutMs = CHANGE_TIMEOUT_MS) {
+    function waitFor(condition, timeoutMs = CHANGE_TIMEOUT_MS) {
+        return new Promise(resolve => {
+            let done = false;
+            let timer = null;
+            let stop = () => {};
+            const holds = () => {
+                try {
+                    return Boolean(player && condition(player.getState()));
+                } catch {
+                    return false;
+                }
+            };
+            const finish = value => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                stop();
+                resolve(value);
+            };
+            if (holds()) return finish(true);
+            stop = watchPlayer(() => {
+                if (holds()) finish(true);
+            });
+            timer = setTimeout(() => finish(holds()), timeoutMs);
+        });
+    }
+
+    /** Resolve once `key()` hasn't changed for `quietMs()`, or at the timeout. */
+    function waitUntilQuiet(key, quietMs, timeoutMs) {
         const deadline = Date.now() + timeoutMs;
-        while (Date.now() < deadline) {
-            if (condition(player.getState())) return true;
-            await sleep(POLL_MS);
-        }
-        return Boolean(condition(player.getState()));
+        return new Promise(resolve => {
+            let last = key();
+            let since = Date.now();
+            let done = false;
+            let timer = null;
+            let stop = () => {};
+            const finish = () => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                stop();
+                resolve();
+            };
+            const check = () => {
+                if (done) return;
+                const now = Date.now();
+                const value = key();
+                if (value !== last) {
+                    last = value;
+                    since = now;
+                }
+                const left = Math.min(quietMs() - (now - since), deadline - now);
+                if (left <= 0) return finish();
+                clearTimeout(timer);
+                timer = setTimeout(check, left);
+            };
+            stop = watchPlayer(check);
+            check();
+        });
+    }
+
+    /**
+     * Re-apply a target state until it has held for `stableMs`: `correct()`
+     * runs whenever `matches()` is false (at most every HOLD_RETRY_MS) and
+     * returns whether it did anything. Checked on Spotify's events, plus a
+     * timer for the stable period. Resolves to whether it held.
+     */
+    function holdUntil({ timeoutMs, stableMs, matches, correct }) {
+        const deadline = Date.now() + timeoutMs;
+        return new Promise((resolve, reject) => {
+            let matchingSince = null;
+            let lastCorrected = 0;
+            let done = false;
+            let timer = null;
+            let stop = () => {};
+            const finish = (error, value) => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                stop();
+                if (error) reject(error);
+                else resolve(value);
+            };
+            const check = () => {
+                if (done) return;
+                if (!player) return finish(null, false);
+                const now = Date.now();
+                if (now >= deadline) return finish(null, false);
+                try {
+                    if (matches()) {
+                        matchingSince ??= now;
+                        if (now - matchingSince >= stableMs) return finish(null, true);
+                    } else {
+                        matchingSince = null;
+                        if (now - lastCorrected >= HOLD_RETRY_MS && correct()) lastCorrected = now;
+                    }
+                } catch (error) {
+                    return finish(error);
+                }
+                const wait = matchingSince != null
+                    ? stableMs - (now - matchingSince)
+                    : HOLD_RETRY_MS - (now - lastCorrected);
+                clearTimeout(timer);
+                timer = setTimeout(check, Math.max(1, Math.min(wait, deadline - now)));
+            };
+            stop = watchPlayer(check);
+            check();
+        });
     }
 
     // ---------------------------------------------------------------------
@@ -698,15 +845,42 @@
     async function writeUpcoming(wanted) {
         const uris = wanted.map(item => item.uri);
         const shown = () => readPlayer().upcoming;
-        // Behind our list Spotify may show more of a playlist it is
-        // playing, so the list only has to be the start of what it shows,
-        // once the queue has taken the write (its revision changed).
-        const matches = revision => {
-            const upcoming = shown();
-            if (upcoming.length < uris.length || !uris.every((uri, index) => upcoming[index].uri === uri)) {
-                return false;
-            }
-            return upcoming.length === uris.length || internalQueue()?.queueRevision !== revision;
+        // When Spotify shows our write: the list starts with our songs (a
+        // playlist it is playing may show more behind them), items we sent
+        // as new have uids that didn't exist before, items we kept still
+        // have theirs, and queued items we left out are gone. Context items
+        // aren't checked for that: Spotify shows more of its playlist by
+        // itself.
+        //
+        // The items themselves have to show it, not the revision. Verified
+        // live: rewriting songs that were already queued as new items
+        // showed the old items, with the old uids, for another 120 ms. The
+        // queue's revision changed several times per write, once back to
+        // the value it had before (revisions aren't counters), and before
+        // the new items showed. Taking the uids early mapped the entries to
+        // items that were about to go, and the new uids then came back as
+        // the user's queue change.
+        const writeShown = (sent, queue) => {
+            const before = new Set([
+                ...Array.from(queue.nextTracks ?? [], track => track.contextTrack?.uid),
+                ...shown().map(item => item.uid),
+            ].filter(Boolean));
+            const keptUids = sent.map(track => track.contextTrack?.uid || null);
+            const kept = new Set(keptUids.filter(Boolean));
+            const dropped = new Set(Array.from(queue.nextTracks ?? [])
+                .filter(track => track.provider === "queue")
+                .map(track => track.contextTrack?.uid)
+                .filter(uid => uid && !kept.has(uid)));
+            return () => {
+                const upcoming = shown();
+                if (upcoming.length < uris.length) return false;
+                const ours = uris.every((uri, index) => {
+                    const item = upcoming[index];
+                    if (item.uri !== uri) return false;
+                    return keptUids[index] ? item.uid === keptUids[index] : !before.has(item.uid);
+                });
+                return ours && !upcoming.some(item => dropped.has(item.uid));
+            };
         };
 
         const sameAsNow = () => {
@@ -738,7 +912,7 @@
                 queueRevision: queue.queueRevision,
             });
             if (!result?.error) {
-                if (await waitFor(() => matches(queue.queueRevision))) {
+                if (await waitFor(writeShown(nextTracks, queue))) {
                     shown().slice(0, wanted.length)
                         .forEach((item, index) => entryIdByUid.set(item.uid, wanted[index].entryId));
                     return;
@@ -747,7 +921,12 @@
             } else {
                 lastError = new Error(`Spotify refused the queue change (code ${result.error} ${result.reasons ?? ""})`.trim());
             }
-            await sleep(100 * (attempt + 1));
+            // Verified live: a write right after `play` is refused (code 3)
+            // because the play changed the queue, and the queue shows its new
+            // revision with one of the next updates (40–110 ms). Wait for
+            // that, not for a timer (a 100 ms sleep took 330 ms with Spotify
+            // hidden).
+            await waitFor(() => internalQueue()?.queueRevision !== queue.queueRevision, 100 * (attempt + 1));
         }
         throw lastError;
     }
@@ -955,35 +1134,24 @@
                 const view = readPlayer();
                 return JSON.stringify([view.current?.uid ?? null, view.upcoming.map(item => item.uid), view.isPaused]);
             };
-            const deadline = Date.now() + SETTLE_TIMEOUT_MS;
-            let previous = null;
-            let unchangedSince = Date.now();
-            while (Date.now() < deadline) {
-                const now = key();
-                if (now !== previous) {
-                    previous = now;
-                    unchangedSince = Date.now();
-                }
-                // Nothing loaded may be all there is, but give a restore longer.
-                const empty = !readPlayer().current;
-                if (Date.now() - unchangedSince >= (empty ? SETTLE_EMPTY_MS : SETTLE_STABLE_MS)) break;
-                await sleep(POLL_MS);
-            }
+            // Nothing loaded may be all there is, but give a restore longer.
+            await waitUntilQuiet(
+                key,
+                () => (readPlayer().current ? SETTLE_STABLE_MS : SETTLE_EMPTY_MS),
+                SETTLE_TIMEOUT_MS,
+            );
             if (!pause) return;
 
             // Pause, and catch a late resume.
-            const pausedDeadline = Date.now() + CHANGE_TIMEOUT_MS;
-            let pausedSince = null;
-            while (Date.now() < pausedDeadline) {
-                if (readPlayer().isPaused) {
-                    pausedSince ??= Date.now();
-                    if (Date.now() - pausedSince >= SETTLE_PAUSED_MS) break;
-                } else {
-                    pausedSince = null;
-                    await setPlaying(false).catch(() => {});
-                }
-                await sleep(POLL_MS);
-            }
+            await holdUntil({
+                timeoutMs: CHANGE_TIMEOUT_MS,
+                stableMs: SETTLE_PAUSED_MS,
+                matches: () => readPlayer().isPaused,
+                correct: () => {
+                    setPlaying(false).catch(() => {});
+                    return true;
+                },
+            });
         });
     }
 

@@ -38,7 +38,15 @@
     // this long; re-applied at most this often.
     const TRACK_HOLD_STABLE_MS = 500;
     const TRACK_HOLD_RETRY_MS = 250;
-    const POLL_MS = 25;
+    // Waits check on store changes and media events (see `watchPage`);
+    // this is only a safety net for a change that came without either.
+    const FALLBACK_CHECK_MS = 250;
+    // The player's <video> reports these; they don't bubble, so they are
+    // caught on the way down (capture), for every media element.
+    const MEDIA_EVENTS = [
+        "loadstart", "loadeddata", "canplay", "playing", "pause", "waiting",
+        "seeking", "seeked", "timeupdate", "ended", "emptied",
+    ];
     const POSITION_TOLERANCE_MS = 1_000;
     // A position jump larger than this is a seek.
     const SEEK_THRESHOLD_MS = 1_500;
@@ -541,14 +549,163 @@
         await waitFor(() => !isBuffering(), CHANGE_TIMEOUT_MS);
     }
 
+    /** Call `listener` on every store change and media event. Returns a stop function. */
+    function onPageChange(listener, mediaEvents = MEDIA_EVENTS) {
+        const unsubscribeStore = store?.subscribe?.(listener);
+        const target = typeof window.addEventListener === "function" ? window : null;
+        mediaEvents.forEach(type => target?.addEventListener(type, listener, true));
+        return () => {
+            if (typeof unsubscribeStore === "function") unsubscribeStore();
+            mediaEvents.forEach(type => target?.removeEventListener?.(type, listener, true));
+        };
+    }
+
+    /**
+     * Call `check` (in a microtask, outside the store's dispatch) whenever
+     * the page may have changed. Returns a function that stops it.
+     *
+     * Waits used to poll every 25 ms. While a Chromium page is hidden and
+     * silent its timers run once a second (verified live in TIDAL; assumed
+     * for YouTube Music's app window, not measured), which is exactly while
+     * a song is held paused. Store changes and media events aren't timers
+     * and arrive on time.
+     */
+    function watchPage(check) {
+        let scheduled = false;
+        let stopped = false;
+        let fallback = null;
+        const run = () => {
+            scheduled = false;
+            if (!stopped) check();
+        };
+        const schedule = () => {
+            if (scheduled || stopped) return;
+            scheduled = true;
+            Promise.resolve().then(run);
+        };
+        const stopEvents = onPageChange(schedule);
+        const poll = () => {
+            schedule();
+            fallback = setTimeout(poll, FALLBACK_CHECK_MS);
+        };
+        fallback = setTimeout(poll, FALLBACK_CHECK_MS);
+        return () => {
+            stopped = true;
+            clearTimeout(fallback);
+            stopEvents();
+        };
+    }
+
     /** Wait until `condition()` holds. False on timeout. */
-    async function waitFor(condition, timeoutMs = CHANGE_TIMEOUT_MS) {
+    function waitFor(condition, timeoutMs = CHANGE_TIMEOUT_MS) {
+        return new Promise(resolve => {
+            let done = false;
+            let timer = null;
+            let stop = () => {};
+            const holds = () => {
+                try {
+                    return Boolean(condition());
+                } catch {
+                    return false;
+                }
+            };
+            const finish = value => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                stop();
+                resolve(value);
+            };
+            if (holds()) return finish(true);
+            stop = watchPage(() => {
+                if (holds()) finish(true);
+            });
+            timer = setTimeout(() => finish(holds()), timeoutMs);
+        });
+    }
+
+    /** Resolve once `key()` hasn't changed for `quietMs`, or at the timeout. */
+    function waitUntilQuiet(key, quietMs, timeoutMs) {
         const deadline = Date.now() + timeoutMs;
-        while (Date.now() < deadline) {
-            if (condition()) return true;
-            await sleep(POLL_MS);
-        }
-        return Boolean(condition());
+        return new Promise(resolve => {
+            let last = key();
+            let since = Date.now();
+            let done = false;
+            let timer = null;
+            let stop = () => {};
+            const finish = () => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                stop();
+                resolve();
+            };
+            const check = () => {
+                if (done) return;
+                const now = Date.now();
+                const value = key();
+                if (value !== last) {
+                    last = value;
+                    since = now;
+                }
+                const left = Math.min(quietMs - (now - since), deadline - now);
+                if (left <= 0) return finish();
+                clearTimeout(timer);
+                timer = setTimeout(check, left);
+            };
+            stop = watchPage(check);
+            check();
+        });
+    }
+
+    /**
+     * Re-apply a target state until it has held for `stableMs`: `correct()`
+     * runs whenever `matches()` is false (at most every TRACK_HOLD_RETRY_MS)
+     * and returns whether it did anything; `gaveUp()` ends the hold early.
+     * Checked on store changes and media events, plus a timer for the
+     * stable period. Resolves to whether it held.
+     */
+    function holdUntil({ timeoutMs, stableMs, matches, correct, gaveUp = () => false }) {
+        const deadline = Date.now() + timeoutMs;
+        return new Promise((resolve, reject) => {
+            let matchingSince = null;
+            let lastCorrected = 0;
+            let done = false;
+            let timer = null;
+            let stop = () => {};
+            const finish = (error, value) => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                stop();
+                if (error) reject(error);
+                else resolve(value);
+            };
+            const check = () => {
+                if (done) return;
+                const now = Date.now();
+                if (now >= deadline) return finish(null, false);
+                try {
+                    if (gaveUp()) return finish(null, false);
+                    if (matches()) {
+                        matchingSince ??= now;
+                        if (now - matchingSince >= stableMs) return finish(null, true);
+                    } else {
+                        matchingSince = null;
+                        if (now - lastCorrected >= TRACK_HOLD_RETRY_MS && correct()) lastCorrected = now;
+                    }
+                } catch (error) {
+                    return finish(error);
+                }
+                const wait = matchingSince != null
+                    ? stableMs - (now - matchingSince)
+                    : TRACK_HOLD_RETRY_MS - (now - lastCorrected);
+                clearTimeout(timer);
+                timer = setTimeout(check, Math.max(1, Math.min(wait, deadline - now)));
+            };
+            stop = watchPage(check);
+            check();
+        });
     }
 
     // ---------------------------------------------------------------------
@@ -584,34 +741,27 @@
         if (!playback) return;
         const wantPlaying = Boolean(playback.isPlaying);
         const target = () => Math.max(0, (playback.positionMs ?? 0) + (wantPlaying ? Date.now() - calledAt : 0));
-        const deadline = Date.now() + timeoutMs;
-        let matchingSince = null;
-        let lastCorrected = 0;
-
-        while (Date.now() < deadline) {
-            if (isAdPlaying()) return;
-            const loaded = loadedVideoId() === videoId && !isBuffering();
-            const matches = loaded &&
+        const loaded = () => loadedVideoId() === videoId && !isBuffering();
+        await holdUntil({
+            timeoutMs,
+            stableMs: TRACK_HOLD_STABLE_MS,
+            // An advertisement first: the session is rejoined after it.
+            gaveUp: isAdPlaying,
+            matches: () => loaded() &&
                 readPlaying() === wantPlaying &&
-                Math.abs(readPositionMs() - target()) <= POSITION_TOLERANCE_MS;
-            if (matches) {
-                matchingSince ??= Date.now();
-                if (Date.now() - matchingSince >= TRACK_HOLD_STABLE_MS) return;
-            } else {
-                matchingSince = null;
-                if (loaded && Date.now() - lastCorrected >= TRACK_HOLD_RETRY_MS) {
-                    if (Math.abs(readPositionMs() - target()) > POSITION_TOLERANCE_MS) {
-                        playerApi.seekTo(target() / 1000, true);
-                    }
-                    if (readPlaying() !== wantPlaying) {
-                        if (wantPlaying) playerApi.playVideo();
-                        else playerApi.pauseVideo();
-                    }
-                    lastCorrected = Date.now();
+                Math.abs(readPositionMs() - target()) <= POSITION_TOLERANCE_MS,
+            correct: () => {
+                if (!loaded()) return false;
+                if (Math.abs(readPositionMs() - target()) > POSITION_TOLERANCE_MS) {
+                    playerApi.seekTo(target() / 1000, true);
                 }
-            }
-            await sleep(POLL_MS);
-        }
+                if (readPlaying() !== wantPlaying) {
+                    if (wantPlaying) playerApi.playVideo();
+                    else playerApi.pauseVideo();
+                }
+                return true;
+            },
+        });
     }
 
     // ---------------------------------------------------------------------
@@ -910,34 +1060,20 @@
     function settle({ pause = true } = {}) {
         return asRemoteChange(async () => {
             const key = () => JSON.stringify([readQueue().map(entry => entry.key), isAnythingPlaying(), isAdPlaying()]);
-            const deadline = Date.now() + SETTLE_TIMEOUT_MS;
-            let previous = null;
-            let unchangedSince = Date.now();
-            while (Date.now() < deadline) {
-                const now = key();
-                if (now !== previous) {
-                    previous = now;
-                    unchangedSince = Date.now();
-                }
-                if (Date.now() - unchangedSince >= SETTLE_STABLE_MS) break;
-                await sleep(POLL_MS);
-            }
+            await waitUntilQuiet(key, SETTLE_STABLE_MS, SETTLE_TIMEOUT_MS);
             if (!pause) return;
 
-            const pausedDeadline = Date.now() + CHANGE_TIMEOUT_MS;
-            let pausedSince = null;
-            while (Date.now() < pausedDeadline) {
-                // Verified live: after a reload the page restores its last
-                // song and may start it, behind an advertisement.
-                if (!isAnythingPlaying()) {
-                    pausedSince ??= Date.now();
-                    if (Date.now() - pausedSince >= SETTLE_PAUSED_MS) break;
-                } else {
-                    pausedSince = null;
+            // Verified live: after a reload the page restores its last song
+            // and may start it, behind an advertisement.
+            await holdUntil({
+                timeoutMs: CHANGE_TIMEOUT_MS,
+                stableMs: SETTLE_PAUSED_MS,
+                matches: () => !isAnythingPlaying(),
+                correct: () => {
                     playerApi.pauseVideo();
-                }
-                await sleep(POLL_MS);
-            }
+                    return true;
+                },
+            });
         });
     }
 
@@ -1161,8 +1297,9 @@
     function subscribe() {
         rebase();
         interrupted = isAdPlaying();
-        unsubscribe = store.subscribe(scheduleEmit);
-        // Seeks don't pass through the store.
+        // Seeks don't pass through the store: the <video>'s `seeked` event
+        // reports them, the poll is the fallback.
+        unsubscribe = onPageChange(scheduleEmit, ["seeked"]);
         pollTimer = setInterval(() => {
             if (!eventTimer) runEmit();
         }, POSITION_POLL_MS);

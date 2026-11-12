@@ -43,6 +43,13 @@ function createSpotify() {
         repeat: 0,
         autoPlay: true,
         refuseNextQueueWrite: false,
+        // Verified live: a play changes the queue's revision, and the queue
+        // shows it only with one of the next updates (40-110 ms later).
+        queueLagsAfterPlay: false,
+        // Verified live: after a queue write the revision changes (here:
+        // to another value) while state and queue still show the old items;
+        // the new items follow a moment later.
+        stateLagsAfterQueueWrite: false,
     };
     let state = null;
     let internal = { queueRevision: 1n, track: null, nextTracks: [], prevTracks: [] };
@@ -75,7 +82,14 @@ function createSpotify() {
     });
 
     /** Make the model visible, as Spotify does with an update event. */
-    function publish() {
+    function publish({ staleQueue = false, staleState = false } = {}) {
+        if (staleState) {
+            internal = { ...internal, queueRevision: -model.revision };
+            for (const listener of listeners.update) listener({ data: state });
+            for (const listener of listeners.queue_update) listener({ data: {} });
+            setTimeout(() => publish(), 30);
+            return;
+        }
         state = {
             timestamp: Date.now(),
             item: model.current ? decorated(model.current) : null,
@@ -89,13 +103,14 @@ function createSpotify() {
             repeat: model.repeat,
             playbackId: `playback-${model.playbackId}`,
         };
-        internal = { queueRevision: model.revision, track: model.current, nextTracks: [...model.next], prevTracks: [] };
+        if (staleQueue) setTimeout(() => publish(), 40);
+        else internal = { queueRevision: model.revision, track: model.current, nextTracks: [...model.next], prevTracks: [] };
         for (const listener of listeners.update) listener({ data: state });
         for (const listener of listeners.queue_update) listener({ data: {} });
     }
-    const later = change => new Promise(resolve => setTimeout(() => {
+    const later = (change, options) => new Promise(resolve => setTimeout(() => {
         change();
-        publish();
+        publish(options);
         resolve();
     }, 5));
 
@@ -109,7 +124,8 @@ function createSpotify() {
                 model.isPaused = Boolean(options.initiallyPaused);
                 model.positionMs = Number(options.seekTo?.value ?? 0);
                 model.playbackId += 1;
-            });
+                if (model.queueLagsAfterPlay) model.revision += 1n;
+            }, { staleQueue: model.queueLagsAfterPlay });
             return { error: 0, reasons: "" };
         },
         async setQueue({ nextTracks, queueRevision }) {
@@ -125,7 +141,7 @@ function createSpotify() {
                     ? track
                     : internalTrack(track.contextTrack.uri, "queue"));
                 model.revision += 1n;
-            });
+            }, { staleState: model.stateLagsAfterQueueWrite });
             return { error: 0, reasons: "" };
         },
         async stop() {
@@ -258,7 +274,11 @@ function createSpotify() {
     return spotify;
 }
 
-async function loadAdapter(setup) {
+// Verified live (TIDAL): while a Chromium page is hidden and silent, its
+// timers run once a second. Spotify's own player is native and isn't.
+const backgroundSetTimeout = (callback, ms, ...args) => setTimeout(callback, Math.max(1_000, ms ?? 0), ...args);
+
+async function loadAdapter(setup, { pageSetTimeout = setTimeout } = {}) {
     const spotify = createSpotify();
     setup?.(spotify);
     const events = [];
@@ -284,7 +304,7 @@ async function loadAdapter(setup) {
         URL,
         performance: { now: () => Date.now() },
         crypto: { randomUUID: () => `generated-${++randomId}` },
-        setTimeout,
+        setTimeout: pageSetTimeout,
         clearTimeout,
         console: { info() {}, log() {}, warn() {}, error() {} },
     });
@@ -619,5 +639,112 @@ test("Settling after attaching pauses Spotify", async () => {
 
     assert.equal(spotify.model.isPaused, true);
     await settle();
+    assert.deepEqual(operations(events), []);
+});
+
+test("Waits follow Spotify's events, also while the page's timers run once a second", async () => {
+    const { bridge, spotify, events } = await loadAdapter(undefined, { pageSetTimeout: backgroundSetTimeout });
+
+    let started = Date.now();
+    await loadSession(bridge, ["a", "b"], playback(false, 42_000));
+    const joinMs = Date.now() - started;
+    started = Date.now();
+    await bridge.applyOperation({ type: "playback.setPlaying", isPlaying: true });
+    await bridge.applyOperation({ type: "playback.seek", entryId: "session-a", positionMs: 60_000 });
+    await bridge.applyOperation({ type: "queue.remove", entryId: "session-b" });
+    const editsMs = Date.now() - started;
+
+    // Polling would take a second per check here.
+    assert.ok(joinMs < 500, `paused join took ${joinMs} ms`);
+    assert.ok(editsMs < 500, `three edits took ${editsMs} ms`);
+    assert.equal(spotify.model.isPaused, false);
+    assert.equal(spotify.model.positionMs, 60_000);
+    assert.deepEqual(entryIds(bridge.getState()), ["session-a"]);
+    await sleep(1_300);
+    assert.deepEqual(operations(events), []);
+});
+
+test("Updates that go on after a remote change aren't published as the user's", async () => {
+    const { bridge, spotify, events } = await loadAdapter();
+    await loadSession(bridge);
+    await settle();
+
+    // Spotify keeps sending updates for a while after an action, closer
+    // together than the debounce, so the comparison only runs after the
+    // suppression window. It must compare with what the change produced.
+    const burst = setInterval(() => spotify.publish(), 100);
+    try {
+        await bridge.applyOperation({ type: "playback.setPlaying", isPlaying: false });
+        await bridge.applyOperation({ type: "queue.remove", entryId: "session-c" });
+        await sleep(1_200);
+    } finally {
+        clearInterval(burst);
+    }
+    await settle();
+    assert.deepEqual(operations(events), []);
+
+    // Positive control: the user resumes in Spotify.
+    await spotify.act(model => { model.isPaused = false; });
+    await settle();
+    assert.deepEqual(operations(events), [{ type: "playback.setPlaying", isPlaying: true }]);
+});
+
+test("A queue write refused right after a play waits for the new revision, not a timer", async () => {
+    const { bridge, spotify, events } = await loadAdapter(spotify => {
+        spotify.model.queueLagsAfterPlay = true;
+    }, { pageSetTimeout: backgroundSetTimeout });
+
+    const started = Date.now();
+    await loadSession(bridge, ["a", "b", "c"], playback(false, 30_000));
+    const joinMs = Date.now() - started;
+
+    const writes = spotify.calls.filter(call => call.setQueue);
+    assert.equal(writes[0].setQueue, "refused", "the first write meets the play's new revision");
+    assert.deepEqual(writes[1].setQueue, ["spotify:track:b", "spotify:track:c"]);
+    assert.ok(joinMs < 500, `paused join took ${joinMs} ms`);
+    assert.deepEqual(entryIds(bridge.getState()), ["session-a", "session-b", "session-c"]);
+    await sleep(1_300);
+    assert.deepEqual(operations(events), []);
+});
+
+test("Rewriting the same songs as new entries waits for Spotify's new items", async () => {
+    const { bridge, spotify, events } = await loadAdapter(spotify => {
+        spotify.model.stateLagsAfterQueueWrite = true;
+    }, { pageSetTimeout: backgroundSetTimeout });
+    await loadSession(bridge, ["a", "b", "c"]);
+    await sleep(1_300);
+    const oldUids = spotify.model.next.map(track => track.contextTrack.uid);
+
+    // New entries for songs that are already queued: Spotify shows the
+    // same songs, still with the old items, until it has taken the write.
+    await bridge.applyOperation({
+        type: "queue.replace",
+        entries: [
+            entry("session-a", "spotify:track:a"),
+            entry("session-b2", "spotify:track:b"),
+            entry("session-c2", "spotify:track:c"),
+        ],
+        currentEntryId: "session-a",
+    });
+
+    assert.notDeepEqual(spotify.model.next.map(track => track.contextTrack.uid), oldUids, "Spotify made new items");
+    assert.deepEqual(entryIds(bridge.getState()), ["session-a", "session-b2", "session-c2"]);
+    // The debounce runs once a second here, long after the suppression window.
+    await sleep(1_500);
+    assert.deepEqual(entryIds(bridge.getState()), ["session-a", "session-b2", "session-c2"]);
+    assert.deepEqual(operations(events), []);
+});
+
+test("A removal counts once the state shows it, not when the queue's revision changes", async () => {
+    const { bridge, spotify, events } = await loadAdapter(spotify => {
+        spotify.model.stateLagsAfterQueueWrite = true;
+    }, { pageSetTimeout: backgroundSetTimeout });
+    await loadSession(bridge, ["a", "b", "c"]);
+    await sleep(1_300);
+
+    await bridge.applyOperation({ type: "queue.remove", entryId: "session-c" });
+
+    assert.deepEqual(entryIds(bridge.getState()), ["session-a", "session-b"]);
+    await sleep(1_500);
     assert.deepEqual(operations(events), []);
 });

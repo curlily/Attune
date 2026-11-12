@@ -34,8 +34,8 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
 | Playback needs a gesture | A browser refuses to start playback from a script until the page had a user gesture. Desktop apps allow it. | Verified live (YouTube Music) | Calls are evaluated as user gestures; the browser is launched with `--autoplay-policy=no-user-gesture-required` |
 | Leave dialog | A page that is playing can block its reload with a "Leave site?" dialog | Verified live (YouTube Music) | `install_bridge` confirms `beforeunload` dialogs |
 | Interruptions | Advertisements take over playback for a while | Verified live (YouTube Music) | Adapter sends `Interruption`; the runtime steps out and rejoins after |
-| Background timers | While the app's window is hidden and nothing plays, Chromium runs the page's timers once a second (a 25 ms timeout took 1000 ms). Polling loops slow down exactly while a track loads paused. | Verified live (TIDAL); likely for YouTube Music's window too, unchecked | TIDAL: waits react to store changes (`waitFor`, `holdUntil`). Spotify and YouTube Music still poll |
-| Comparing after a remote change | The app's state keeps changing for about a second after an action, which can push a debounce past a fixed suppression window; the delayed comparison then sees our own change as the user's | Verified live (TIDAL) | TIDAL: the comparison base is reset to the state the remote change produced |
+| Background timers | While the app's window is hidden and nothing plays, Chromium runs the page's timers once a second (a 25 ms timeout took 1000 ms). Polling loops slow down exactly while a track loads paused. | Verified live (TIDAL; Spotify, **also while playing**, as its sound is native). YouTube Music: assumed, not measured | Waits react to the app's own signals, with a 250 ms fallback check: TIDAL store changes (`waitFor`, `holdUntil`); Spotify `update`/`queue_update` events (`watchPlayer`); YouTube Music store changes and `<video>` media events, caught in the capture phase (`watchPage`). Timers remain only for timeouts and stable periods, and the 150–180 ms debounce of local changes |
+| Comparing after a remote change | The app's state keeps changing for about a second after an action, which can push a debounce past a fixed suppression window; the delayed comparison then sees our own change as the user's. **With throttled timers it always happens:** the debounce takes a second, so it always fires after the 300 ms window | Verified live (TIDAL, Spotify). YouTube Music: mock only | Every adapter resets the comparison base to the state the remote change produced: TIDAL `rebaseLocalChanges`, Spotify and YouTube Music `rebase()` at the end of `asRemoteChange`. Removing it makes both new tests publish an echo. **The rebase is only as good as the wait before it:** Spotify's queue write used to count as done while the old items still showed, and an echo followed (verified live, fixed) |
 
 ## 2. TIDAL
 
@@ -237,7 +237,7 @@ reading its code and recording its events. Not yet run through `SessionRuntime`
 - **The queue is written as a whole:** `_contextPlayer.setQueue({ nextTracks, prevTracks, queueRevision })`. PlayerAPI's own `addToQueue`, `removeFromQueue`, `reorderQueue`, `insertIntoQueue` and `clearQueue` all do this.
   - It never touches the current track.
   - Existing items are kept by passing them back unchanged. New ones need only `{ contextTrack: { uri, uid: "", metadata: { is_queued: "true" } }, provider: "queue" }` and get a uid.
-  - An outdated `queueRevision` is refused with error code 3 (returned, not thrown).
+  - An outdated `queueRevision` is refused with error code 3 (returned, not thrown). A write right after `play` meets this, as the play changes the queue. Revisions aren't counters: one went back to an earlier value during a write.
   - Playlist items can be removed, reordered and inserted between. A queue item placed behind playlist items becomes a `"context"` item and keeps its uid; marking a playlist item as queued gives it a new uid.
   - Autoplay items can't be edited: Spotify regenerates that list about a second later.
 - Clicking a later item in Spotify's queue drops the queued items before it.
@@ -269,6 +269,40 @@ reading its code and recording its events. Not yet run through `SessionRuntime`
 - Searches are independent: four at once took as long as one (about 350 ms).
 - The same recording appears several times (single, album, deluxe) with equal title, artist and duration. The adapter takes Spotify's first.
 - Titles differ between services: "Shoong!" is "Shoong! (feat. LISA of BLACKPINK)" here. Featured-artist suffixes are ignored when comparing.
+
+**Waiting and echoes** (verified live against Spotify 1.3.9.2055, Chrome 156, with its
+window hidden, by injecting the adapter into the running app and driving it directly;
+afterwards the adapter was disposed and Spotify put back on the user's list, song,
+position and pause)
+- **Timers are throttled even while Spotify plays:** a 25 ms timeout took 680–990 ms,
+  playing or paused. The sound comes from the native player, so the page counts as
+  silent.
+- **The waits react to Spotify's events now** (`watchPlayer`: `update`/`queue_update`,
+  plus a 250 ms fallback check). Old adapter, hidden: play, seek, remove and pause about
+  1.0 s each, a paused advance 2.0 s, a paused join 2.6 s. New: play 25 ms, seek 15 ms,
+  remove 110 ms, pause 265 ms, advance 115–330 ms, a paused join 0.55–1.1 s, of which the
+  searches are about 0.5–0.9 s.
+- **A queue write right after `play` is refused** (code 3): the play changed the queue,
+  and the queue shows the new revision with one of the next updates. The retry used to
+  sleep 100 ms (330 ms while hidden). It now waits for the revision to change and
+  retries at once.
+- **When a queue write counts as done:** the state has to show the items we sent, not
+  just the same songs. Rewriting songs that were already queued as new items (new
+  entries for them) kept showing the old items, with the old uids, for another 120 ms.
+  The revision changed several times per write, once **back to its earlier value**
+  (revisions aren't counters), before the new items showed. The old check accepted the
+  write at once, mapped the entries to the old uids, and about a second later published
+  the new uids as the user's `queue.replace` (seen live 4 times in a row). Now: new items
+  must have uids that didn't exist before, kept items their own uid, and queued items
+  left out must be gone. After the fix, nothing was published in three such joins, a
+  same-queue join (1 ms) or the sequence join, play, seek, remove, pause, advance.
+- **Echoes, the TIDAL problem itself:** not affected, as `asRemoteChange` already rebased
+  when an action finished. The wait above was the gap: the rebase captured a state
+  Spotify hadn't finished producing.
+- **Positive control:** a seek made through Spotify's own PlayerAPI was published after
+  0.8–1.0 s. That is the 150 ms debounce while hidden.
+- **Left to check live:** whether unshuffling re-orders the playlist later than the
+  `shuffle` flag (publishing that would be correct, since the queue did change).
 
 **Timings measured:** adapter ready 0.3 s after the reload; a 5-song snapshot 1.0–1.3 s; 72 songs (12 different ones) 2.0 s; a queue edit 130 ms; a skip 50 ms.
 
@@ -370,7 +404,9 @@ Signing in is optional: the page also plays signed out. The launch command is
 - A track starts in 0.5–0.9 s. Meanwhile the player still reports the previous video.
 - Player states: -1 unstarted, 0 ended, 1 playing, 2 paused, 3 buffering, 5 cued.
 - The position is read live (`getCurrentTime()`, seconds); there is no sync timestamp.
-  Seeks don't pass through the store, so the adapter looks at the position every 500 ms.
+  Seeks don't pass through the store. The adapter learns of them from the `<video>`'s
+  `seeked` event (listened for in the capture phase on `window`, since media events don't
+  bubble; mock only) and checks the position every 500 ms as a fallback.
 - Durations in the queue are whole seconds ("3:22").
 - **Song end:** `SET_INDEX` to the next item, which starts about 0.6 s later.
 - **End of the queue** (autoplay off): the player stops on the last track (state 0).
@@ -410,6 +446,23 @@ Signing in is optional: the page also plays signed out. The launch command is
   is "Artist & Other • 2.1B views".
 - Titles differ again: "Shoong! (feat. 리사 (LISA))".
 - The network manager caches responses, so a repeated lookup costs nothing.
+
+**Waiting and echoes** (checked by reading the adapter and with mocked tests; the app
+window wasn't open, so nothing here was measured live)
+- **Timers:** the waits and holds used to poll every 25 ms (`waitFor`, `holdPlayback`,
+  `settle`). An app window that is hidden and silent (a song held paused, or nothing
+  loaded) runs its timers at 1 Hz (assumed, as in TIDAL). In the mock a paused join then
+  took 3.0 s. Now they check on store changes and the player's media events (`watchPage`),
+  and `holdUntil` replaces the polling hold: 1.0 s in the same mock. All of that is the
+  hold's 500 ms stable period, which is itself a timer and takes a second while throttled.
+  Whether the `<video>` element's events reach a capture listener on `window` in the real
+  page (no shadow DOM around the player) is assumed.
+- **Echoes:** not affected, as with Spotify: `asRemoteChange` already rebased when an
+  action finished (mock only). A test dispatches unrelated store changes every 100 ms for
+  1.2 s after a pause and a removal: nothing is published; without the rebase both are.
+- **Left to check live:** timer throttling of the app window, and whether the signed-in
+  server queue rewrites queue items some time after a store edit. New item numbers would
+  be new entries, published as a replacement of the queue.
 
 **Timings measured:** adapter ready 0.8–1.0 s after the reload; a 5-song snapshot with a
 paused start 2.9 s (four searches); a queue edit 0–4 ms, or 450 ms with one lookup;
@@ -454,7 +507,7 @@ selecting another song 0.9–1.7 s.
    - track-start reset isn't a seek
    - lookups one at a time
    A new adapter is done when it passes the suite *and* a scripted live run.
-6. **A shared "hold until stable" helper.** TIDAL's adapter now has `holdUntil({matches, correct, stableMs, timeoutMs})`, used by `startLoadedTrack` and `settle`: it re-applies the target state until it holds. It is checked on every store change, not only on a timer (background timers run once a second). Every provider will likely need it, so move it into a small shared library injected with each adapter.
+6. **A shared "hold until stable" helper.** TIDAL's adapter now has `holdUntil({matches, correct, stableMs, timeoutMs})`, used by `startLoadedTrack` and `settle`: it re-applies the target state until it holds. It is checked on every store change, not only on a timer (background timers run once a second). Spotify and YouTube Music now carry their own copies, together with `waitFor` and `waitUntilQuiet`, each on top of a "something changed" source (`watchPlayer`, `watchPage`). They differ only in that source, so move them into a small shared library injected with each adapter, where each adapter supplies its source.
 7. **Capability flags per adapter.** For example: `incrementalQueue`, `canUnloadTrack`, `fullQueue`, `providerIds`. Then the runtime can choose operations, such as avoiding full replacements, instead of discovering failures at runtime.
 8. **Drift measurement (phase 7d).** Measuring each client's real position against the session shows timing problems (load delays, lost seeks) as numbers, not anecdotes.
 9. **A neutral state.** Proposed by the user; **done for TIDAL and Spotify**. Adapter contract:

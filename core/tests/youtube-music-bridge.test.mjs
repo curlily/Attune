@@ -78,6 +78,22 @@ function createYouTubeMusic() {
         player: { adPlaying: false, isPlaying: false },
     };
     const player = { videoId: null, state: PLAYER.UNSTARTED, positionMs: 0, since: Date.now() };
+    // The player's <video> element: its events don't bubble, so the page
+    // sees them only when listening on the way down (capture).
+    const mediaListeners = new Map();
+    const media = {
+        addEventListener(type, listener) {
+            if (!mediaListeners.has(type)) mediaListeners.set(type, new Set());
+            mediaListeners.get(type).add(listener);
+        },
+        removeEventListener(type, listener) {
+            mediaListeners.get(type)?.delete(listener);
+        },
+        fire(type) {
+            for (const listener of [...(mediaListeners.get(type) ?? [])]) listener({ type });
+        },
+        listenerCount: () => [...mediaListeners.values()].reduce((sum, set) => sum + set.size, 0),
+    };
 
     const numbered = (items, from) => items.map((item, offset) => {
         const copy = structuredClone(item);
@@ -194,6 +210,7 @@ function createYouTubeMusic() {
         seekTo(seconds) {
             calls.push(`seek:${Math.round(seconds)}`);
             setPlayer({ positionMs: seconds * 1000 });
+            media.fire("seeked");
         },
     };
 
@@ -257,6 +274,13 @@ function createYouTubeMusic() {
             }
         },
         setPlayer,
+        media,
+        /** The user seeks in the page: only the <video> notices. */
+        userSeeks(positionMs) {
+            player.positionMs = positionMs;
+            player.since = Date.now();
+            media.fire("seeked");
+        },
         adBreak(active) {
             store.dispatch({ type: "SET_AD_PLAYING", payload: active });
             store.dispatch({ type: "SET_IS_PLAYING", payload: active });
@@ -275,7 +299,11 @@ function createYouTubeMusic() {
     return page;
 }
 
-async function loadAdapter(setup) {
+// Verified live (TIDAL): while a Chromium page is hidden and silent, its
+// timers run once a second.
+const backgroundSetTimeout = (callback, ms, ...args) => setTimeout(callback, Math.max(1_000, ms ?? 0), ...args);
+
+async function loadAdapter(setup, { pageSetTimeout = setTimeout, pageSetInterval = setInterval } = {}) {
     const page = createYouTubeMusic();
     setup?.(page);
     const events = [];
@@ -286,13 +314,16 @@ async function loadAdapter(setup) {
         "ytmusic-player-bar": { inst: { store: page.store, queue: page.queueService, playerApi: page.playerApi } },
     };
     const context = vm.createContext({
-        window: {},
+        window: {
+            addEventListener: page.media.addEventListener,
+            removeEventListener: page.media.removeEventListener,
+        },
         document: { querySelector: selector => elements[selector] ?? null },
         performance: { now: () => Date.now() },
         crypto: { randomUUID: () => `generated-${++randomId}` },
-        setTimeout,
+        setTimeout: pageSetTimeout,
         clearTimeout,
-        setInterval,
+        setInterval: pageSetInterval,
         clearInterval,
         console: { info() {}, log() {}, warn() {}, error() {} },
     });
@@ -327,8 +358,8 @@ async function loadSession(bridge, videoIds = ["a", "b", "c"], play = playback()
     });
 }
 
-async function withAdapter(setup, run) {
-    const loaded = await loadAdapter(typeof setup === "function" && run ? setup : undefined);
+async function withAdapter(setup, run, options) {
+    const loaded = await loadAdapter(typeof setup === "function" && run ? setup : undefined, options);
     try {
         await (run ?? setup)(loaded);
     } finally {
@@ -619,4 +650,62 @@ test("Settling after attaching pauses the page, also behind an advertisement", (
     assert.equal(page.store.getState().player.isPlaying, false);
     assert.ok(page.calls.includes("pause"));
     assert.deepEqual(operations(events), []);
+}));
+
+test("Holds and waits follow the page, also while its timers run once a second", () => withAdapter(undefined, async ({ bridge, page, events }) => {
+    let started = Date.now();
+    await loadSession(bridge, ["a", "b"], playback(false, 42_000));
+    const joinMs = Date.now() - started;
+    started = Date.now();
+    await bridge.applyOperation({ type: "playback.seek", entryId: "session-a", positionMs: 60_000 });
+    await bridge.applyOperation({ type: "playback.setPlaying", isPlaying: true });
+    const editsMs = Date.now() - started;
+
+    // The hold's stable period is one (throttled) timer; polling took a
+    // second per check, about three seconds for this join.
+    assert.ok(joinMs < 1_800, `paused join took ${joinMs} ms`);
+    assert.ok(editsMs < 400, `seek and play took ${editsMs} ms`);
+    assert.equal(page.player.videoId, "a");
+    assert.equal(page.player.state, PLAYER.PLAYING);
+    await sleep(1_300);
+    assert.deepEqual(operations(events), []);
+}, { pageSetTimeout: backgroundSetTimeout }));
+
+test("A seek in the page is reported from the player's seeked event", () => withAdapter(undefined, async ({ bridge, page, events }) => {
+    await loadSession(bridge);
+    await settle();
+
+    page.userSeeks(90_000);
+    await sleep(350);
+    const [sought] = operations(events);
+    assert.equal(sought?.type, "playback.seek");
+    assert.ok(Math.abs(sought.positionMs - 90_000) < 1_000, `position ${sought.positionMs}`);
+
+    await bridge.dispose();
+    assert.equal(page.media.listenerCount(), 0, "no media listeners left behind");
+// The 500 ms position poll is only a fallback: leave it out.
+}, { pageSetInterval: () => 0 }));
+
+test("Store changes that go on after a remote change aren't published as the user's", () => withAdapter(async ({ bridge, page, events }) => {
+    await loadSession(bridge);
+    await settle();
+
+    // The page keeps changing for a while after an action, closer together
+    // than the debounce, so the comparison only runs after the suppression
+    // window. It must compare with what the change produced.
+    const burst = setInterval(() => page.store.dispatch({ type: "TEST_UNRELATED_CHANGE" }), 100);
+    try {
+        await bridge.applyOperation({ type: "playback.setPlaying", isPlaying: false });
+        await bridge.applyOperation({ type: "queue.remove", entryId: "session-c" });
+        await sleep(1_200);
+    } finally {
+        clearInterval(burst);
+    }
+    await settle();
+    assert.deepEqual(operations(events), []);
+
+    // Positive control: the user resumes in the page.
+    page.setPlayer({ state: PLAYER.PLAYING });
+    await settle();
+    assert.deepEqual(operations(events), [{ type: "playback.setPlaying", isPlaying: true }]);
 }));
