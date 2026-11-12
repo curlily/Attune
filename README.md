@@ -59,6 +59,37 @@ track data.
 Behind a reverse proxy every client appears to come from the proxy's address, so
 they share one join-attempt limit; raise `ATTUNE_JOIN_ATTEMPTS_PER_MINUTE` there.
 
+### Deploying to the relay host
+
+The public relay (`relay-host`, user `<user>`) runs as a systemd **user** service,
+`attune`, defined in [`server/deploy/attune.service`](server/deploy/attune.service).
+No root is needed; lingering is enabled for its user, so it starts at boot and is
+restarted if it crashes.
+
+From Git Bash in the repo, after committing:
+
+```sh
+scripts/deploy.sh            # deploy HEAD
+scripts/deploy.sh rollback   # put the previous binary back
+```
+
+The script uploads `git archive HEAD` (only committed files) to `~/attune/src.tar`,
+builds `attune-server` on the server (incrementally, so about a minute, while the old
+server keeps running), installs the service file, keeps the old binary as
+`attune-server.prev`, restarts the service and checks `/healthz`. The deployed commit
+is recorded in `~/attune/DEPLOYED_COMMIT`. Restarting ends every live session.
+
+On the server:
+
+```sh
+systemctl --user status attune
+systemctl --user restart attune
+tail -f ~/attune/server.log
+```
+
+Set `ATTUNE_HOST=user@host` to deploy somewhere else; that host needs Rust installed
+(`rustup`) and, for start at boot, `loginctl enable-linger <user>`.
+
 ### Exposing it with Cloudflare Tunnel
 
 The server speaks plain `ws://` on loopback; a tunnel adds TLS (`wss://`) and a

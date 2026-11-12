@@ -1,0 +1,21 @@
+# systemd *user* unit for the Attune relay (no root needed).
+# Installed by scripts/deploy.sh to ~/.config/systemd/user/attune.service.
+# Starts at boot because lingering is enabled for the user (loginctl enable-linger).
+
+[Unit]
+Description=Attune session relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/attune
+ExecStart=%h/attune/attune-server
+Environment=ATTUNE_BIND=0.0.0.0:8787
+Environment=RUST_LOG=info
+Restart=on-failure
+RestartSec=2
+StandardOutput=append:%h/attune/server.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target
