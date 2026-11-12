@@ -1063,6 +1063,51 @@ impl<B: ProviderBridge> Worker<B> {
             debug!("Dropping a local change that matches the session (echo)");
             return;
         }
+        let previous_current = self.mirror.current_entry_id.clone();
+        let replaced = matches!(operation, SessionOperation::QueueReplace { .. });
+        if self.submit_local(operation).await
+            && replaced
+            && self.mirror.current_entry_id != previous_current
+        {
+            self.publish_resumed_position().await;
+        }
+    }
+
+    /// A new current song starts at 0 in the session, but a provider may
+    /// resume it part-way: Spotify continues an album or playlist where it
+    /// was left (verified live: 48 s and 164 s in). Left alone, the others
+    /// play that far behind, and the next resync throws this provider back
+    /// to the session's position, which sounds like the song restarting.
+    async fn publish_resumed_position(&mut self) {
+        let Ok(local) = self.bridge.get_state().await else {
+            return;
+        };
+        let Some(entry_id) = local.current_entry_id.clone() else {
+            return;
+        };
+        if self.mirror.current_entry_id.as_ref() != Some(&entry_id) {
+            return;
+        }
+        let local_now = now_ms();
+        let here = state::position_at(&local, local_now);
+        let session = state::position_at(&self.mirror, self.clock().server_time(local_now));
+        if here.abs_diff(session) <= state::POSITION_TOLERANCE_MS {
+            return;
+        }
+        debug!(
+            here,
+            session, "Provider resumed the new song part-way; publishing its position"
+        );
+        self.submit_local(SessionOperation::PlaybackSeek {
+            entry_id,
+            position_ms: here,
+        })
+        .await;
+    }
+
+    /// Submit a change made in the provider (already translated). Returns
+    /// whether the server applied it.
+    async fn submit_local(&mut self, operation: SessionOperation) -> bool {
         // The server takes the position as of when it accepts the change.
         let operation = shift_position(
             &operation,
@@ -1083,6 +1128,7 @@ impl<B: ProviderBridge> Worker<B> {
                 self.pending
                     .insert(sequence, Pending::Own(operation, accepted_at_ms));
                 self.drain().await;
+                return true;
             }
             Ok(SubmitOutcome::Unchanged { .. }) => {}
             Ok(SubmitOutcome::Rejected { code, .. }) => {
@@ -1095,6 +1141,7 @@ impl<B: ProviderBridge> Worker<B> {
             // Connection trouble: reconnecting delivers a snapshot.
             Err(error) => debug!(%error, "Submitting a local change failed"),
         }
+        false
     }
 
     /// Turn a provider-reported change into the session change it means.

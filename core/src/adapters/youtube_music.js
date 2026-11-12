@@ -441,6 +441,26 @@
         return score;
     }
 
+    /**
+     * Queries to try in turn. Featured artists named in the title and again
+     * as artists throw the search off: "Get Lucky (feat. Pharrell Williams
+     * and Nile Rodgers) Daft Punk Pharrell Williams" found only covers,
+     * "Get Lucky Daft Punk" the original. So the title without them and the
+     * main artist come first, the full title and two artists after.
+     */
+    function searchQueries(track) {
+        const artists = (track.artists ?? []).filter(Boolean);
+        const bareTitle = String(track.title ?? "")
+            .replace(/\s*[([][^)\]]*\b(feat|ft|featuring|with)\b[^)\]]*[)\]]/gi, "")
+            .replace(/\s[-–]\s*(feat|ft|featuring)\b.*$/i, "")
+            .trim() || String(track.title ?? "");
+        const queries = [
+            `${bareTitle} ${artists.slice(0, 1).join(" ")}`.trim(),
+            `${track.title} ${artists.slice(0, 2).join(" ")}`.trim(),
+        ];
+        return [...new Set(queries)];
+    }
+
     async function resolveTrack(track) {
         const existingProviderId = track.providerTrackId ?? track.provider_track_id;
         if (track.provider === "YoutubeMusic" && existingProviderId) return String(existingProviderId);
@@ -453,13 +473,16 @@
         ].join("::");
         if (resolvedVideoIdCache.has(cacheKey)) return resolvedVideoIdCache.get(cacheKey);
 
-        const query = `${track.title} ${(track.artists ?? []).slice(0, 2).join(" ")}`.trim();
-        const candidates = await searchSongs(query);
-        // Sorting is stable: equal scores keep YouTube Music's ranking.
-        const best = candidates
-            .map(candidate => ({ ...candidate, score: scoreCandidate(track, candidate) }))
-            .filter(candidate => candidate.score >= 0)
-            .sort((a, b) => b.score - a.score)[0];
+        let best = null;
+        for (const query of searchQueries(track)) {
+            const candidates = await searchSongs(query);
+            // Sorting is stable: equal scores keep YouTube Music's ranking.
+            best = candidates
+                .map(candidate => ({ ...candidate, score: scoreCandidate(track, candidate) }))
+                .filter(candidate => candidate.score >= 0)
+                .sort((a, b) => b.score - a.score)[0] ?? null;
+            if (best) break;
+        }
         if (!best) {
             throw new TrackLookupError(`No matching YouTube Music song found for "${track.title}"`);
         }
@@ -900,35 +923,43 @@
             return { unavailableEntryIds: [] };
         }
 
-        // Resolve everything before touching the queue, the current entry
-        // first: if it can't play, don't search for the rest.
+        // The current entry first: if it can't play, nothing changes and
+        // the rest isn't searched for. It starts before the rest is looked
+        // up: searching a 50-song playlist took 20 s (verified live), and
+        // the song waited for all of it.
         const known = knownVideoIds();
         const [current] = await resolveEntries([entries[0]], known);
         if (current.error) throw trackUnavailableError([current]);
-        const upcoming = await resolveEntries(entries.slice(1), known);
-        const failures = upcoming.filter(result => result.error);
-        const unavailable = failures.map(failure => failure.entry.entryId);
-        const wanted = [current, ...upcoming.filter(result => !result.error)]
-            .map(result => ({ entryId: result.entry.entryId, videoId: result.videoId }));
+        const head = { entryId: current.entry.entryId, videoId: current.videoId };
 
         const queue = readQueue();
         const currentEntryId = queue.length ? entryIdFor(queue[0].key) : null;
+        const unavailable = [];
         let started = false;
-        if (currentEntryId === wanted[0].entryId) {
-            unavailable.push(...await writeUpcoming(wanted.slice(1)));
-        } else if (selectEntry(wanted[0].entryId)) {
+        if (currentEntryId === head.entryId) {
+            // Already playing: keep it.
+        } else if (selectEntry(head.entryId)) {
             // Already queued further down: move on to it.
             started = true;
-            unavailable.push(...await writeUpcoming(wanted.slice(1)));
         } else {
             started = true;
-            unavailable.push(...await replaceAndStart(wanted));
+            await replaceAndStart([head]);
         }
 
         if (started) {
-            await waitFor(() => isAdPlaying() || loadedVideoId() === wanted[0].videoId, TRACK_START_TIMEOUT_MS);
+            await waitFor(() => isAdPlaying() || loadedVideoId() === head.videoId, TRACK_START_TIMEOUT_MS);
         }
-        await holdPlayback(wanted[0].videoId, playback, calledAt, started ? TRACK_START_TIMEOUT_MS : CHANGE_TIMEOUT_MS);
+        await holdPlayback(head.videoId, playback, calledAt, started ? TRACK_START_TIMEOUT_MS : CHANGE_TIMEOUT_MS);
+
+        const upcoming = await resolveEntries(entries.slice(1), known);
+        unavailable.push(...upcoming.filter(result => result.error).map(failure => failure.entry.entryId));
+        const wanted = upcoming.filter(result => !result.error)
+            .map(result => ({ entryId: result.entry.entryId, videoId: result.videoId }));
+        // The song may have ended during the lookups; then the queue moved on
+        // and the session's own advance will follow.
+        if (readQueue().length && entryIdFor(readQueue()[0].key) === head.entryId) {
+            unavailable.push(...await writeUpcoming(wanted));
+        }
         return { unavailableEntryIds: unavailable };
     }
 

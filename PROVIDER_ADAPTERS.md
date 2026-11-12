@@ -35,6 +35,7 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
 | Leave dialog | A page that is playing can block its reload with a "Leave site?" dialog | Verified live (YouTube Music) | `install_bridge` confirms `beforeunload` dialogs |
 | Interruptions | Advertisements take over playback for a while | Verified live (YouTube Music) | Adapter sends `Interruption`; the runtime steps out and rejoins after |
 | Background timers | While the app's window is hidden and nothing plays, Chromium runs the page's timers once a second (a 25 ms timeout took 1000 ms). Polling loops slow down exactly while a track loads paused. | Verified live (TIDAL; Spotify, **also while playing**, as its sound is native; YouTube Music, where sound from the page lifts it, and selecting a song always starts sound). Hidden for more than 5 minutes, chained timers run **once a minute** (verified live, YouTube Music) | Waits react to the app's own signals, with a 250 ms fallback check: TIDAL store changes (`waitFor`, `holdUntil`); Spotify `update`/`queue_update` events (`watchPlayer`); YouTube Music store changes and `<video>` media events, caught in the capture phase (`watchPage`). Timers remain only for timeouts and stable periods, and the 150–180 ms debounce of local changes |
+| Resuming a new list part-way | A new current song starts at 0 in the session (`queue.replace`), but **Spotify resumes an album or playlist where it was left** (seen 48 s, 164 s and 176 s in). The others then played that far behind, and the next resync (a stale queue edit, a rejoin) threw Spotify back to the session's position: heard as the song restarting, again on every resync | Verified live (Spotify + YouTube Music session), fixed | After a local replace that changes the current song, the runtime compares the provider's position with the session's and publishes a seek (`publish_resumed_position`). Covers any provider |
 | Comparing after a remote change | The app's state keeps changing for about a second after an action, which can push a debounce past a fixed suppression window; the delayed comparison then sees our own change as the user's. **With throttled timers it always happens:** the debounce takes a second, so it always fires after the 300 ms window | Verified live (TIDAL, Spotify, YouTube Music) | Every adapter resets the comparison base to the state the remote change produced: TIDAL `rebaseLocalChanges`, Spotify and YouTube Music `rebase()` at the end of `asRemoteChange`. Removing it makes both new tests publish an echo. **The rebase is only as good as the wait before it:** Spotify's queue write used to count as done while the old items still showed, and an echo followed (verified live, fixed) |
 
 ## 2. TIDAL
@@ -304,6 +305,14 @@ position and pause)
 - **Left to check live:** whether unshuffling re-orders the playlist later than the
   `shuffle` flag (publishing that would be correct, since the queue did change).
 
+**Two-provider session** (verified live with YouTube Music through `SessionRuntime`, the
+`live_pair` example, 2026-11-12): play, pause, seeks, skips, song ends and queue inserts
+went both ways without echoes; YouTube Music trailed by 0.1–1.2 s.
+- **Starting an album or playlist** publishes `queue.replace` and, about 0.2–0.5 s later,
+  either a second `queue.replace` (same current song) or one `queue.insert` per song that
+  Spotify adds once the context is loaded (nine for a 13-song album).
+- **It resumes the context where it was left**, not at 0 (see the shared lessons).
+
 **Timings measured:** adapter ready 0.3 s after the reload; a 5-song snapshot 1.0–1.3 s; 72 songs (12 different ones) 2.0 s; a queue edit 130 ms; a skip 50 ms.
 
 ### Open problems
@@ -317,7 +326,7 @@ position and pause)
 7. **Changing shuffle, repeat or autoplay during a jam** isn't detected (same as TIDAL).
 8. **Debug port:** Attune's config expects Spotify on 9223. `--remote-debugging-port=<port>` needs the `=`; with a space Spotify ignores it without a word.
 9. **Store version:** still unchecked.
-10. **Not done yet:** the `live_session` example and a two-person jam (TIDAL + Spotify), with a missing song on each side.
+10. **Not done yet:** a two-person session with TIDAL, and a song missing on the Spotify side. Spotify + YouTube Music was run live (`live_pair`).
 
 ## 4. YouTube Music
 
@@ -446,6 +455,13 @@ Signing in is optional: the page also plays signed out. The launch command is
   is "Artist & Other • 2.1B views".
 - Titles differ again: "Shoong! (feat. 리사 (LISA))".
 - The network manager caches responses, so a repeated lookup costs nothing.
+- **Featured artists named twice throw the search off.** For the session's "Get Lucky (feat.
+  Pharrell Williams and Nile Rodgers)" by Daft Punk, Pharrell Williams, Nile Rodgers, the
+  query "*title* Daft Punk Pharrell Williams" returned only covers and karaoke versions, so
+  the song was reported missing. "Get Lucky Daft Punk", the full title with one artist, and
+  the title with all three artists all found the original (ranked second, behind a cover).
+  The adapter now searches the title without the "(feat. …)" part plus the main artist
+  first, and the old query only if that finds no match.
 
 **Waiting and echoes** (verified live against `WEB_REMIX 1.20261110.04.00` in Edge 157,
 signed out, in an app window launched like Attune does, minimized through CDP; the adapter
@@ -482,6 +498,12 @@ was disposed, the test queue cleared and the window restored)
   store edit (new item numbers would be new entries, published as a replacement of the
   queue), and advertisements during a hold.
 
+**Loading a long queue:** the adapter used to look up every song before starting the
+current one; a 50-song playlist took about 20 s before anything played. Now the current
+song is started (and held at the session's position) first and the rest is looked up
+after: rejoining an 81-song playlist played in sync after 1.5 s; the rest followed 15 s
+later (all found).
+
 **Timings measured:** adapter ready 0.8–1.0 s after the reload; a 5-song snapshot with a
 paused start 2.9 s (four searches); a queue edit 0–4 ms, or 450 ms with one lookup;
 selecting another song 0.9–1.7 s.
@@ -504,7 +526,7 @@ selecting another song 0.9–1.7 s.
 7. **Signed out, age-restricted and region-blocked videos** weren't tested.
 8. **Podcasts and uploads** in the queue weren't tested.
 9. **Other browsers:** only Edge was tested. Chrome and Brave take the same flags.
-10. **Not done yet:** the `live_session` example and a two-person jam, launching the
+10. **Not done yet:** a two-person session with TIDAL (one with Spotify was run live, `live_pair`), launching the
     browser from Attune (the code path exists, the test used a window started by hand),
     and the connect screen's sign-in button in the running app.
 

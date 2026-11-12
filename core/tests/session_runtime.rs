@@ -758,3 +758,33 @@ async fn a_failed_join_restores_the_settings_it_changed() {
         ["prepare", r#"restore {"shuffle":true}"#]
     );
 }
+
+#[tokio::test]
+async fn a_new_song_resumed_part_way_is_published_at_its_position() {
+    // Spotify resumes an album or playlist where it was left; the session
+    // starts a new current song at 0 unless it is told otherwise.
+    let s = session(&[]).await;
+    let session_id = s.a.credentials().code.clone();
+    let mut resumed = music(&["n1", "n2"]);
+    resumed.playback.position_ms = 48_000;
+    resumed.playback.position_captured_at_ms = now_ms();
+    *s.a_provider.state.lock().unwrap() = resumed.clone();
+    s.a_provider.emit(Op::QueueReplace {
+        entries: resumed.queue.clone(),
+        current_entry_id: Some("n1".to_owned()),
+    });
+
+    let near = |position: u64| position.abs_diff(48_000) < 5_000;
+    eventually("the session has the resumed position", || {
+        let state = s.server.session_state(&session_id);
+        state.current_entry_id.as_deref() == Some("n1")
+            && near(state::position_at(&state, now_ms()))
+    })
+    .await;
+    eventually("B plays n1 where A is", || {
+        let state = s.b_provider.snapshot();
+        state.current_entry_id.as_deref() == Some("n1")
+            && near(state::position_at(&state, now_ms()))
+    })
+    .await;
+}
