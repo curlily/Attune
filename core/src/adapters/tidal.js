@@ -1522,6 +1522,25 @@
         items.splice(toIndex, 0, item);
     }
 
+    /**
+     * Look entries up without changing the queue, so that loading them
+     * later is quick (the lookups and TIDAL's metadata are cached). Not a remote change: it runs
+     * beside them, which lets the session load the current song and a few
+     * after it at once and the rest when this is done. Resolves to
+     * `{ unavailableEntryIds }`.
+     */
+    async function prefetch(entries) {
+        if (!Array.isArray(entries)) throw new TypeError("Queue entries must be an array");
+        const results = await resolveEntries(entries, loadedProductIds());
+        const found = results.filter(result => !result.error);
+        const missing = new Set(await ensureMediaItems(found.map(result => result.productId)));
+        return {
+            unavailableEntryIds: results
+                .filter(result => result.error || missing.has(String(result.productId)))
+                .map(result => result.entry.entryId),
+        };
+    }
+
     async function applyOperation(operation) {
         if (!operation || typeof operation.type !== "string") {
             throw new TypeError("Invalid Attune operation");
@@ -1863,6 +1882,7 @@
         getSnapshot: getState,
         applySnapshot: remoteChange(applyState),
         applyOperation: remoteChange(applyOperation),
+        prefetch,
         settle: remoteChange(settle),
         prepareForSession: remoteChange(prepareForSession),
         restoreAfterSession: remoteChange(restoreAfterSession),

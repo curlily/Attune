@@ -67,6 +67,8 @@ The operation set is absolute rather than toggle-based:
 
 Since protocol 2, `queue.replace` may carry `playback: { positionMs, isPlaying }` for its new current song (a provider may resume a list part-way); without it the new song starts at 0, playing. Adapters start the song there.
 
+Adapters also expose `prefetch(entries)`: look entries up (and cache them) without changing the queue, resolving to `{ unavailableEntryIds }`. It is not a remote change, so it runs beside them. The session runtime uses it for long new lists: it loads the current song and the next 8 the provider doesn't have, prefetches the rest, and adds them with a replace that keeps the current song once the lookups are done.
+
 Serde serializes the operation variant as `type` and all variant fields in `camelCase`, matching both JavaScript adapters. `SessionSnapshot` includes the protocol version and session revision metadata; adapters receive only its `state` after Rust validates the protocol version (2).
 
 The bridge layer does not implement session networking, server sequencing, conflict resolution, voting, or reconnect/replay policy. Those belong above `BridgeController`. The current Tauri commands expose connect/disconnect, read state, and apply snapshot/operation primitives.

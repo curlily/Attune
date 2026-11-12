@@ -1029,6 +1029,19 @@
         });
     }
 
+    /**
+     * Look entries up without changing the queue, so that loading them
+     * later is quick (the lookups are cached). Not a remote change: it runs
+     * beside them, which lets the session load the current song and a few
+     * after it at once and the rest when this is done. Resolves to
+     * `{ unavailableEntryIds }`.
+     */
+    async function prefetch(entries) {
+        if (!Array.isArray(entries)) throw new TypeError("Queue entries must be an array");
+        const results = await resolveEntries(entries, knownUris(readPlayer()));
+        return { unavailableEntryIds: results.filter(result => result.error).map(result => result.entry.entryId) };
+    }
+
     function applyOperation(operation) {
         if (!operation || typeof operation.type !== "string") {
             throw new TypeError("Invalid Attune operation");
@@ -1567,6 +1580,7 @@
         getSnapshot: getState,
         applySnapshot,
         applyOperation,
+        prefetch,
         settle,
         prepareForSession,
         restoreAfterSession,

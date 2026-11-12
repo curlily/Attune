@@ -46,13 +46,13 @@ use tracing::{debug, info, warn};
 
 use crate::{
     Error, Result,
-    bridge_controller::BridgeEvent,
+    bridge_controller::{ApplyOutcome, BridgeEvent},
     network::{
         ClockEstimate, CloseReason, JoinCredentials, SessionClient, SessionClientConfig,
         SessionEvent, SubmitOutcome,
     },
     protocol::{
-        Participant, ParticipantStatus, RejectCode, ReplacePlayback, SessionMusicState,
+        Participant, ParticipantStatus, QueueEntry, RejectCode, ReplacePlayback, SessionMusicState,
         SessionOperation, SessionSnapshot, state,
     },
     session::{
@@ -74,6 +74,11 @@ const SETTLE_TIMEOUT: Duration = Duration::from_secs(6);
 /// Most a position is moved for delivery time. A change that took longer
 /// than this to reach us is caught up by the next snapshot, not guessed at.
 const MAX_CATCH_UP_MS: u64 = 10_000;
+/// Loading a new list, the provider gets the current song and this many
+/// songs it doesn't have yet at once; the rest is looked up beside other
+/// changes and added afterwards (`defer_long_tail`). Looking up 80 songs
+/// took 6–15 s (verified live), and every change waited for it.
+const LOAD_NOW: usize = 8;
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -408,6 +413,15 @@ struct Worker<B> {
     /// Whether to return to SteppedOut after a reconnect.
     stepped_out_before_reconnect: bool,
     unavailable: HashSet<String>,
+    /// Entries left out of the provider until a background lookup is done
+    /// (`defer_long_tail`). Treated like `unavailable` for the provider's
+    /// queue, but not reported: they are expected to play.
+    deferred: HashSet<String>,
+    /// Increased with every new deferral; a lookup for an older one is
+    /// ignored.
+    deferral: u64,
+    prefetched_tx: mpsc::UnboundedSender<(u64, Result<ApplyOutcome>)>,
+    prefetched_rx: mpsc::UnboundedReceiver<(u64, Result<ApplyOutcome>)>,
     reported_unavailable: Option<Vec<String>>,
     reported_status: Option<ParticipantStatus>,
     participants: Vec<Participant>,
@@ -441,6 +455,7 @@ impl<B: ProviderBridge> Worker<B> {
         };
         let (status, _) = watch::channel(initial_status);
         let (notices, _) = broadcast::channel(NOTICE_CAPACITY);
+        let (prefetched_tx, prefetched_rx) = mpsc::unbounded_channel();
         let worker = Self {
             bridge,
             client,
@@ -457,6 +472,10 @@ impl<B: ProviderBridge> Worker<B> {
             waiting_for: None,
             stepped_out_before_reconnect: false,
             unavailable: HashSet::new(),
+            deferred: HashSet::new(),
+            deferral: 0,
+            prefetched_tx,
+            prefetched_rx,
             reported_unavailable: None,
             reported_status: sync.participant_status(),
             participants: Vec::new(),
@@ -526,6 +545,10 @@ impl<B: ProviderBridge> Worker<B> {
                         Flow::Continue
                     }
                 },
+                Some((deferral, outcome)) = self.prefetched_rx.recv() => {
+                    self.on_prefetched(deferral, outcome).await;
+                    Flow::Continue
+                }
                 event = self.client_events.recv() => match event {
                     Ok(event) => self.on_session_event(event).await,
                     Err(broadcast::error::RecvError::Lagged(missed)) => {
@@ -609,6 +632,7 @@ impl<B: ProviderBridge> Worker<B> {
     async fn report_unavailable(&mut self) {
         let in_queue: HashSet<&str> = queue_ids(&self.mirror).into_iter().collect();
         self.unavailable.retain(|id| in_queue.contains(id.as_str()));
+        self.deferred.retain(|id| in_queue.contains(id.as_str()));
         let mut report: Vec<String> = self.unavailable.iter().cloned().collect();
         report.sort();
         if self.reported_unavailable.as_ref() != Some(&report)
@@ -763,7 +787,7 @@ impl<B: ProviderBridge> Worker<B> {
         let server_now = self.clock().server_time(local_now);
         let expected: Vec<&str> = queue_ids(target)
             .into_iter()
-            .filter(|id| !self.unavailable.contains(*id))
+            .filter(|id| !self.lacks(id))
             .collect();
         queue_ids(&local) == expected
             && local.current_entry_id == target.current_entry_id
@@ -780,6 +804,7 @@ impl<B: ProviderBridge> Worker<B> {
         let revision = snapshot.revision;
         self.pending.retain(|sequence, _| *sequence > revision);
         self.set_sync(SyncState::Resyncing).await;
+        self.reset_deferral();
 
         if self.mirror.queue.is_empty() {
             // Nothing to play. Adapters can't safely unload the active track,
@@ -797,6 +822,7 @@ impl<B: ProviderBridge> Worker<B> {
             let local_now = now_ms();
             current.state = state::at_time(&snapshot.state, self.clock().server_time(local_now));
             current.state.playback.position_captured_at_ms = local_now;
+            current.state.queue = self.defer_long_tail(current.state.queue, 0).await;
             match self.bridge.apply_snapshot(&current).await {
                 Ok(outcome) => {
                     self.unavailable = outcome.unavailable_entry_ids.into_iter().collect();
@@ -962,8 +988,43 @@ impl<B: ProviderBridge> Worker<B> {
             self.wait_for_next_song(current).await;
             return;
         }
-        let Some(operation) = self.provider_operation(operation) else {
+        // A new list is deferred afresh. So is a song the provider hasn't
+        // loaded yet becoming current: everything is loaded around it.
+        let current_deferred = current
+            .as_ref()
+            .is_some_and(|id| self.deferred.contains(id));
+        let replaces = matches!(operation, SessionOperation::QueueReplace { .. });
+        if replaces || current_deferred {
+            self.reset_deferral();
+        }
+        let operation = if current_deferred && !replaces {
+            Some(self.provider_queue_replace(Some(ReplacePlayback {
+                position_ms: state::position_at(&self.mirror, accepted_at_ms),
+                is_playing: self.mirror.playback.is_playing,
+            })))
+        } else {
+            self.provider_operation(operation)
+        };
+        let Some(operation) = operation else {
             return;
+        };
+        let operation = match operation {
+            SessionOperation::QueueReplace {
+                entries,
+                current_entry_id,
+                playback,
+            } => {
+                let start = current_entry_id
+                    .as_deref()
+                    .and_then(|id| entries.iter().position(|entry| entry.entry_id == id))
+                    .unwrap_or(0);
+                SessionOperation::QueueReplace {
+                    entries: self.defer_long_tail(entries, start).await,
+                    current_entry_id,
+                    playback,
+                }
+            }
+            other => other,
         };
         let in_transit = self.server_now().saturating_sub(accepted_at_ms);
         let operation = shift_position(
@@ -992,7 +1053,7 @@ impl<B: ProviderBridge> Worker<B> {
     /// its queue lacks the unavailable entries. `None` if it doesn't concern
     /// the provider at all.
     fn provider_operation(&self, operation: &SessionOperation) -> Option<SessionOperation> {
-        let unavailable = |id: &String| self.unavailable.contains(id);
+        let unavailable = |id: &String| self.lacks(id);
         match operation {
             SessionOperation::QueueRemove { entry_id }
             | SessionOperation::QueueMove { entry_id, .. }
@@ -1004,7 +1065,7 @@ impl<B: ProviderBridge> Worker<B> {
             // Session indices count entries the provider doesn't have.
             // Translate to the provider's queue rather than replacing it,
             // which would restart the current track (verified live on TIDAL).
-            SessionOperation::QueueInsert { entry, .. } if !self.unavailable.is_empty() => Some(
+            SessionOperation::QueueInsert { entry, .. } if self.has_missing() => Some(
                 self.provider_index(&entry.entry_id)
                     .map(|index| SessionOperation::QueueInsert {
                         entry: entry.clone(),
@@ -1012,7 +1073,7 @@ impl<B: ProviderBridge> Worker<B> {
                     })
                     .unwrap_or_else(|| self.provider_queue_replace(None)),
             ),
-            SessionOperation::QueueMove { entry_id, .. } if !self.unavailable.is_empty() => Some(
+            SessionOperation::QueueMove { entry_id, .. } if self.has_missing() => Some(
                 self.provider_index(entry_id)
                     .map(|to_index| SessionOperation::QueueMove {
                         entry_id: entry_id.clone(),
@@ -1021,11 +1082,118 @@ impl<B: ProviderBridge> Worker<B> {
                     .unwrap_or_else(|| self.provider_queue_replace(None)),
             ),
             // Don't make the provider search again for entries it can't find.
-            SessionOperation::QueueReplace { playback, .. } if !self.unavailable.is_empty() => {
+            SessionOperation::QueueReplace { playback, .. } if self.has_missing() => {
                 Some(self.provider_queue_replace(*playback))
             }
             other => Some(other.clone()),
         }
+    }
+
+    /// Whether the provider's queue leaves `entry_id` out: it can't find it,
+    /// or it is still being looked up.
+    fn lacks(&self, entry_id: &str) -> bool {
+        self.unavailable.contains(entry_id) || self.deferred.contains(entry_id)
+    }
+
+    fn has_missing(&self) -> bool {
+        !self.unavailable.is_empty() || !self.deferred.is_empty()
+    }
+
+    fn missing_here(&self) -> HashSet<String> {
+        self.unavailable.union(&self.deferred).cloned().collect()
+    }
+
+    /// Forget a deferral; a lookup still running for it is ignored.
+    fn reset_deferral(&mut self) {
+        self.deferral += 1;
+        self.deferred.clear();
+    }
+
+    /// Of the entries after `entries[start]` (the current one), keep those
+    /// the provider already has and the first [`LOAD_NOW`] it doesn't, and
+    /// look the others up in the background. They are added when that is
+    /// done (`on_prefetched`); meanwhile the provider follows every other
+    /// change. Returns the entries to load now.
+    async fn defer_long_tail(&mut self, entries: Vec<QueueEntry>, start: usize) -> Vec<QueueEntry> {
+        if entries.len() <= start + 1 + LOAD_NOW {
+            return entries;
+        }
+        let known: HashSet<String> = match self.bridge.get_state().await {
+            Ok(local) => local
+                .queue
+                .into_iter()
+                .map(|entry| entry.entry_id)
+                .collect(),
+            Err(_) => HashSet::new(),
+        };
+        let mut now = Vec::with_capacity(start + 1 + LOAD_NOW);
+        let mut later = Vec::new();
+        let mut new_songs = 0;
+        for (index, entry) in entries.into_iter().enumerate() {
+            if index <= start
+                || known.contains(&entry.entry_id)
+                || self.unavailable.contains(&entry.entry_id)
+            {
+                now.push(entry);
+            } else if new_songs < LOAD_NOW {
+                new_songs += 1;
+                now.push(entry);
+            } else {
+                later.push(entry);
+            }
+        }
+        if later.is_empty() {
+            return now;
+        }
+        debug!(
+            now = now.len(),
+            later = later.len(),
+            "Loading the rest of a long list in the background"
+        );
+        self.deferred = later.iter().map(|entry| entry.entry_id.clone()).collect();
+        let deferral = self.deferral;
+        let bridge = self.bridge.clone();
+        let done = self.prefetched_tx.clone();
+        tokio::spawn(async move {
+            let outcome = bridge.prefetch(later).await;
+            let _ = done.send((deferral, outcome));
+        });
+        now
+    }
+
+    /// The background lookup for a deferral is done: add its songs.
+    async fn on_prefetched(&mut self, deferral: u64, outcome: Result<ApplyOutcome>) {
+        if deferral != self.deferral || self.deferred.is_empty() {
+            return; // a newer list or a resync took over
+        }
+        match outcome {
+            Ok(outcome) => self.unavailable.extend(outcome.unavailable_entry_ids),
+            // The provider then looks them up while adding them.
+            Err(error) => warn!(%error, "Looking up the rest of the list failed"),
+        }
+        self.deferred.clear();
+        if self.sync == SyncState::Synced {
+            // Same current song: the provider only adds to its queue.
+            let operation = self.provider_queue_replace(None);
+            match self.bridge.apply_operation(&operation).await {
+                Ok(outcome) => self.unavailable.extend(outcome.unavailable_entry_ids),
+                Err(Error::TrackUnavailable { entry_ids, .. }) => {
+                    self.unavailable.extend(entry_ids);
+                    let current = self.mirror.current_entry_id.clone();
+                    self.wait_for_next_song(current).await;
+                }
+                Err(error) => {
+                    warn!(%error, "Adding the rest of the list failed");
+                    self.notify(Notice::Desynchronized {
+                        message: error.to_string(),
+                    });
+                    self.set_sync(SyncState::Error).await;
+                }
+            }
+        }
+        // Otherwise the next resync loads everything.
+        self.report_unavailable().await;
+        self.publish();
     }
 
     /// Position of `entry_id` in the provider's queue: the number of entries
@@ -1039,7 +1207,7 @@ impl<B: ProviderBridge> Worker<B> {
         Some(
             self.mirror.queue[..position]
                 .iter()
-                .filter(|entry| !self.unavailable.contains(&entry.entry_id))
+                .filter(|entry| !self.lacks(&entry.entry_id))
                 .count(),
         )
     }
@@ -1050,7 +1218,7 @@ impl<B: ProviderBridge> Worker<B> {
                 .mirror
                 .queue
                 .iter()
-                .filter(|entry| !self.unavailable.contains(&entry.entry_id))
+                .filter(|entry| !self.lacks(&entry.entry_id))
                 .cloned()
                 .collect(),
             current_entry_id: self.mirror.current_entry_id.clone(),
@@ -1234,7 +1402,7 @@ impl<B: ProviderBridge> Worker<B> {
                 entries: state::reinsert_unavailable(
                     &entries,
                     &self.mirror.queue,
-                    &self.unavailable,
+                    &self.missing_here(),
                 ),
                 current_entry_id,
                 playback,

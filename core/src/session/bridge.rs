@@ -8,7 +8,7 @@ use tokio::sync::broadcast;
 use crate::{
     Result,
     bridge_controller::{ApplyOutcome, BridgeController, BridgeEvent},
-    protocol::{SessionMusicState, SessionOperation, SessionSnapshot},
+    protocol::{QueueEntry, SessionMusicState, SessionOperation, SessionSnapshot},
 };
 
 /// A connected music provider, seen through the shared session protocol.
@@ -38,6 +38,18 @@ pub trait ProviderBridge: Send + Sync + 'static {
     /// Local provider events, including `BridgeEvent::Operation` for changes
     /// the user made in the music client.
     fn subscribe(&self) -> broadcast::Receiver<BridgeEvent>;
+
+    /// Look `entries` up without touching the queue, alongside other
+    /// changes, so loading them afterwards is quick. Reports the entries
+    /// the provider can't find. Without it the runtime loads long lists
+    /// in one go.
+    fn prefetch(
+        &self,
+        entries: Vec<QueueEntry>,
+    ) -> impl Future<Output = Result<ApplyOutcome>> + Send {
+        let _ = entries;
+        async { Ok(ApplyOutcome::default()) }
+    }
 
     /// Switch off provider features a session can't follow (shuffle, repeat,
     /// autoplay) and return the user's settings, for
@@ -74,6 +86,10 @@ impl ProviderBridge for BridgeController {
 
     fn subscribe(&self) -> broadcast::Receiver<BridgeEvent> {
         BridgeController::subscribe(self)
+    }
+
+    async fn prefetch(&self, entries: Vec<QueueEntry>) -> Result<ApplyOutcome> {
+        BridgeController::prefetch(self, &entries).await
     }
 
     fn prepare_for_session(&self) -> impl Future<Output = Result<Value>> + Send {

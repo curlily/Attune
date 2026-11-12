@@ -77,6 +77,10 @@ struct FakeProvider {
     applied: Mutex<Vec<String>>,
     /// prepare/restore calls, in order, with the settings passed around.
     session_settings: Mutex<Vec<String>>,
+    /// Background lookups wait until this is set (when `hold_prefetch`).
+    hold_prefetch: AtomicBool,
+    /// Entry IDs looked up in the background, per call.
+    prefetched: Mutex<Vec<Vec<String>>>,
 }
 
 impl FakeProvider {
@@ -89,6 +93,8 @@ impl FakeProvider {
             loads: Mutex::new(0),
             applied: Mutex::default(),
             session_settings: Mutex::default(),
+            hold_prefetch: AtomicBool::new(false),
+            prefetched: Mutex::default(),
         })
     }
 
@@ -216,6 +222,24 @@ impl ProviderBridge for FakeProvider {
 
     fn subscribe(&self) -> broadcast::Receiver<BridgeEvent> {
         self.events.subscribe()
+    }
+
+    async fn prefetch(&self, entries: Vec<QueueEntry>) -> Result<ApplyOutcome> {
+        self.prefetched
+            .lock()
+            .unwrap()
+            .push(entries.iter().map(|e| e.entry_id.clone()).collect());
+        while self.hold_prefetch.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let missing = self.missing_titles.lock().unwrap().clone();
+        Ok(ApplyOutcome {
+            unavailable_entry_ids: entries
+                .into_iter()
+                .filter(|e| missing.contains(&e.track.title))
+                .map(|e| e.entry_id)
+                .collect(),
+        })
     }
 
     async fn prepare_for_session(&self) -> Result<serde_json::Value> {
@@ -839,4 +863,106 @@ async fn a_provider_in_an_empty_session_shares_what_it_starts() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(a.status().sync, SyncState::Synced, "no resync");
     assert!(a_provider.playing(), "A was not paused");
+}
+
+#[tokio::test]
+async fn a_long_new_list_loads_in_two_steps_and_changes_dont_wait() {
+    // Looking up 80 songs took 6-15 s live, and every change waited for it.
+    let s = session(&["n15"]).await;
+    let session_id = s.a.credentials().code.clone();
+    s.b_provider.hold_prefetch.store(true, Ordering::SeqCst);
+    let ids: Vec<String> = (1..=20).map(|n| format!("n{n}")).collect();
+    let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let list = music(&id_refs);
+    *s.a_provider.state.lock().unwrap() = list.clone();
+    s.a_provider.emit(Op::QueueReplace {
+        entries: list.queue.clone(),
+        current_entry_id: Some("n1".to_owned()),
+        playback: None,
+    });
+
+    // The current song and the next eight first; the rest in the background.
+    eventually("B loaded the head of the list", || {
+        s.b_provider.ids() == id_refs[..9]
+    })
+    .await;
+    eventually("B looks the rest up", || {
+        s.b_provider.prefetched.lock().unwrap().len() == 1
+    })
+    .await;
+    assert_eq!(s.b_provider.prefetched.lock().unwrap()[0], ids[9..]);
+    assert_eq!(s.b.status().sync, SyncState::Synced);
+
+    // Changes reach B meanwhile, the lookups still running.
+    s.a_provider
+        .local(Op::PlaybackSetPlaying { is_playing: false });
+    eventually("B paused while the rest is looked up", || {
+        !s.b_provider.playing()
+    })
+    .await;
+    s.a_provider.local(Op::QueueInsert {
+        entry: entry("x"),
+        index: 2,
+    });
+    eventually("B queued the insert where B's queue has room", || {
+        s.b_provider.ids().get(2).map(String::as_str) == Some("x")
+    })
+    .await;
+
+    // Then the rest is added, without the song B can't find.
+    s.b_provider.hold_prefetch.store(false, Ordering::SeqCst);
+    let mut expected: Vec<String> = ids.clone();
+    expected.insert(2, "x".to_owned());
+    expected.retain(|id| id != "n15");
+    eventually("B has the whole list", || s.b_provider.ids() == expected).await;
+    eventually("the missing song is reported", || {
+        s.b.status().warnings.iter().any(|w| w.entry_id == "n15")
+    })
+    .await;
+    assert_eq!(s.b_provider.current().as_deref(), Some("n1"));
+    assert!(
+        !s.b_provider.playing(),
+        "adding the rest didn't restart playback"
+    );
+    assert_eq!(s.server.session_state(&session_id).queue.len(), 21);
+}
+
+#[tokio::test]
+async fn skipping_to_a_song_still_being_looked_up_loads_it() {
+    let s = session(&[]).await;
+    s.b_provider.hold_prefetch.store(true, Ordering::SeqCst);
+    let ids: Vec<String> = (1..=20).map(|n| format!("n{n}")).collect();
+    let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let list = music(&id_refs);
+    *s.a_provider.state.lock().unwrap() = list.clone();
+    s.a_provider.emit(Op::QueueReplace {
+        entries: list.queue.clone(),
+        current_entry_id: Some("n1".to_owned()),
+        playback: None,
+    });
+    eventually("B loaded the head of the list", || {
+        s.b_provider.ids() == id_refs[..9]
+    })
+    .await;
+
+    // A skips to the 15th song, which B hasn't loaded yet.
+    s.a_provider.local(Op::PlaybackSelect {
+        entry_id: "n15".to_owned(),
+        position_ms: 5_000,
+        is_playing: true,
+    });
+    eventually("B plays n15", || {
+        s.b_provider.current().as_deref() == Some("n15")
+    })
+    .await;
+    assert_eq!(
+        s.b.status().sync,
+        SyncState::Synced,
+        "no song counted as missing"
+    );
+    s.b_provider.hold_prefetch.store(false, Ordering::SeqCst);
+    eventually("B has the rest of the list after n15", || {
+        s.b_provider.ids() == id_refs[14..]
+    })
+    .await;
 }

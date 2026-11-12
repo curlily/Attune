@@ -32,7 +32,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     Error, Result,
-    protocol::{SessionMusicState, SessionOperation, SessionSnapshot},
+    protocol::{QueueEntry, SessionMusicState, SessionOperation, SessionSnapshot},
     structs::{BrowserPage, PlayState, ProviderConfig, QueueState, Track},
 };
 
@@ -681,6 +681,14 @@ impl BridgeController {
     /// unavailable entries the same way as [`Self::apply_snapshot`].
     pub async fn apply_operation(&self, operation: &SessionOperation) -> Result<ApplyOutcome> {
         self.call_protocol_value("applyOperation", &[serde_json::to_value(operation)?])
+            .await
+    }
+
+    /// Look these entries up without changing the queue, so that loading
+    /// them later is quick. Runs beside queue changes, not after them.
+    /// Reports the entries the provider can't find.
+    pub async fn prefetch(&self, entries: &[QueueEntry]) -> Result<ApplyOutcome> {
+        self.call_protocol_value("prefetch", &[serde_json::to_value(entries)?])
             .await
     }
 
