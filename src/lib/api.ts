@@ -182,6 +182,9 @@ export const events = {
     listen<Notice>("session-notice", (event) => handler(event.payload)),
   onProviderChanged: (handler: (id: ProviderId | null) => void): Promise<UnlistenFn> =>
     listen<ProviderId | null>("provider-changed", (event) => handler(event.payload)),
+  /** The music app went away on its own (closed, or reopened normally). */
+  onProviderLost: (handler: (name: string) => void): Promise<UnlistenFn> =>
+    listen<string>("provider-lost", (event) => handler(event.payload)),
   onJoinLink: (handler: (code: string) => void): Promise<UnlistenFn> =>
     listen<string>("join-link", (event) => handler(event.payload)),
   onWindowShown: (handler: () => void): Promise<UnlistenFn> =>

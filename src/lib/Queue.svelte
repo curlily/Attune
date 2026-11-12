@@ -208,7 +208,7 @@
     height: var(--row);
     padding-right: 6px;
     border-radius: var(--radius);
-    background: var(--bg);
+    background: transparent;
     transition:
       background var(--fast),
       box-shadow var(--fast);

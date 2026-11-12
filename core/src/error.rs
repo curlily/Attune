@@ -16,6 +16,11 @@ pub enum Error {
     #[error("already connected to a music provider")]
     AlreadyConnected,
 
+    /// The music client was closed, or restarted without Attune's debug
+    /// port, after Attune connected to it.
+    #[error("{name} was closed or restarted without Attune's connection")]
+    ProviderClosed { name: String },
+
     // --- Configuration ---------------------------------------------------
     #[error("environment variable {var} is not set")]
     MissingEnv { var: &'static str },

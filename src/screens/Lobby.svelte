@@ -54,6 +54,7 @@
 </script>
 
 <div class="lobby scroll">
+<div class="content" bind:offsetHeight={app.lobbyHeight}>
   <div class="connected">
     <ProviderLogo provider={app.connected} size={16} />
     <span>Connected to {app.providerName}</span>
@@ -121,11 +122,16 @@
     <p class="error-text" transition:slide={{ duration: 160 }}>{error}</p>
   {/if}
 </div>
+</div>
 
 <style>
+  /* The window fits the content (App.svelte); it scrolls only when that
+     would be taller than the full window. */
   .lobby {
     height: 100%;
-    padding: 14px;
+  }
+  .content {
+    padding: 14px 14px 18px;
   }
 
   .connected {

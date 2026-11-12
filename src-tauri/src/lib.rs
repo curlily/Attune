@@ -114,13 +114,15 @@ pub fn run() {
 fn close_session(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
     tauri::async_runtime::block_on(async {
-        let Some(runtime) = state.session.lock().await.take() else {
-            return;
-        };
-        if tokio::time::timeout(Duration::from_secs(3), runtime.close())
-            .await
-            .is_err()
-        {
+        // The lock is inside the bound too: a create or join stuck on an
+        // unresponsive music app holds it, and must not keep Attune open.
+        let closed = tokio::time::timeout(Duration::from_secs(3), async {
+            if let Some(runtime) = state.session.lock().await.take() {
+                runtime.close().await;
+            }
+        })
+        .await;
+        if closed.is_err() {
             tracing::warn!("Closing the session on exit timed out");
         }
     });

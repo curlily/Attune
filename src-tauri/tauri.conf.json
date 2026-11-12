@@ -20,7 +20,7 @@
         "maxWidth": 380,
         "minHeight": 96,
         "maxHeight": 640,
-        "backgroundColor": "#111215",
+        "transparent": true,
         "decorations": false,
         "visible": false,
         "skipTaskbar": false,

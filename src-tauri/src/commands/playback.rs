@@ -1,31 +1,41 @@
 //! Finding and connecting the music app.
 //!
 //! The frontend hears about connection changes through the
-//! `provider-changed` event (the connected [`ProviderId`], or `null`).
+//! `provider-changed` event (the connected [`ProviderId`], or `null`), and
+//! `provider-lost` (the app's name) when the music app goes away on its own.
 
-use std::sync::Arc;
+use std::{
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
 use crate::{error::AppError, state::AppState};
 use attune_core::{
-    bridge_controller::{open_sign_in_window, BridgeController},
+    bridge_controller::{open_sign_in_window, BridgeController, BridgeEvent},
     detect::{detect_providers, provider_config, ProviderAvailability},
     protocol::SessionMusicState,
     structs::{PlayState, ProviderId},
 };
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::sync::broadcast;
 use tracing::{info, warn};
 
 /// The connected provider, without holding the lock across provider calls.
 pub(crate) async fn connected_controller(
     state: &AppState,
 ) -> Result<Arc<BridgeController>, AppError> {
-    state
+    let controller = state
         .controller
         .lock()
         .await
         .clone()
-        .ok_or_else(|| attune_core::Error::NotConnected.into())
+        .ok_or(attune_core::Error::NotConnected)?;
+    // Gone, and about to be let go of (see `watch_for_loss`).
+    if controller.is_closed() {
+        return Err(attune_core::Error::NotConnected.into());
+    }
+    Ok(controller)
 }
 
 /// Connect one provider and remember it for next time. The same mutex guard
@@ -40,8 +50,9 @@ pub(crate) async fn connect(
     if controller_slot.is_some() {
         return Err(attune_core::Error::AlreadyConnected.into());
     }
-    let controller = BridgeController::initialise(provider_config(id)?).await?;
-    *controller_slot = Some(Arc::new(controller));
+    let controller = Arc::new(BridgeController::initialise(provider_config(id)?).await?);
+    watch_for_loss(app.clone(), &controller);
+    *controller_slot = Some(controller);
     drop(controller_slot);
 
     if let Err(error) = state.update_settings(|settings| {
@@ -52,6 +63,60 @@ pub(crate) async fn connect(
     }
     let _ = app.emit("provider-changed", Some(id));
     Ok(())
+}
+
+/// When the music app goes away (closed, or reopened without the debug
+/// port), let go of it: close the session, keeping the seat to rejoin after
+/// reconnecting, and send the user back to the connect screen. Holds only a
+/// weak reference, so a deliberate disconnect isn't kept waiting.
+fn watch_for_loss(app: AppHandle, controller: &Arc<BridgeController>) {
+    let mut events = controller.subscribe();
+    let watched = Arc::downgrade(controller);
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(BridgeEvent::Closed) => break,
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return, // disconnected
+            }
+        }
+        provider_lost(&app, &watched).await;
+    });
+}
+
+async fn provider_lost(app: &AppHandle, watched: &Weak<BridgeController>) {
+    let state = app.state::<AppState>();
+    let controller = {
+        let mut slot = state.controller.lock().await;
+        match (slot.as_ref(), watched.upgrade()) {
+            (Some(current), Some(lost)) if Arc::ptr_eq(current, &lost) => slot.take(),
+            _ => return, // already replaced or disconnected
+        }
+    };
+    let Some(controller) = controller else {
+        return;
+    };
+    let name = provider_config(controller.provider_id())
+        .map(|config| config.display_name)
+        .unwrap_or_else(|_| "Your music app".to_owned());
+    warn!(provider = %name, "Lost the music app");
+
+    // Bounded: a create or join still talking to the dead app holds the
+    // slot until its calls fail.
+    let session = tokio::time::timeout(Duration::from_secs(5), state.session.lock()).await;
+    if let Ok(mut session) = session {
+        if let Some(runtime) = session.take() {
+            if tokio::time::timeout(Duration::from_secs(3), runtime.close())
+                .await
+                .is_err()
+            {
+                warn!("Closing the session after losing the music app timed out");
+            }
+        }
+    }
+    drop(controller);
+    let _ = app.emit("provider-changed", None::<ProviderId>);
+    let _ = app.emit("provider-lost", name);
 }
 
 /// On start: connect the last used provider, but only if that needs no

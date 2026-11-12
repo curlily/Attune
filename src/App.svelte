@@ -2,7 +2,7 @@
   import { onMount, untrack } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
-  import { LogicalSize, getCurrentWindow } from "@tauri-apps/api/window";
+  import { Effect, LogicalSize, getCurrentWindow } from "@tauri-apps/api/window";
   import { FULL_HEIGHT, TINY_HEIGHT, app } from "./lib/app.svelte";
   import { api, errorText } from "./lib/api";
   import Icon from "./lib/Icon.svelte";
@@ -34,14 +34,36 @@
 
   $effect(() => applyTheme(app.theme, app.connected));
 
-  // Only the session view adapts to a shorter window; elsewhere the window
-  // can't be resized at all (it starts that way, see tauri.conf.json).
+  // Acrylic: Windows blurs what's behind the (transparent) window, and the
+  // page's backgrounds turn see-through (app.css, [data-acrylic]).
+  $effect(() => {
+    const on = app.acrylic;
+    document.documentElement.toggleAttribute("data-acrylic", on);
+    const window = getCurrentWindow();
+    (on ? window.setEffects({ effects: [Effect.Acrylic] }) : window.clearEffects()).catch(() => {});
+  });
+
+  // Only the session view can be resized (by the user); elsewhere the
+  // window can't be (it starts that way, see tauri.conf.json). The lobby is
+  // short, so the window fits it instead of showing empty space; other
+  // screens, and a session starting, get the full height.
+  const HEADER_HEIGHT = 44;
   $effect(() => {
     const inSession = app.screen === "jam";
     const window = getCurrentWindow();
-    window.setMinSize(new LogicalSize(380, inSession ? TINY_HEIGHT : FULL_HEIGHT)).catch(() => {});
+    window.setMinSize(new LogicalSize(380, TINY_HEIGHT)).catch(() => {});
     window.setResizable(inSession).catch(() => {});
-    if (!inSession && untrack(() => app.height) < FULL_HEIGHT) void app.setHeight(FULL_HEIGHT);
+    if (inSession) return;
+    const fit = app.screen === "lobby" && !app.showSettings && app.lobbyHeight > 0;
+    void app.setHeight(fit ? Math.min(FULL_HEIGHT, HEADER_HEIGHT + app.lobbyHeight) : FULL_HEIGHT);
+  });
+  let wasInSession = false;
+  $effect(() => {
+    const inSession = app.screen === "jam";
+    if (inSession && !wasInSession && untrack(() => app.height) < FULL_HEIGHT) {
+      void app.setHeight(FULL_HEIGHT);
+    }
+    wasInSession = inSession;
   });
 
   /** The window has no frame: this strip along the bottom resizes it. */
@@ -56,8 +78,22 @@
   });
 
   let title = $derived(
-    app.showSettings ? "Settings" : "Attune",
+    app.showSettings ? "Settings" : app.screen === "jam" ? "Session" : "Attune",
   );
+
+  // Screens rise into place; coming back from Settings (which slides in
+  // from the right) slides back in from the left instead.
+  let backFromSettings = false;
+  $effect.pre(() => {
+    if (app.showSettings) backFromSettings = true;
+  });
+  function screenIntro() {
+    const back = backFromSettings;
+    backFromSettings = false;
+    return back
+      ? { x: -24, duration: 220, easing: cubicOut }
+      : { y: 10, duration: 260, delay: 60, easing: cubicOut };
+  }
 </script>
 
 <div class="window" bind:this={windowElement}>
@@ -122,7 +158,7 @@
         {#key app.screen}
           <div
             class="screen"
-            in:fly={{ y: 10, duration: 260, delay: 60, easing: cubicOut }}
+            in:fly|global={screenIntro()}
             out:fade={{ duration: 80 }}
           >
             {#if app.screen === "firstRun"}

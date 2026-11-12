@@ -141,6 +141,16 @@
     </button>
   </div>
 
+  <button
+    class="switch-row acrylic"
+    role="switch"
+    aria-checked={app.acrylic}
+    onclick={() => app.setAcrylic(!app.acrylic)}
+  >
+    <span class="switch-label">Acrylic background</span>
+    <span class="switch" class:on={app.acrylic}><span></span></span>
+  </button>
+
   <div class="divider"></div>
 
   <p class="section-title">Music app</p>
@@ -213,6 +223,9 @@
     letter-spacing: 0.1em;
   }
 
+  .acrylic {
+    margin-top: 12px;
+  }
   .switch-row + .switch-row {
     margin-top: 12px;
   }

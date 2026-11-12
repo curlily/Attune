@@ -40,6 +40,15 @@
   --slow: 320ms;
 }
 
+/* Acrylic: the window is see-through and Windows blurs the desktop behind
+   it, so the background lets it through and surfaces become tints. */
+:root[data-acrylic] {
+  --bg: rgb(17 18 21 / 0.62);
+  --surface-1: rgb(255 255 255 / 0.04);
+  --surface-2: rgb(255 255 255 / 0.07);
+  --surface-3: rgb(255 255 255 / 0.11);
+}
+
 *,
 *::before,
 *::after {

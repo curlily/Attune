@@ -2,6 +2,10 @@ use std::{
     ffi::OsStr,
     path::Path,
     process::Command,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -60,6 +64,11 @@ pub enum BridgeEvent {
     /// The provider can't follow the session for a while, or can again.
     Interruption(Interruption),
     Error(String),
+    /// Attune lost the music client: it was closed, or restarted without the
+    /// debug port. Sent once; every later call fails with
+    /// [`Error::ProviderClosed`]. Never sent by the page.
+    #[serde(skip)]
+    Closed,
 }
 
 /// Something outside the user's control took over playback, e.g. an
@@ -78,6 +87,9 @@ pub struct BridgeController {
     event_tx: broadcast::Sender<BridgeEvent>,
     handler_task: Option<tokio::task::JoinHandle<()>>,
     event_task: Option<tokio::task::JoinHandle<()>>,
+    /// Set once the music client is gone; see [`BridgeEvent::Closed`].
+    closed: Arc<AtomicBool>,
+    watch_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Ready normally arrives within a second of the reload; the first attempt
@@ -86,6 +98,11 @@ const FIRST_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// A reload that hasn't started navigating by then is retried from the page.
 const RELOAD_FALLBACK_AFTER: Duration = Duration::from_secs(2);
+/// How often the connected client's debug port is checked.
+const WATCH_INTERVAL: Duration = Duration::from_secs(2);
+/// Failed checks in a row before the client counts as gone. The port stays
+/// open through the page's own reloads, so one miss is already unusual.
+const WATCH_MISSES: u32 = 2;
 
 impl BridgeController {
     pub async fn initialise(config: ProviderConfig) -> Result<Self> {
@@ -140,6 +157,8 @@ impl BridgeController {
             event_tx,
             handler_task: None,
             event_task: None,
+            closed: Arc::new(AtomicBool::new(false)),
+            watch_task: None,
         };
 
         controller.connect_cdp().await?;
@@ -170,7 +189,19 @@ impl BridgeController {
             warn!(%error, "Settling the music client after attaching failed");
         }
 
+        controller.watch_task = Some(tokio::spawn(watch_client(
+            WATCH_INTERVAL,
+            controller.config.debugging_port,
+            controller.config.display_name.clone(),
+            controller.closed.clone(),
+            controller.event_tx.clone(),
+        )));
         Ok(controller)
+    }
+
+    /// Whether the music client is gone (see [`BridgeEvent::Closed`]).
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Relaxed)
     }
 
     /// Wait for the app to finish restoring itself after the attach reload,
@@ -584,6 +615,13 @@ impl BridgeController {
     }
 
     pub async fn eval_value(&self, expression: &str) -> Result<Option<Value>> {
+        // A closed client doesn't answer; fail at once instead of waiting
+        // for CDP's own timeout on every call.
+        if self.is_closed() {
+            return Err(Error::ProviderClosed {
+                name: self.config.display_name.clone(),
+            });
+        }
         let page = self.page()?;
         // Marked as a user gesture: browsers refuse to start playback from
         // a script otherwise (verified live with YouTube Music), and the
@@ -694,7 +732,11 @@ impl BridgeController {
 
     /// Dispose the renderer adapter. This does not terminate the music client.
     pub async fn dispose(&mut self) -> Result<()> {
-        if self.page.is_some() {
+        // Disconnecting on purpose isn't the client going away.
+        if let Some(task) = self.watch_task.take() {
+            task.abort();
+        }
+        if self.page.is_some() && !self.is_closed() {
             let _ = self.call_protocol("dispose", &[]).await;
         }
         self.page = None;
@@ -892,9 +934,44 @@ pub fn open_sign_in_window(config: &ProviderConfig) -> Result<()> {
 /// Whether something answers the CDP HTTP endpoint on `debugging_port`.
 async fn debug_port_open(debugging_port: u16) -> bool {
     let url = format!("http://127.0.0.1:{debugging_port}/json/version");
-    reqwest::get(&url)
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+    else {
+        return false;
+    };
+    client
+        .get(&url)
+        .send()
         .await
         .is_ok_and(|response| response.status().is_success())
+}
+
+/// Watch the connected client's debug port. Once it stops answering (the
+/// client was closed, or reopened normally, which starts it without the
+/// port), mark the controller closed and send [`BridgeEvent::Closed`].
+async fn watch_client(
+    interval: Duration,
+    debugging_port: u16,
+    name: String,
+    closed: Arc<AtomicBool>,
+    events: broadcast::Sender<BridgeEvent>,
+) {
+    let mut misses = 0;
+    loop {
+        sleep(interval).await;
+        if debug_port_open(debugging_port).await {
+            misses = 0;
+            continue;
+        }
+        misses += 1;
+        if misses >= WATCH_MISSES {
+            break;
+        }
+    }
+    warn!(provider = %name, "The music client is gone");
+    closed.store(true, Ordering::Relaxed);
+    let _ = events.send(BridgeEvent::Closed);
 }
 
 pub(crate) async fn music_client_running(debugging_port: u16, page_url: &str) -> Result<bool> {
@@ -979,6 +1056,9 @@ async fn kill_music_client(sys: &mut System, path: &Path) -> Result<()> {
 
 impl Drop for BridgeController {
     fn drop(&mut self) {
+        if let Some(task) = self.watch_task.take() {
+            task.abort();
+        }
         if let Some(task) = self.event_task.take() {
             task.abort();
         }
@@ -991,6 +1071,55 @@ impl Drop for BridgeController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in debug port that answers every request with an empty
+    /// JSON object until it's dropped.
+    async fn fake_debug_port() -> (u16, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut request = [0u8; 1024];
+                let _ = socket.read(&mut request).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}")
+                    .await;
+            }
+        });
+        (port, server)
+    }
+
+    #[tokio::test]
+    async fn a_closed_client_is_noticed_once_its_port_stops_answering() {
+        let (port, server) = fake_debug_port().await;
+        let closed = Arc::new(AtomicBool::new(false));
+        let (events, mut received) = broadcast::channel(4);
+        let watcher = tokio::spawn(watch_client(
+            Duration::from_millis(50),
+            port,
+            "Test".to_owned(),
+            closed.clone(),
+            events,
+        ));
+
+        // Still running: nothing happens.
+        sleep(Duration::from_millis(300)).await;
+        assert!(!closed.load(Ordering::Relaxed));
+        assert!(received.try_recv().is_err());
+
+        // Closed (or reopened without the port).
+        server.abort();
+        tokio::time::timeout(Duration::from_secs(5), watcher)
+            .await
+            .expect("the watcher notices")
+            .unwrap();
+        assert!(closed.load(Ordering::Relaxed));
+        assert!(matches!(received.try_recv(), Ok(BridgeEvent::Closed)));
+    }
 
     fn failed_envelope(code: Value, details: Value) -> Value {
         json!({

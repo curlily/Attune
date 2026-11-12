@@ -53,9 +53,13 @@ class App {
   showSettings = $state(false);
   /** The window's height; the session view shows less as it shrinks. */
   height = $state(window.innerHeight);
+  /** The lobby's content height, which the window fits. */
+  lobbyHeight = $state(0);
   pinned = $state(false);
   /** "auto" takes the connected music app's colour. */
   theme = $state<ThemeChoice>(savedTheme());
+  /** Let the desktop show through, blurred (Windows acrylic). */
+  acrylic = $state(readFlag("attune.acrylic"));
   /** Take songs someone in the session can't play out of the queue. */
   autoRemove = $state(readFlag("attune.autoRemove"));
   /** Session view sections folded to their title (remembered). */
@@ -103,6 +107,13 @@ class App {
         this.connected = id;
       }),
       events.onJoinLink((code) => this.#onJoinLink(code)),
+      events.onProviderLost((name) => {
+        this.connected = null;
+        this.showSettings = false;
+        this.toast(`Lost the connection to ${name}. Connect again to keep listening.`, "warning");
+        void this.refreshProviders();
+        void this.refreshRejoin();
+      }),
       events.onWindowShown(() => {
         this.shown++;
       }),
@@ -146,6 +157,11 @@ class App {
       this.#removing.add(warning.entryId);
       api.queueRemove(warning.entryId).catch(() => this.#removing.delete(warning.entryId));
     }
+  }
+
+  setAcrylic(on: boolean) {
+    this.acrylic = on;
+    writeFlag("attune.acrylic", on);
   }
 
   setTheme(theme: ThemeChoice) {
@@ -225,6 +241,7 @@ class App {
   }
 
   async setHeight(height: number) {
+    height = Math.round(height);
     if (height === this.height) return;
     try {
       await getCurrentWindow().setSize(new LogicalSize(window.innerWidth, height));
