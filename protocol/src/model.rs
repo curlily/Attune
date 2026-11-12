@@ -28,6 +28,10 @@ pub struct QueueEntry {
     /// Stable identity of this queue occurrence; duplicates have different IDs.
     pub entry_id: String,
     pub track: TrackDescriptor,
+    /// Display name of who queued it. Set by the server from the sender of
+    /// the change that added it; kept unchanged afterwards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_by: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

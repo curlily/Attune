@@ -207,7 +207,7 @@
 
     function imageUrl(image) {
         if (typeof image !== "string" || !image) return null;
-        if (image.startsWith("http")) return image;
+        if (image.startsWith("http")) return image.startsWith("https://") && image.length <= 1024 ? image : null;
         const id = image.split(":")[2];
         return id ? `https://i.scdn.co/image/${id}` : null;
     }

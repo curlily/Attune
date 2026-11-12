@@ -52,6 +52,7 @@ fn ghost(entry_id: &str) -> QueueEntry {
             duration_ms: None,
             cover_url: None,
         },
+        added_by: None,
     }
 }
 

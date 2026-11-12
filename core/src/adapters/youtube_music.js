@@ -232,6 +232,11 @@
         }
     }
 
+    // The session only takes https art of a sensible length.
+    function coverUrlOf(url) {
+        return typeof url === "string" && url.startsWith("https://") && url.length <= 1024 ? url : null;
+    }
+
     function descriptorOf(item) {
         const renderer = rendererOf(item);
         const { artists, album } = parseByline(renderer?.longBylineText ?? renderer?.shortBylineText);
@@ -242,7 +247,7 @@
             isrc: null,
             album,
             durationMs: parseDuration(runsText(renderer?.lengthText)),
-            coverUrl: renderer?.thumbnail?.thumbnails?.at(-1)?.url ?? null,
+            coverUrl: coverUrlOf(renderer?.thumbnail?.thumbnails?.at(-1)?.url),
         };
     }
 

@@ -2,7 +2,7 @@
 //!
 //! Left click shows or hides the widget next to the icon. The dot tells the
 //! state at a glance without opening anything: green in sync, amber catching
-//! up or waiting, red out of sync, grey stepped out, none outside a jam.
+//! up or waiting, red out of sync, grey stepped out, none outside a session.
 
 use std::sync::Mutex;
 
@@ -74,7 +74,7 @@ pub struct TrayMenu<R: Runtime> {
 pub fn create<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
     let show = MenuItem::with_id(app, "show", "Show Attune", true, None::<&str>)?;
     let follow = MenuItem::with_id(app, "follow", "Step out", false, None::<&str>)?;
-    let leave = MenuItem::with_id(app, "leave", "Leave the jam", false, None::<&str>)?;
+    let leave = MenuItem::with_id(app, "leave", "Leave the session", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Attune", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
@@ -137,7 +137,7 @@ fn on_menu<R: Runtime>(app: &AppHandle<R>, id: &str) {
     }
 }
 
-/// Show `sync` (`None`: not in a jam) on the icon and in the menu.
+/// Show `sync` (`None`: not in a session) on the icon and in the menu.
 pub fn set_status<R: Runtime>(app: &AppHandle<R>, sync: Option<SyncState>) {
     let status = TrayStatus::from_sync(sync);
     let Some(menu) = app.try_state::<TrayMenu<R>>() else {

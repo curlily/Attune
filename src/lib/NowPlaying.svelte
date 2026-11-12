@@ -4,6 +4,8 @@
   import { app } from "./app.svelte";
   import { currentCover, livePosition } from "./current.svelte";
   import Icon from "./Icon.svelte";
+  import Marquee from "./Marquee.svelte";
+  import { api, errorText } from "./api";
   import { formatTime, ownBadge } from "./status";
 
   let { status }: { status: RuntimeStatus } = $props();
@@ -13,6 +15,19 @@
   let warning = $derived(status.warnings.find((w) => w.songsAhead === 0));
   const cover = currentCover(() => status);
   const playback = livePosition(() => status);
+
+  let skipping = $state(false);
+  async function skip() {
+    if (!current) return;
+    skipping = true;
+    try {
+      await api.queueRemove(current.entryId);
+    } catch (error) {
+      app.toast(errorText(error), "error");
+    } finally {
+      skipping = false;
+    }
+  }
 </script>
 
 <section class="now">
@@ -28,8 +43,10 @@
   <div class="meta">
     {#if current}
       {#key current.entryId}
-        <p class="title" in:fade={{ duration: 220 }}>{current.track.title}</p>
-        <p class="artist" in:fade={{ duration: 220, delay: 40 }}>{current.track.artists.join(", ")}</p>
+        <p class="title" in:fade={{ duration: 220 }}><Marquee>{current.track.title}</Marquee></p>
+        <p class="artist" in:fade={{ duration: 220, delay: 40 }}>
+          <Marquee>{current.track.artists.join(", ")}</Marquee>
+        </p>
       {/key}
     {:else}
       <p class="title">Nothing queued</p>
@@ -38,13 +55,12 @@
 </section>
 
 {#if current}
-  <div class="progress" aria-hidden="true">
-    <div class="bar" style:width="{playback.fraction * 100}%"></div>
-  </div>
-  <div class="times">
-    <span>{formatTime(playback.position)}</span>
-    {#if !status.playback.isPlaying}<span class="paused">Paused</span>{/if}
-    <span>{playback.duration ? formatTime(playback.duration) : ""}</span>
+  <div class="timeline" class:paused={!status.playback.isPlaying} title={status.playback.isPlaying ? undefined : "Paused"}>
+    <span class="time">{formatTime(playback.position)}</span>
+    <div class="progress" aria-hidden="true">
+      <div class="bar" style:width="{playback.fraction * 100}%"></div>
+    </div>
+    <span class="time">{playback.duration ? formatTime(playback.duration) : "–:––"}</span>
   </div>
 {/if}
 
@@ -61,14 +77,21 @@
 {/if}
 
 {#if warning && warning.missingFor.length}
-  <p class="warning"><Icon name="alert" size={13} /> {warning.missingFor.join(", ")} can't play this song</p>
+  <p class="warning">
+    <Icon name="alert" size={13} />
+    <span class="who">{warning.missingFor.join(", ")} can't play this song</span>
+    {#if !app.autoRemove}
+      <button class="skip" onclick={skip} aria-busy={skipping} disabled={skipping}>
+        <Icon name="skip" size={12} /> Skip
+      </button>
+    {/if}
+  </p>
 {/if}
 
 <style>
   /* Laid out in the session view's column: never squeezed by the lists. */
   .now,
-  .progress,
-  .times,
+  .timeline,
   .badge,
   p.warning {
     flex: none;
@@ -121,9 +144,25 @@
     font-weight: 600;
   }
 
-  .progress {
-    height: 3px;
+  .timeline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     margin-top: 12px;
+    color: var(--text-3);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .time {
+    flex: none;
+    min-width: 28px;
+  }
+  .time:last-child {
+    text-align: right;
+  }
+  .progress {
+    flex: 1;
+    height: 3px;
     overflow: hidden;
     border-radius: 2px;
     background: var(--surface-3);
@@ -132,17 +171,10 @@
     height: 100%;
     border-radius: 2px;
     background: var(--accent);
+    transition: background var(--base);
   }
-  .times {
-    display: flex;
-    justify-content: space-between;
-    margin-top: 4px;
-    color: var(--text-3);
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-  }
-  .paused {
-    color: var(--text-2);
+  .timeline.paused .bar {
+    background: var(--text-3);
   }
 
   .badge {
@@ -194,5 +226,33 @@
     gap: 6px;
     margin: 8px 0 0;
     font-size: 12px;
+  }
+  .who {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .skip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: none;
+    height: 22px;
+    padding: 0 8px;
+    border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+    border-radius: var(--radius-sm);
+    background: var(--warning-tint);
+    color: var(--warning);
+    font-size: 11.5px;
+    font-weight: 600;
+    transition: background var(--fast);
+  }
+  .skip:hover {
+    background: color-mix(in srgb, var(--warning) 22%, transparent);
+  }
+  .skip:disabled {
+    opacity: 0.6;
   }
 </style>

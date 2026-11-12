@@ -79,6 +79,7 @@ fn entry(id: &str) -> QueueEntry {
             duration_ms: Some(200_000),
             cover_url: None,
         },
+        added_by: None,
     }
 }
 

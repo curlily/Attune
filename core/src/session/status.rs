@@ -87,6 +87,8 @@ pub struct UnavailableWarning {
 pub struct QueueItem {
     pub entry_id: String,
     pub track: TrackDescriptor,
+    /// Display name of who queued it, when known.
+    pub added_by: Option<String>,
     /// False if this client's provider couldn't find it.
     pub playable_here: bool,
 }

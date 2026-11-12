@@ -13,9 +13,9 @@
   };
 </script>
 
-<!-- The mini view is too small for messages; its dots show the state. -->
+<!-- The tiny view is too small for messages; its dots show the state. -->
 <div class="toasts" aria-live="polite">
-  {#each app.mini ? [] : app.toasts as toast (toast.id)}
+  {#each app.tiny ? [] : app.toasts as toast (toast.id)}
     <div
       class="toast {toast.tone}"
       animate:flip={{ duration: 200 }}

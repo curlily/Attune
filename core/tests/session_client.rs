@@ -44,6 +44,7 @@ fn entry(id: &str) -> QueueEntry {
             duration_ms: Some(200_000),
             cover_url: None,
         },
+        added_by: None,
     }
 }
 
@@ -636,6 +637,7 @@ async fn two_clients_mirror_the_server_state() {
         events: broadcast::Receiver<SessionEvent>,
         mirror: SessionMusicState,
         applied: u64,
+        name: &'static str,
     }
     impl Follower {
         /// Apply every remote operation that has arrived so far.
@@ -658,6 +660,8 @@ async fn two_clients_mirror_the_server_state() {
 
         async fn submit(&mut self, operation: Op) {
             self.drain();
+            // As the runtime does: who queued what travels in the operation.
+            let operation = state::stamp_added_by(&self.mirror, operation, Some(self.name));
             match self
                 .client
                 .submit_operation(operation.clone(), self.applied)
@@ -683,12 +687,14 @@ async fn two_clients_mirror_the_server_state() {
             events: a_start.events,
             mirror: a_start.snapshot.state,
             applied: 0,
+            name: "User a",
         },
         Follower {
             client: b,
             events: b_start.events,
             mirror: b_start.snapshot.state,
             applied: 0,
+            name: "User b",
         },
     ];
 

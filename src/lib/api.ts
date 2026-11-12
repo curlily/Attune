@@ -75,6 +75,8 @@ export interface Track {
 export interface QueueItem {
   entryId: string;
   track: Track;
+  /** Display name of who queued it. */
+  addedBy?: string | null;
   playableHere: boolean;
 }
 
@@ -124,9 +126,9 @@ interface PlayState {
 // Server refusals people run into, in plain words. Commands reject with the
 // full technical cause chain, which names the error code.
 const FRIENDLY: [string, string][] = [
-  ["(InvalidCredentials)", "There's no jam with that code. Check the letters and try again."],
+  ["(InvalidCredentials)", "There's no session with that code. Check the letters and try again."],
   ["(RateLimited)", "Too many wrong codes. Try again in a minute."],
-  ["(SessionFull)", "That jam is full."],
+  ["(SessionFull)", "That session is full."],
   ["(ServerBusy)", "The server is busy right now. Try again later."],
   ["(UnsupportedVersion)", "This version of Attune is too old or too new for the server."],
 ];
@@ -160,6 +162,8 @@ export const api = {
   resync: () => invoke<void>("resync"),
   queueMove: (entryId: string, toIndex: number) => invoke<void>("queue_move", { entryId, toIndex }),
   queueRemove: (entryId: string) => invoke<void>("queue_remove", { entryId }),
+  /** Play a queued song now, in place of the current one. */
+  queuePlayNow: (entryId: string) => invoke<void>("queue_play_now", { entryId }),
   getSessionStatus: () => invoke<RuntimeStatus | null>("get_session_status"),
   getJoinCode: () => invoke<string>("get_join_code"),
 

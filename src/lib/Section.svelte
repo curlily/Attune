@@ -11,8 +11,17 @@
     title,
     count,
     grow = false,
+    maxHeight,
     children,
-  }: { id: string; title: string; count?: number; grow?: boolean; children: Snippet } = $props();
+  }: {
+    id: string;
+    title: string;
+    count?: number;
+    /** Take the room that's left in the column. */
+    grow?: boolean;
+    maxHeight?: string;
+    children: Snippet;
+  } = $props();
 
   let storageKey = $derived(`attune.section.${id}.collapsed`);
   // Sections keep their id; read the remembered state once.
@@ -57,7 +66,7 @@
   }
 </script>
 
-<section class:grow={grow && !collapsed}>
+<section class:grow={grow && !collapsed} style:max-height={maxHeight}>
   <button class="head" aria-expanded={!collapsed} onclick={toggle}>
     <span class="section-title">{title}{count !== undefined ? ` · ${count}` : ""}</span>
     <span class="chevron" class:collapsed><Icon name="chevron" size={14} /></span>

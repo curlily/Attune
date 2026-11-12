@@ -627,6 +627,7 @@ impl<B: ProviderBridge> Worker<B> {
             .map(|entry| QueueItem {
                 entry_id: entry.entry_id.clone(),
                 track: entry.track.clone(),
+                added_by: entry.added_by.clone(),
                 playable_here: !self.unavailable.contains(&entry.entry_id),
             })
             .collect();
@@ -1098,6 +1099,14 @@ impl<B: ProviderBridge> Worker<B> {
 
     /// Turn a provider-reported change into the session change it means.
     fn session_operation(&self, operation: SessionOperation) -> SessionOperation {
+        // The provider doesn't keep who queued what; take it from the
+        // session, as the server will.
+        let own_name = self
+            .participants
+            .iter()
+            .find(|p| p.client_id == self.client.client_id())
+            .map(|p| p.display_name.as_str());
+        let operation = state::stamp_added_by(&self.mirror, operation, own_name);
         match operation {
             // The provider's queue lacks our unavailable entries; publishing
             // it as-is would delete them for everyone.

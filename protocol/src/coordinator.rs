@@ -382,6 +382,13 @@ impl SessionCoordinator {
             )];
         }
 
+        let sender = self
+            .participants
+            .iter()
+            .find(|p| p.client_id == client_id)
+            .map(|p| p.display_name.clone());
+        let operation = state::stamp_added_by(&self.state, operation, sender.as_deref());
+
         if state::is_noop(&self.state, &operation, now_ms) {
             return vec![Outbound::to_client(
                 client_id,

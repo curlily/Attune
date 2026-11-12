@@ -777,6 +777,15 @@ fn client_mirrors_match_server_state() {
                     } else {
                         &mut mirror_b
                     };
+                    // Who queued what travels in the operation, as clients
+                    // stamp it before sending.
+                    let name = session
+                        .participants()
+                        .iter()
+                        .find(|p| p.client_id == sender)
+                        .map(|p| p.display_name.clone());
+                    let operation =
+                        state::stamp_added_by(mirror, operation.clone(), name.as_deref());
                     *mirror =
                         state::apply(mirror, &operation, accepted_at_ms).expect("sender mirror");
                     seq[sender_index] = sequence;
@@ -1043,4 +1052,55 @@ fn skip_jumps_over_every_unplayable_song_and_pauses_at_the_end() {
     assert!(!session.state().playback.is_playing);
     // Already paused: no further server operations.
     assert_eq!(server_operation(&report(&mut session, "a", &["s3"])), None);
+}
+
+#[test]
+fn queued_entries_carry_their_senders_name() {
+    let mut session = create();
+    join(&mut session, "b");
+
+    // A claimed name is replaced by the sender's own.
+    let mut claimed = entry("n1");
+    claimed.added_by = Some("Someone else".to_owned());
+    session.handle(
+        "b",
+        op(
+            "b-1",
+            0,
+            Op::QueueInsert {
+                entry: claimed,
+                index: 1,
+            },
+        ),
+        T0,
+    );
+    let added = |session: &SessionCoordinator, id: &str| {
+        session
+            .state()
+            .queue
+            .iter()
+            .find(|e| e.entry_id == id)
+            .and_then(|e| e.added_by.clone())
+    };
+    assert_eq!(added(&session, "n1").as_deref(), Some("User b"));
+
+    // Republishing the queue doesn't take songs over.
+    let mut entries = session.state().queue.clone();
+    for entry in &mut entries {
+        entry.added_by = Some("User a".to_owned());
+    }
+    let current_entry_id = session.state().current_entry_id.clone();
+    session.handle(
+        "a",
+        op(
+            "a-1",
+            session.sequence(),
+            Op::QueueReplace {
+                entries,
+                current_entry_id,
+            },
+        ),
+        T0 + 1,
+    );
+    assert_eq!(added(&session, "n1").as_deref(), Some("User b"));
 }

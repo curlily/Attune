@@ -269,6 +269,35 @@ pub async fn queue_remove(state: State<'_, AppState>, entry_id: String) -> Resul
     edit(&state, QueueEdit::Remove { entry_id }).await
 }
 
+/// Play a queued song now: it replaces the current song, which leaves the
+/// queue. Done as two edits (move it up next, remove the current song), so
+/// everyone's music app sees changes it already knows.
+#[tauri::command]
+pub async fn queue_play_now(state: State<'_, AppState>, entry_id: String) -> Result<(), AppError> {
+    let session = state.session.lock().await;
+    let runtime = session.as_ref().ok_or(AppError::NotInSession)?;
+    let queue = runtime.status().queue;
+    let Some(index) = queue.iter().position(|item| item.entry_id == entry_id) else {
+        return Ok(()); // gone already
+    };
+    if index == 0 {
+        return Ok(());
+    }
+    let current = queue[0].entry_id.clone();
+    if index > 1 {
+        runtime
+            .edit_queue(QueueEdit::Move {
+                entry_id,
+                to_index: 1,
+            })
+            .await?;
+    }
+    runtime
+        .edit_queue(QueueEdit::Remove { entry_id: current })
+        .await?;
+    Ok(())
+}
+
 /// Current status, or `null` when not in a session.
 #[tauri::command]
 pub async fn get_session_status(

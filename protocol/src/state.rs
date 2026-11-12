@@ -28,6 +28,8 @@ pub const MAX_QUEUE_ENTRIES: usize = 1000;
 pub const MAX_ENTRY_ID_LEN: usize = 64;
 /// Maximum byte length of titles, artist names and album names.
 pub const MAX_TEXT_LEN: usize = 512;
+/// Maximum byte length of a cover art URL.
+pub const MAX_COVER_URL_LEN: usize = 2048;
 pub const MAX_ARTISTS: usize = 32;
 pub const MAX_ISRC_LEN: usize = 32;
 pub const MAX_DURATION_MS: u64 = 24 * 60 * 60 * 1000;
@@ -107,6 +109,14 @@ pub fn validate_track(track: &TrackDescriptor) -> Result<(), StateError> {
             field: "durationMs",
         });
     }
+    if let Some(url) = &track.cover_url {
+        if !url.starts_with("https://")
+            || url.len() > MAX_COVER_URL_LEN
+            || url.chars().any(|c| c.is_control() || c.is_whitespace())
+        {
+            return Err(StateError::InvalidTrackField { field: "coverUrl" });
+        }
+    }
     Ok(())
 }
 
@@ -114,7 +124,43 @@ pub fn validate_entry(entry: &QueueEntry) -> Result<(), StateError> {
     if entry.entry_id.is_empty() || entry.entry_id.len() > MAX_ENTRY_ID_LEN {
         return Err(StateError::InvalidEntryId);
     }
+    if let Some(name) = &entry.added_by {
+        check_text(name, "addedBy", true)?;
+    }
     validate_track(&entry.track)
+}
+
+/// Record who queued the entries an operation adds: entries already in the
+/// queue keep what they have, new ones get `added_by`. The server applies it
+/// with the sender's name, so nobody can queue in someone else's name;
+/// clients apply it with their own so their edits match what the server
+/// accepts.
+pub fn stamp_added_by(
+    state: &SessionMusicState,
+    operation: SessionOperation,
+    added_by: Option<&str>,
+) -> SessionOperation {
+    let stamp = |mut entry: QueueEntry| {
+        entry.added_by = match state.queue.iter().find(|e| e.entry_id == entry.entry_id) {
+            Some(existing) => existing.added_by.clone(),
+            None => added_by.map(str::to_owned),
+        };
+        entry
+    };
+    match operation {
+        SessionOperation::QueueInsert { entry, index } => SessionOperation::QueueInsert {
+            entry: stamp(entry),
+            index,
+        },
+        SessionOperation::QueueReplace {
+            entries,
+            current_entry_id,
+        } => SessionOperation::QueueReplace {
+            entries: entries.into_iter().map(stamp).collect(),
+            current_entry_id,
+        },
+        other => other,
+    }
 }
 
 pub fn validate_state(state: &SessionMusicState) -> Result<(), StateError> {

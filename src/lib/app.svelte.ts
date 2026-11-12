@@ -24,7 +24,11 @@ export interface Toast {
 }
 
 const TOAST_MS = 5000;
-const MINI_HEIGHT = 96;
+/** The window's full height; it can be made shorter, down to TINY_HEIGHT. */
+export const FULL_HEIGHT = 640;
+export const TINY_HEIGHT = 96;
+/** Below this the session shows only the tiny view. */
+const TINY_BELOW = 190;
 
 export const PROVIDER_NAMES: Record<string, string> = {
   Tidal: "TIDAL",
@@ -45,10 +49,13 @@ class App {
   rejoinCode = $state<string | null>(null);
   toasts = $state<Toast[]>([]);
   showSettings = $state(false);
-  mini = $state(false);
+  /** The window's height; the session view shows less as it shrinks. */
+  height = $state(window.innerHeight);
   pinned = $state(false);
   /** "auto" takes the connected music app's colour. */
   theme = $state<ThemeChoice>(savedTheme());
+  /** Take songs someone in the session can't play out of the queue. */
+  autoRemove = $state(readFlag("attune.autoRemove"));
   /** Join code from a attune:// link, joined as soon as the lobby can. */
   linkCode = $state<string | null>(null);
   /** Bumped each time the window is shown, to replay the opening animation. */
@@ -57,7 +64,10 @@ class App {
   #nextToast = 1;
   /** Counts status events, so a slower command result can't undo a newer one. */
   #statusEvents = 0;
-  #fullSize: LogicalSize | null = null;
+  /** Height to go back to from the tiny view. */
+  #heightBeforeTiny = FULL_HEIGHT;
+  /** Entries already asked to be removed, so each is asked for once. */
+  #removing = new Set<string>();
 
   screen: Screen = $derived.by(() => {
     if (!this.loaded) return "loading";
@@ -71,7 +81,14 @@ class App {
     return this.connected ? PROVIDER_NAMES[this.connected] : "your music app";
   }
 
+  /** The session in its smallest form: song, listeners' dots, a few buttons. */
+  get tiny(): boolean {
+    return this.screen === "jam" && this.height < TINY_BELOW;
+  }
+
   async init() {
+    this.height = window.innerHeight;
+    window.addEventListener("resize", () => (this.height = window.innerHeight));
     await Promise.all([
       events.onStatus((status) => this.#onStatus(status)),
       events.onNotice((notice) => this.#onNotice(notice)),
@@ -100,6 +117,25 @@ class App {
     if (link) this.#onJoinLink(link);
   }
 
+  setAutoRemove(on: boolean) {
+    this.autoRemove = on;
+    writeFlag("attune.autoRemove", on);
+    this.#removeUnplayable();
+  }
+
+  /**
+   * With auto-remove on, take out every queued song someone can't play.
+   * Others with it on may ask too; a song already gone is no error.
+   */
+  #removeUnplayable() {
+    if (!this.autoRemove || !this.status) return;
+    for (const warning of this.status.warnings) {
+      if (!warning.missingFor.length || this.#removing.has(warning.entryId)) continue;
+      this.#removing.add(warning.entryId);
+      api.queueRemove(warning.entryId).catch(() => this.#removing.delete(warning.entryId));
+    }
+  }
+
   setTheme(theme: ThemeChoice) {
     this.theme = theme;
     saveTheme(theme);
@@ -112,7 +148,7 @@ class App {
 
   #onJoinLink(code: string) {
     if (this.screen === "jam") {
-      if (this.code !== code) this.toast(`Leave this jam first to join ${code}.`, "warning");
+      if (this.code !== code) this.toast(`Leave this session first to join ${code}.`, "warning");
       return;
     }
     this.linkCode = code;
@@ -153,7 +189,7 @@ class App {
     }
     this.status = null;
     this.code = null;
-    await this.setMini(false);
+    await this.setHeight(FULL_HEIGHT);
   }
 
   toast(text: string, tone: Tone = "info") {
@@ -166,20 +202,20 @@ class App {
     this.toasts = this.toasts.filter((toast) => toast.id !== id);
   }
 
-  /** Shrink the window to the mini view, or restore it. */
-  async setMini(on: boolean) {
-    if (on === this.mini) return;
-    const window = getCurrentWindow();
+  /** Snap to the tiny view, or back to the height it had before. */
+  async toggleTiny() {
+    if (this.tiny) {
+      await this.setHeight(this.#heightBeforeTiny);
+    } else {
+      this.#heightBeforeTiny = this.height;
+      await this.setHeight(TINY_HEIGHT);
+    }
+  }
+
+  async setHeight(height: number) {
+    if (height === this.height) return;
     try {
-      if (on) {
-        const factor = await window.scaleFactor();
-        this.#fullSize = (await window.innerSize()).toLogical(factor);
-        this.mini = true;
-        await window.setSize(new LogicalSize(this.#fullSize.width, MINI_HEIGHT));
-      } else {
-        this.mini = false;
-        await window.setSize(this.#fullSize ?? new LogicalSize(380, 640));
-      }
+      await getCurrentWindow().setSize(new LogicalSize(window.innerWidth, height));
     } catch (error) {
       this.toast(errorText(error), "error");
     }
@@ -191,11 +227,12 @@ class App {
       // The session is over for us; back to the lobby.
       this.status = null;
       this.code = null;
-      void this.setMini(false);
+      void this.setHeight(FULL_HEIGHT);
       void this.refreshRejoin();
       return;
     }
     this.status = status;
+    this.#removeUnplayable();
   }
 
   #onNotice(notice: Notice) {
@@ -220,6 +257,22 @@ class App {
         this.toast(notice.reason === "left" ? "You left the session" : "The session has ended", "info");
         break;
     }
+  }
+}
+
+function readFlag(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeFlag(key: string, on: boolean) {
+  try {
+    localStorage.setItem(key, on ? "1" : "0");
+  } catch {
+    // Applies until Attune restarts.
   }
 }
 

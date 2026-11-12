@@ -3,6 +3,7 @@
   import { app } from "../lib/app.svelte";
   import { currentCover, livePosition } from "../lib/current.svelte";
   import Icon from "../lib/Icon.svelte";
+  import Marquee from "../lib/Marquee.svelte";
   import { ownBadge, participantBadge } from "../lib/status";
 
   let status = $derived(app.status);
@@ -24,8 +25,8 @@
       {/if}
     </div>
     <div class="song" data-tauri-drag-region>
-      <span class="title" data-tauri-drag-region>{current?.track.title ?? "Nothing queued"}</span>
-      <span class="artist" data-tauri-drag-region>{current?.track.artists.join(", ") ?? ""}</span>
+      <Marquee class="title">{current?.track.title ?? "Nothing queued"}</Marquee>
+      <Marquee class="artist">{current?.track.artists.join(", ") ?? ""}</Marquee>
       <span class="separator"></span>
       <span class="dots" data-tauri-drag-region>
         {#each status.participants as person (person.clientId)}
@@ -46,7 +47,7 @@
       >
         <Icon name="pin" label="Pin" />
       </button>
-      <button class="icon-btn" title="Full view" onclick={() => app.setMini(false)}>
+      <button class="icon-btn" title="Full view" onclick={() => app.toggleTiny()}>
         <Icon name="expand" label="Full view" />
       </button>
     </div>
@@ -119,10 +120,10 @@
     white-space: nowrap;
     text-overflow: ellipsis;
   }
-  .title {
+  .song :global(.title) {
     font-weight: 600;
   }
-  .artist {
+  .song :global(.artist) {
     color: var(--text-2);
     font-size: 12px;
   }

@@ -21,6 +21,7 @@ pub fn entry(id: &str) -> QueueEntry {
     QueueEntry {
         entry_id: id.to_owned(),
         track: track(&format!("Song {id}")),
+        added_by: None,
     }
 }
 

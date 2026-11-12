@@ -65,7 +65,7 @@
     <div class="rejoin" transition:slide={{ duration: 200 }}>
       <div>
         <p class="title">Rejoin {app.rejoinCode}?</p>
-        <p class="muted">You were in this jam when Attune closed.</p>
+        <p class="muted">You were in this session when Attune closed.</p>
       </div>
       <div class="rejoin-actions">
         <button
@@ -90,7 +90,7 @@
   {/if}
 
   <section>
-    <p class="section-title">Join a jam</p>
+    <p class="section-title">Join a session</p>
     <CodeInput
       bind:value={code}
       disabled={busy !== null}
@@ -113,7 +113,7 @@
     {#if busy === "create"}
       <span class="spinner"></span> Starting…
     {:else}
-      Start a new jam with your current queue
+      Start a new session with your current queue
     {/if}
   </button>
 

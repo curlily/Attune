@@ -4,6 +4,7 @@
   import { api, errorText, type QueueItem, type RuntimeStatus } from "./api";
   import { app } from "./app.svelte";
   import Icon from "./Icon.svelte";
+  import Marquee from "./Marquee.svelte";
   import Section from "./Section.svelte";
 
   let { status }: { status: RuntimeStatus } = $props();
@@ -31,6 +32,8 @@
     dy: number;
   }
   let drag = $state<Drag | null>(null);
+  /** The row under the pointer: its long title pans. */
+  let hovered = $state<string | null>(null);
 
   let shown = $derived(order.slice(0, SHOWN));
 
@@ -81,6 +84,19 @@
     }
   }
 
+  async function playNow(item: QueueItem) {
+    holding = true;
+    order = order.filter((entry) => entry.entryId !== item.entryId);
+    try {
+      await api.queuePlayNow(item.entryId);
+    } catch (error) {
+      app.toast(errorText(error), "error");
+    } finally {
+      holding = false;
+      order = status.queue.slice(1);
+    }
+  }
+
   async function remove(item: QueueItem) {
     holding = true;
     order = order.filter((entry) => entry.entryId !== item.entryId);
@@ -120,6 +136,8 @@
       {@const warning = warnings.get(item.entryId)}
       <li
         class:dragging={drag?.entryId === item.entryId}
+        onpointerenter={() => (hovered = item.entryId)}
+        onpointerleave={() => (hovered = null)}
         style:transform="translateY({offset(item)}px)"
         animate:flip={{ duration: drag?.entryId === item.entryId ? 0 : 180 }}
         out:slide={{ duration: 180 }}
@@ -136,15 +154,17 @@
         >
           <Icon name="grip" size={14} />
         </button>
+        <button class="play" title="Play now" onclick={() => playNow(item)}>
         <span class="cover" aria-hidden="true">
           {#if item.track.coverUrl}
             <img src={item.track.coverUrl} alt="" loading="lazy" draggable="false" />
           {:else}
             <Icon name="music" size={14} />
           {/if}
+          <span class="play-mark"><Icon name="play" size={14} /></span>
         </span>
-        <div class="song">
-          <span class="title">{item.track.title}</span>
+        <span class="song">
+          <Marquee class="title" active={hovered === item.entryId && !drag}>{item.track.title}</Marquee>
           <span class="artist">
             {#if !item.playableHere}
               <span class="missing">Not on {app.providerName} for you</span>
@@ -154,7 +174,11 @@
               {item.track.artists.join(", ")}
             {/if}
           </span>
-        </div>
+        </span>
+        {#if item.addedBy}
+          <span class="added">added by {item.addedBy}</span>
+        {/if}
+        </button>
         {#if warning || !item.playableHere}
           <span class="flag" title="Not everyone can play this"><Icon name="alert" size={14} /></span>
         {/if}
@@ -182,7 +206,7 @@
     align-items: center;
     gap: 6px;
     height: var(--row);
-    padding-right: 2px;
+    padding-right: 6px;
     border-radius: var(--radius);
     background: var(--bg);
     transition:
@@ -223,6 +247,51 @@
     cursor: grabbing;
   }
 
+  .play {
+    min-width: 0;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    text-align: left;
+  }
+  .play-mark {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    background: rgb(0 0 0 / 0.5);
+    color: #fff;
+    opacity: 0;
+    transition: opacity var(--fast);
+  }
+  .play:hover .play-mark,
+  .play:focus-visible .play-mark {
+    opacity: 1;
+  }
+  .added {
+    flex: none;
+    max-width: 40%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--text-3);
+    font-size: 11.5px;
+    opacity: 0;
+    transition: opacity var(--base);
+  }
+  li:hover .added {
+    opacity: 1;
+  }
+  li.dragging .added {
+    opacity: 0;
+  }
+
   .cover {
     position: relative;
     display: grid;
@@ -255,7 +324,7 @@
     white-space: nowrap;
     text-overflow: ellipsis;
   }
-  .title {
+  .song :global(.title) {
     font-weight: 600;
   }
   .artist {

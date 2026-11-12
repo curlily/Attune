@@ -92,6 +92,7 @@ pub fn run() {
             commands::session::resync,
             commands::session::queue_move,
             commands::session::queue_remove,
+            commands::session::queue_play_now,
             commands::session::get_session_status,
             commands::session::get_join_code,
             window::set_window_pinned,

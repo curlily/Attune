@@ -9,6 +9,11 @@
   let status = $derived(app.status!);
   // Stepped out or broken: the main action is getting back in.
   let canResync = $derived(status.sync === "steppedOut" || status.sync === "error");
+  // A shorter window shows less: listeners go first, then the queue, then
+  // these buttons; below that App shows the tiny view.
+  let showListeners = $derived(app.height >= 520);
+  let showQueue = $derived(app.height >= 400);
+  let showFooter = $derived(app.height >= 290);
   let busy = $state(false);
   let confirmLeave = $state(false);
   let confirmTimer: ReturnType<typeof setTimeout> | undefined;
@@ -40,11 +45,16 @@
   <div class="jam">
     <div class="body">
       <NowPlaying {status} />
-      <div class="divider"></div>
-      <Queue {status} />
-      <div class="divider"></div>
-      <Listeners {status} />
+      {#if showQueue}
+        <div class="divider"></div>
+        <Queue {status} />
+      {/if}
+      {#if showListeners}
+        <div class="divider"></div>
+        <Listeners {status} />
+      {/if}
     </div>
+    {#if showFooter}
     <footer>
       <button
         class="btn"
@@ -61,6 +71,7 @@
         {confirmLeave ? "Leave the session?" : "Leave"}
       </button>
     </footer>
+    {/if}
   </div>
 {/if}
 
@@ -76,11 +87,6 @@
     flex-direction: column;
     min-height: 0;
     padding: 14px 14px 12px;
-  }
-  /* The queue takes the room that's left; the listeners stay below it and
-     scroll once they'd take more than about a third. */
-  .body > :global(section:last-child) {
-    max-height: 36%;
   }
 
   .divider {

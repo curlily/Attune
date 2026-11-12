@@ -13,7 +13,8 @@
   let { status }: { status: RuntimeStatus } = $props();
 </script>
 
-<Section id="listeners" title="Listening" count={status.participants.length}>
+<!-- Below the queue, scrolling once it would take more than about a third. -->
+<Section id="listeners" title="Listening" count={status.participants.length} maxHeight="36%">
   <ul>
     {#each status.participants as person (person.clientId)}
       {@const badge = participantBadge(person)}

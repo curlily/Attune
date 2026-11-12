@@ -8,6 +8,9 @@
   let name = $state(app.settings?.displayName ?? "");
   let serverUrl = $state(app.settings?.serverUrl ?? "");
   let error = $state<string | null>(null);
+  // The address is kept out of sight (screen sharing) until asked for.
+  let revealServer = $state(false);
+  let serverInput = $state<HTMLInputElement>();
   let autostart = $state<boolean | null>(null);
   api.getAutostart().then((enabled) => (autostart = enabled), () => (autostart = null));
 
@@ -65,11 +68,34 @@
     <label class="label" for="name">Your name</label>
     <input id="name" class="field" bind:value={name} maxlength="32" autocomplete="off" />
     {#if inJam}
-      <p class="hint">Others see a new name the next time you join a jam.</p>
+      <p class="hint">Others see a new name the next time you join a session.</p>
     {/if}
 
     <label class="label" for="server">Server address</label>
-    <input id="server" class="field mono" bind:value={serverUrl} autocomplete="off" spellcheck="false" />
+    {#if revealServer}
+      <input
+        id="server"
+        class="field mono"
+        bind:this={serverInput}
+        bind:value={serverUrl}
+        autocomplete="off"
+        spellcheck="false"
+      />
+    {:else}
+      <button
+        id="server"
+        type="button"
+        class="field reveal"
+        onclick={async () => {
+          revealServer = true;
+          await Promise.resolve();
+          serverInput?.focus();
+        }}
+      >
+        <span class="dots" aria-hidden="true">••••••••••••••••</span>
+        <span>Click to reveal</span>
+      </button>
+    {/if}
     <p class="hint">Change this only if you run your own Attune server.</p>
 
     {#if error}<p class="error-text" transition:slide={{ duration: 160 }}>{error}</p>{/if}
@@ -90,6 +116,16 @@
   >
     <span class="switch-label">Start with Windows</span>
     <span class="switch" class:on={autostart === true}><span></span></span>
+  </button>
+
+  <button
+    class="switch-row"
+    role="switch"
+    aria-checked={app.autoRemove}
+    onclick={() => app.setAutoRemove(!app.autoRemove)}
+  >
+    <span class="switch-label">Remove songs not everyone has</span>
+    <span class="switch" class:on={app.autoRemove}><span></span></span>
   </button>
 
   <div class="divider"></div>
@@ -161,6 +197,25 @@
     background: var(--border);
   }
 
+  .reveal {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: var(--text-2);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .reveal:hover {
+    color: var(--text);
+  }
+  .reveal .dots {
+    color: var(--text-3);
+    letter-spacing: 0.1em;
+  }
+
+  .switch-row + .switch-row {
+    margin-top: 12px;
+  }
   .switch-row {
     display: flex;
     align-items: center;

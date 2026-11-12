@@ -225,6 +225,7 @@ async fn main() -> Outcome {
             duration_ms: Some(153_000),
             cover_url: None,
         },
+        added_by: None,
     };
     peer.submit(SessionOperation::QueueInsert {
         entry: real.clone(),
@@ -244,6 +245,7 @@ async fn main() -> Outcome {
             duration_ms: None,
             cover_url: None,
         },
+        added_by: None,
     };
     peer.submit(SessionOperation::QueueInsert {
         entry: ghost.clone(),

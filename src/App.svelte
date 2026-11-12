@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
-  import { app } from "./lib/app.svelte";
+  import { LogicalSize, getCurrentWindow } from "@tauri-apps/api/window";
+  import { FULL_HEIGHT, TINY_HEIGHT, app } from "./lib/app.svelte";
   import { api, errorText } from "./lib/api";
   import Icon from "./lib/Icon.svelte";
   import Toasts from "./lib/Toasts.svelte";
@@ -33,6 +34,23 @@
 
   $effect(() => applyTheme(app.theme, app.connected));
 
+  // Only the session view adapts to a shorter window; elsewhere the window
+  // keeps its full height.
+  $effect(() => {
+    const min = app.screen === "jam" ? TINY_HEIGHT : FULL_HEIGHT;
+    getCurrentWindow()
+      .setMinSize(new LogicalSize(380, min))
+      .catch(() => {});
+    if (min > untrack(() => app.height)) void app.setHeight(min);
+  });
+
+  /** The window has no frame: this strip along the bottom resizes it. */
+  function startResize(event: PointerEvent) {
+    if (event.button !== 0 || app.screen !== "jam") return;
+    event.preventDefault();
+    void getCurrentWindow().startResizeDragging("South").catch(() => {});
+  }
+
   onMount(() => {
     app.init().catch((error) => (failure = errorText(error)));
   });
@@ -43,7 +61,7 @@
 </script>
 
 <div class="window" bind:this={windowElement}>
-{#if app.mini && app.screen === "jam"}
+{#if app.tiny}
   <Mini />
 {:else}
   <div class="shell">
@@ -66,8 +84,8 @@
       {/if}
       <span class="spacer" data-tauri-drag-region></span>
       {#if app.screen === "jam" && !app.showSettings}
-        <button class="icon-btn" title="Mini view" onclick={() => app.setMini(true)}>
-          <Icon name="shrink" label="Mini view" />
+        <button class="icon-btn" title="Tiny view" onclick={() => app.toggleTiny()}>
+          <Icon name="shrink" label="Tiny view" />
         </button>
       {/if}
       {#if app.screen !== "loading" && app.screen !== "firstRun"}
@@ -122,13 +140,27 @@
     </main>
   </div>
 {/if}
+{#if app.screen === "jam"}
+  <div class="resize" onpointerdown={startResize} aria-hidden="true"></div>
+{/if}
 </div>
 
 <Toasts />
 
 <style>
   .window {
+    position: relative;
     height: 100%;
+  }
+
+  .resize {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 5;
+    height: 5px;
+    cursor: ns-resize;
   }
 
   .shell {
