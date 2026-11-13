@@ -185,9 +185,12 @@
 <Toasts />
 
 <style>
+  /* A soft wash of the accent from the top, behind the header and the
+     current song, gone by the middle of the window. */
   .window {
     position: relative;
     height: 100%;
+    background: radial-gradient(130% 55% at 50% -8%, var(--glow), transparent 72%);
   }
 
   .resize {
@@ -227,9 +230,9 @@
     gap: 5px;
     height: 24px;
     padding: 0 8px;
-    border: 1px solid var(--border);
+    border: 1px solid color-mix(in oklab, var(--accent) 30%, transparent);
     border-radius: var(--radius-sm);
-    background: var(--surface-1);
+    background: color-mix(in oklab, var(--accent) 8%, transparent);
     color: var(--text-2);
     font: 600 12px var(--font-mono);
     letter-spacing: 0.12em;

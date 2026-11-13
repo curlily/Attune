@@ -81,8 +81,8 @@
   .you {
     padding: 0 6px;
     border-radius: 10px;
-    background: var(--surface-2);
-    color: var(--text-3);
+    background: var(--accent-tint);
+    color: var(--accent);
     font-size: 11px;
   }
   .spacer {

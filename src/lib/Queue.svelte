@@ -214,7 +214,7 @@
       box-shadow var(--fast);
   }
   li:hover {
-    background: var(--surface-1);
+    background: color-mix(in oklab, var(--accent) 7%, transparent);
   }
   li.dragging {
     z-index: 2;

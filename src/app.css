@@ -3,12 +3,16 @@
 :root {
   color-scheme: dark;
 
-  --bg: #111215;
-  --surface-1: #18191d;
-  --surface-2: #1f2126;
-  --surface-3: #282a30;
-  --border: rgb(255 255 255 / 0.07);
-  --border-strong: rgb(255 255 255 / 0.13);
+  /* Neutral greys; the --bg, --surface and --border tokens below are these
+     with a little of the accent mixed in. */
+  --base-bg: #111215;
+  --base-1: #18191d;
+  --base-2: #1f2126;
+  --base-3: #282a30;
+  --base-border: rgb(255 255 255 / 0.07);
+  --base-border-strong: rgb(255 255 255 / 0.13);
+  /* The wash of accent at the top of the window. */
+  --glow-strength: 20%;
 
   --text: #e9eaee;
   --text-2: #a4a8b2;
@@ -38,6 +42,18 @@
   --fast: 120ms;
   --base: 200ms;
   --slow: 320ms;
+
+  /* Colour without being colourful: every grey takes a little of the
+     accent (the music app's colour with the Match theme), so the whole
+     window carries its hue while still reading as neutral. Defined once
+     here; light mode swaps only the --base-* greys underneath. */
+  --bg: color-mix(in oklab, var(--accent) 3%, var(--base-bg));
+  --surface-1: color-mix(in oklab, var(--accent) 5%, var(--base-1));
+  --surface-2: color-mix(in oklab, var(--accent) 7%, var(--base-2));
+  --surface-3: color-mix(in oklab, var(--accent) 9%, var(--base-3));
+  --border: color-mix(in oklab, var(--accent) 22%, var(--base-border));
+  --border-strong: color-mix(in oklab, var(--accent) 22%, var(--base-border-strong));
+  --glow: color-mix(in oklab, var(--accent) var(--glow-strength), transparent);
 }
 
 /* Light mode, when Windows uses it (data-mode is set in App.svelte; Linux
@@ -46,12 +62,13 @@
 :root[data-mode="light"] {
   color-scheme: light;
 
-  --bg: #f4f4f6;
-  --surface-1: #ffffff;
-  --surface-2: #ebebef;
-  --surface-3: #dfe0e6;
-  --border: rgb(0 0 0 / 0.08);
-  --border-strong: rgb(0 0 0 / 0.14);
+  --base-bg: #f4f4f6;
+  --base-1: #ffffff;
+  --base-2: #ebebef;
+  --base-3: #dfe0e6;
+  --base-border: rgb(0 0 0 / 0.08);
+  --base-border-strong: rgb(0 0 0 / 0.14);
+  --glow-strength: 14%;
 
   --text: #17181c;
   --text-2: #4f525b;
@@ -73,16 +90,16 @@
 /* Acrylic: the window is see-through and Windows blurs the desktop behind
    it, so the background lets it through and surfaces become tints. */
 :root[data-acrylic] {
-  --bg: rgb(17 18 21 / 0.62);
-  --surface-1: rgb(255 255 255 / 0.04);
-  --surface-2: rgb(255 255 255 / 0.07);
-  --surface-3: rgb(255 255 255 / 0.11);
+  --base-bg: rgb(17 18 21 / 0.62);
+  --base-1: rgb(255 255 255 / 0.04);
+  --base-2: rgb(255 255 255 / 0.07);
+  --base-3: rgb(255 255 255 / 0.11);
 }
 :root[data-mode="light"][data-acrylic] {
-  --bg: rgb(244 244 246 / 0.6);
-  --surface-1: rgb(255 255 255 / 0.55);
-  --surface-2: rgb(0 0 0 / 0.05);
-  --surface-3: rgb(0 0 0 / 0.09);
+  --base-bg: rgb(244 244 246 / 0.6);
+  --base-1: rgb(255 255 255 / 0.55);
+  --base-2: rgb(0 0 0 / 0.05);
+  --base-3: rgb(0 0 0 / 0.09);
 }
 
 *,
