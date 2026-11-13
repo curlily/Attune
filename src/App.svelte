@@ -4,7 +4,7 @@
   import { cubicOut } from "svelte/easing";
   import { LogicalSize, getCurrentWindow } from "@tauri-apps/api/window";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import { FULL_HEIGHT, TINY_HEIGHT, app } from "./lib/app.svelte";
+  import { FULL_HEIGHT, TINY_HEIGHT, WINDOW_WIDTH, app } from "./lib/app.svelte";
   import { api, errorText } from "./lib/api";
   import Icon from "./lib/Icon.svelte";
   import Logo from "./lib/Logo.svelte";
@@ -51,7 +51,7 @@
   $effect(() => {
     const inSession = app.screen === "jam";
     const window = getCurrentWindow();
-    window.setMinSize(new LogicalSize(380, TINY_HEIGHT)).catch(() => {});
+    window.setMinSize(new LogicalSize(WINDOW_WIDTH, TINY_HEIGHT)).catch(() => {});
     window.setResizable(inSession).catch(() => {});
     if (inSession) return;
     const fit = app.screen === "lobby" && !app.showSettings && app.lobbyHeight > 0;

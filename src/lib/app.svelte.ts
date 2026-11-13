@@ -26,6 +26,8 @@ export interface Toast {
 }
 
 const TOAST_MS = 5000;
+/** The window's width (logical px), always: tauri.conf.json fixes it too. */
+export const WINDOW_WIDTH = 380;
 /** The window's full height; it can be made shorter, down to TINY_HEIGHT. */
 export const FULL_HEIGHT = 640;
 export const TINY_HEIGHT = 96;
@@ -101,6 +103,8 @@ class App {
 
   async init() {
     this.height = window.innerHeight;
+    // Put a window that came up the wrong width back to the right one.
+    if (window.innerWidth !== WINDOW_WIDTH) void this.setHeight(window.innerHeight || FULL_HEIGHT);
     this.mode = systemMode();
     watchSystemMode((mode) => (this.mode = mode));
     window.addEventListener("resize", () => (this.height = window.innerHeight));
@@ -240,11 +244,16 @@ class App {
     }
   }
 
+  /**
+   * Resize to `height`, always at the fixed width. Never read the width
+   * back from the page: early in start-up the web view can report a much
+   * smaller one, and sending that back locked a friend's window at a sliver.
+   */
   async setHeight(height: number) {
     height = Math.round(height);
-    if (height === this.height) return;
+    if (height === this.height && window.innerWidth === WINDOW_WIDTH) return;
     try {
-      await getCurrentWindow().setSize(new LogicalSize(window.innerWidth, height));
+      await getCurrentWindow().setSize(new LogicalSize(WINDOW_WIDTH, height));
     } catch (error) {
       this.toast(errorText(error), "error");
     }
