@@ -5,8 +5,8 @@ use std::collections::HashSet;
 use attune_protocol::{
     ReplacePlayback, SessionOperation as Op,
     state::{
-        MAX_QUEUE_ENTRIES, StateError, apply, is_noop, position_at, reinsert_unavailable, stamp_added_by,
-        validate_state,
+        MAX_QUEUE_ENTRIES, StateError, apply, is_noop, position_at, reinsert_unavailable,
+        stamp_added_by, validate_state,
     },
 };
 use common::{DURATION_MS, empty, entry, ids, state};
@@ -802,6 +802,9 @@ fn republished_entries_keep_the_sessions_track_and_queuer() {
     assert_eq!(entries[0].added_by.as_deref(), Some("Lily"));
     assert_eq!(entries[1].track, session.queue[1].track);
     // A new entry is described by whoever adds it.
-    assert_eq!(entries[2].track.cover_url.as_deref(), Some("https://yt3.googleusercontent.com/c"));
+    assert_eq!(
+        entries[2].track.cover_url.as_deref(),
+        Some("https://yt3.googleusercontent.com/c")
+    );
     assert_eq!(entries[2].added_by.as_deref(), Some("Zoe"));
 }

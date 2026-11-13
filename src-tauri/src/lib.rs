@@ -5,6 +5,7 @@ mod settings;
 mod state;
 mod theme;
 mod tray;
+mod updates;
 mod window;
 
 use std::time::Duration;
@@ -44,12 +45,14 @@ pub fn run() {
             Some(vec![HIDDEN_ARG]),
         ))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(window::on_event)
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             app.manage(AppState::new(data_dir));
             app.manage(window::WindowState::default());
             app.manage(links::PendingJoin::default());
+            app.manage(updates::PendingUpdate::default());
             tray::create(app.handle())?;
             theme::follow_taskbar(app.handle());
 
@@ -76,6 +79,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::settings::get_settings,
             commands::settings::update_settings,
+            updates::check_for_update,
+            updates::install_update,
+            updates::skip_update,
             commands::playback::get_providers,
             commands::playback::connect_provider,
             commands::playback::open_provider_sign_in,

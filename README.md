@@ -31,6 +31,41 @@ WebSocket peer (`core/tests/support`), and the real server driven by the real
 client (`server/tests/e2e.rs`). `npm test` runs the mocked TIDAL, Spotify,
 YouTube Music and Apple Music adapter tests. None of these replace a live test with the installed desktop clients.
 
+CI runs these on every push to master ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+
+## Releases and updates
+
+Releases are Windows NSIS installers on the
+[GitHub releases page](https://github.com/curlily/Attune/releases), built by
+[`.github/workflows/release.yml`](.github/workflows/release.yml) when a `v*.*.*` tag
+is pushed. To release, from Git Bash on a clean master:
+
+```sh
+scripts/release.sh 0.2.0
+```
+
+It sets the version in `tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json`,
+commits, opens your editor for the tag message (first line a title, the rest the
+release notes shown in the app) and pushes master and the tag.
+
+Installed copies check `latest.json` on the latest release a few seconds after
+launch (not in development builds) and offer the update: **Update and restart**,
+**Later**, or **Skip this version**. Nothing is downloaded until the user chooses
+to update. Settings has **Check for updates**, which also shows skipped versions.
+Updates are signed. The app refuses one that doesn't match the public key in
+`tauri.conf.json`.
+
+The repository needs these Actions secrets:
+
+| Secret | What |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | Contents of the update signing key (`npx tauri signer generate`) |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Its password (empty if it has none) |
+| `ATTUNE_DEFAULT_SERVER_URL` | The relay release builds connect to by default |
+
+If the signing key is lost, installed copies can't update anymore. They'd have
+to install the next version by hand. Keep a backup of it.
+
 ## Running the relay server
 
 ```sh

@@ -731,7 +731,11 @@ impl<B: ProviderBridge> Worker<B> {
             if !in_queue.contains(entry.entry_id.as_str()) {
                 continue; // the app's own songs, e.g. while stepped out
             }
-            if let Some(cover) = entry.track.cover_url.filter(|url| url.starts_with("https://")) {
+            if let Some(cover) = entry
+                .track
+                .cover_url
+                .filter(|url| url.starts_with("https://"))
+            {
                 self.local_covers.insert(entry.entry_id, cover);
             }
         }

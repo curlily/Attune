@@ -4,6 +4,7 @@
   import { app } from "../lib/app.svelte";
   import Icon from "../lib/Icon.svelte";
   import ProviderLogo from "../lib/ProviderLogo.svelte";
+  import { updates } from "../lib/updates.svelte";
 
   let name = $state(app.settings?.displayName ?? "");
   let serverUrl = $state(app.settings?.serverUrl ?? "");
@@ -43,6 +44,18 @@
       savedTimer = setTimeout(() => (saved = false), 2000);
     } catch (failure) {
       error = errorText(failure);
+    }
+  }
+
+  /** After "Check for updates": a found update shows its own offer. */
+  let updateResult = $state<string | null>(null);
+  async function checkUpdates() {
+    updateResult = null;
+    try {
+      const found = await updates.check();
+      updateResult = found ? null : "You have the latest version.";
+    } catch (failure) {
+      updateResult = errorText(failure);
     }
   }
 
@@ -156,6 +169,25 @@
       <span class="muted">Not connected</span>
     {/if}
   </div>
+
+  <div class="divider"></div>
+
+  <p class="section-title">Updates</p>
+  <div class="app-row">
+    <span>Attune {updates.version ?? ""}</span>
+    <span class="spacer"></span>
+    <button
+      class="btn small"
+      aria-busy={updates.checking}
+      disabled={updates.checking || updates.installing}
+      onclick={checkUpdates}
+    >
+      {updates.checking ? "Checking…" : "Check for updates"}
+    </button>
+  </div>
+  {#if updateResult}
+    <p class="hint" transition:slide={{ duration: 160 }}>{updateResult}</p>
+  {/if}
 </div>
 
 <style>

@@ -35,14 +35,22 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "nsis"
+    ],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
   },
   "plugins": {
     "deep-link": {
@@ -50,6 +58,15 @@
         "schemes": [
           "attune"
         ]
+      }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMyNzAzQ0Q3OEFFMUY0MjIKUldRaTlPR0sxenh3TXRLcXp0R3E3YU5KMmlNUHAwVzlWcUdaSHZkNzFNT0JPY0VqcjVMRGd0NkQK",
+      "endpoints": [
+        "https://github.com/curlily/Attune/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

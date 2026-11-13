@@ -18,6 +18,10 @@ pub enum AppError {
     NoSavedSession,
     #[error("could not change starting with Windows: {0}")]
     Autostart(String),
+    #[error("updating failed: {0}")]
+    Update(String),
+    #[error("there is no update to install; check again")]
+    NoUpdate,
 }
 
 /// Join an error and all of its sources: "outer: middle: root cause".

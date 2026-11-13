@@ -995,9 +995,13 @@ async fn covers_come_from_this_computers_app_and_the_session_otherwise() {
     let b_provider = FakeProvider::new(&["x1"]);
     b_provider.covers_from("b.example");
     b_provider.missing("s3");
-    let b = SessionRuntime::join(b_provider.clone(), config(&server, "b"), a.credentials().clone())
-        .await
-        .expect("join");
+    let b = SessionRuntime::join(
+        b_provider.clone(),
+        config(&server, "b"),
+        a.credentials().clone(),
+    )
+    .await
+    .expect("join");
 
     let covers = |runtime: &SessionRuntime| -> Vec<Option<String>> {
         runtime
@@ -1020,7 +1024,11 @@ async fn covers_come_from_this_computers_app_and_the_session_otherwise() {
     .await;
     assert_eq!(
         covers(&a),
-        [cover("a.example", "s1"), cover("a.example", "s2"), cover("a.example", "s3")]
+        [
+            cover("a.example", "s1"),
+            cover("a.example", "s2"),
+            cover("a.example", "s3")
+        ]
     );
     // The session itself keeps the cover of the provider that queued it.
     let session_id = a.credentials().code.clone();
@@ -1033,7 +1041,10 @@ async fn covers_come_from_this_computers_app_and_the_session_otherwise() {
     // app has the song, then its own.
     let mut added = entry("s4");
     added.track.cover_url = cover("b.example", "s4");
-    b_provider.local(Op::QueueInsert { entry: added, index: 2 }); // B lacks s3
+    b_provider.local(Op::QueueInsert {
+        entry: added,
+        index: 2,
+    }); // B lacks s3
     let cover_of = |runtime: &SessionRuntime, id: &str| {
         runtime
             .status()

@@ -9,6 +9,8 @@
   import Icon from "./lib/Icon.svelte";
   import Logo from "./lib/Logo.svelte";
   import Toasts from "./lib/Toasts.svelte";
+  import UpdateOffer from "./lib/UpdateOffer.svelte";
+  import { updates } from "./lib/updates.svelte";
   import FirstRun from "./screens/FirstRun.svelte";
   import Connect from "./screens/Connect.svelte";
   import Lobby from "./screens/Lobby.svelte";
@@ -74,6 +76,7 @@
 
   onMount(() => {
     app.init().catch((error) => (failure = errorText(error)));
+    void updates.init();
   });
 
   let title = $derived(
@@ -180,6 +183,7 @@
 {/if}
 </div>
 
+<UpdateOffer />
 <Toasts />
 
 <style>

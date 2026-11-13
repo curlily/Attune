@@ -29,6 +29,19 @@ export interface Settings {
   lastProvider: ProviderId | null;
   listeningOffsetMs: number;
   clientId: string;
+  skippedUpdateVersion: string | null;
+}
+
+export interface UpdateInfo {
+  version: string;
+  currentVersion: string;
+  /** Release notes, if the release has any. */
+  notes: string | null;
+}
+
+export interface UpdateProgress {
+  downloaded: number;
+  total: number | null;
 }
 
 export interface SettingsUpdate {
@@ -172,6 +185,12 @@ export const api = {
   /** A join code from a attune:// link not handled yet. */
   takeJoinLink: () => invoke<string | null>("take_join_link"),
   getAutostart: () => invoke<boolean>("get_autostart"),
+
+  /** A newer release, if there is one. `automatic`: the quiet check on launch. */
+  checkForUpdate: (automatic: boolean) => invoke<UpdateInfo | null>("check_for_update", { automatic }),
+  /** Download and install what the last check found, then restart. */
+  installUpdate: () => invoke<void>("install_update"),
+  skipUpdate: (version: string) => invoke<void>("skip_update", { version }),
   setAutostart: (enabled: boolean) => invoke<boolean>("set_autostart", { enabled }),
 };
 
@@ -187,6 +206,8 @@ export const events = {
     listen<string>("provider-lost", (event) => handler(event.payload)),
   onJoinLink: (handler: (code: string) => void): Promise<UnlistenFn> =>
     listen<string>("join-link", (event) => handler(event.payload)),
+  onUpdateProgress: (handler: (progress: UpdateProgress) => void): Promise<UnlistenFn> =>
+    listen<UpdateProgress>("update-progress", (event) => handler(event.payload)),
   onWindowShown: (handler: () => void): Promise<UnlistenFn> =>
     listen("window-shown", () => handler()),
 };

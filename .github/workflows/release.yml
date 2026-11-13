@@ -1,0 +1,76 @@
+# Builds and publishes a release when a version tag (v1.2.3) is pushed.
+# scripts/release.sh bumps the version, tags and pushes.
+#
+# Secrets:
+#   TAURI_SIGNING_PRIVATE_KEY           signs the update (the app checks it
+#                                       against the public key in tauri.conf.json)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password (may be empty)
+#   ATTUNE_DEFAULT_SERVER_URL           the relay the app connects to by default
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag, version and secrets
+        shell: bash
+        env:
+          ATTUNE_DEFAULT_SERVER_URL: ${{ secrets.ATTUNE_DEFAULT_SERVER_URL }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match tauri.conf.json version $version"
+            exit 1
+          fi
+          if [ -z "$ATTUNE_DEFAULT_SERVER_URL" ] || [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::Set the ATTUNE_DEFAULT_SERVER_URL and TAURI_SIGNING_PRIVATE_KEY secrets"
+            exit 1
+          fi
+
+      # The tag's message becomes the release notes shown in the update offer.
+      - name: Read the release notes
+        shell: bash
+        run: |
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          {
+            echo "RELEASE_NOTES<<__NOTES__"
+            git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME"
+            echo "__NOTES__"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: npm ci
+
+      # Builds the NSIS installer, signs the update and publishes the
+      # release with latest.json, which installed copies check on launch.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          ATTUNE_DEFAULT_SERVER_URL: ${{ secrets.ATTUNE_DEFAULT_SERVER_URL }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Attune ${{ github.ref_name }}
+          releaseBody: ${{ env.RELEASE_NOTES }}
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true

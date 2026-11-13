@@ -44,6 +44,8 @@ pub struct Settings {
     /// Identifies this installation to the server, so a restarted Attune can
     /// take its old seat back. Not secret: everyone in a session sees it.
     pub client_id: String,
+    /// An update the user chose to skip: not offered on launch again.
+    pub skipped_update_version: Option<String>,
 }
 
 impl Default for Settings {
@@ -54,6 +56,7 @@ impl Default for Settings {
             last_provider: None,
             listening_offset_ms: 0,
             client_id: new_client_id(),
+            skipped_update_version: None,
         }
     }
 }
