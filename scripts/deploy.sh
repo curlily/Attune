@@ -4,15 +4,24 @@
 #   scripts/deploy.sh            build HEAD on the server, swap it in, restart
 #   scripts/deploy.sh rollback   put the previous binary back and restart
 #
-# Settings (environment): ATTUNE_HOST (default user@relay-host)
+# Settings: ATTUNE_HOST=user@host, from the environment or from the ignored
+# file scripts/deploy.env (one line: ATTUNE_HOST=user@host).
 #
 # The server keeps running while the new build compiles; only the restart
 # interrupts it, and that ends every live session (sessions are in memory).
 set -euo pipefail
 
-HOST="${ATTUNE_HOST:-user@relay-host}"
-HEALTH_URL="http://${HOST#*@}:8787/healthz"
 cd "$(dirname "$0")/.."
+if [ -z "${ATTUNE_HOST:-}" ] && [ -f scripts/deploy.env ]; then
+  # shellcheck disable=SC1091
+  source scripts/deploy.env
+fi
+if [ -z "${ATTUNE_HOST:-}" ]; then
+  echo "Set ATTUNE_HOST=user@host (or put it in scripts/deploy.env)." >&2
+  exit 1
+fi
+HOST="$ATTUNE_HOST"
+HEALTH_URL="http://${HOST#*@}:8787/healthz"
 
 health() {
   for _ in 1 2 3 4 5; do

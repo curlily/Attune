@@ -28,3 +28,7 @@ dist-ssr
 
 # Browser profile for YouTube Music (holds the Google sign-in)
 /EdgeProfile/
+
+# Local-only settings that name the relay host (kept out of the public repo)
+/.cargo/config.toml
+/scripts/deploy.env

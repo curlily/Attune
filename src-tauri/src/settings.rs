@@ -17,8 +17,14 @@ use tracing::warn;
 
 use crate::error::AppError;
 
-/// The relay Attune connects to unless the user picks another.
-pub const DEFAULT_SERVER_URL: &str = "ws://relay-host:8787/ws";
+/// The relay Attune connects to unless the user picks another. Builds take
+/// it from `ATTUNE_DEFAULT_SERVER_URL` (set in CI, or locally in the ignored
+/// `.cargo/config.toml`) so the public relay's address isn't in the source;
+/// without it, a local relay.
+pub const DEFAULT_SERVER_URL: &str = match option_env!("ATTUNE_DEFAULT_SERVER_URL") {
+    Some(url) => url,
+    None => "ws://127.0.0.1:8787/ws",
+};
 /// Upper end of the listening offset setting.
 pub const MAX_LISTENING_OFFSET_MS: u32 = 1_000;
 

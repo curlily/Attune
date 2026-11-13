@@ -61,10 +61,23 @@ they share one join-attempt limit; raise `ATTUNE_JOIN_ATTEMPTS_PER_MINUTE` there
 
 ### Deploying to the relay host
 
-The public relay (`relay-host`, user `<user>`) runs as a systemd **user** service,
-`attune`, defined in [`server/deploy/attune.service`](server/deploy/attune.service).
-No root is needed; lingering is enabled for its user, so it starts at boot and is
-restarted if it crashes.
+The public relay runs as a systemd **user** service, `attune`, defined in
+[`server/deploy/attune.service`](server/deploy/attune.service). No root is needed;
+lingering is enabled for its user, so it starts at boot and is restarted if it
+crashes.
+
+The relay's address is kept out of the repository. The deploy script reads
+`ATTUNE_HOST=user@host` from the environment or from `scripts/deploy.env`
+(ignored by git), and the desktop app takes its default server from
+`ATTUNE_DEFAULT_SERVER_URL` at build time: a GitHub Actions secret for releases,
+and for local builds the ignored `.cargo/config.toml`:
+
+```toml
+[env]
+ATTUNE_DEFAULT_SERVER_URL = "ws://<relay>:8787/ws"
+```
+
+Without it, builds default to a local relay (`ws://127.0.0.1:8787/ws`).
 
 From Git Bash in the repo, after committing:
 
@@ -87,7 +100,7 @@ systemctl --user restart attune
 tail -f ~/attune/server.log
 ```
 
-Set `ATTUNE_HOST=user@host` to deploy somewhere else; that host needs Rust installed
+Any host works the same way; it needs Rust installed
 (`rustup`) and, for start at boot, `loginctl enable-linger <user>`.
 
 ### Exposing it with Cloudflare Tunnel
