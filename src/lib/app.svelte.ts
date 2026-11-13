@@ -40,13 +40,15 @@ const TINY_BELOW = 190;
  * without growing the window, so one page pixel can be more than one
  * logical pixel; sized in logical pixels the page overflowed and wrapped.
  * The page's devicePixelRatio carries the display scale and the text
- * scale; the window's scale factor only the display's.
+ * scale; the window's scale factor only the display's. Either way round:
+ * checked with WebView2 forced to 1.0 and to 1.5 on a 1.25 display, the
+ * page got its 380 px both times and the lobby fit.
  */
 export async function windowSize(width: number, height: number): Promise<LogicalSize> {
   const display = await getCurrentWindow()
     .scaleFactor()
     .catch(() => window.devicePixelRatio);
-  const text = Math.min(3, Math.max(1, window.devicePixelRatio / display));
+  const text = Math.min(3, Math.max(0.5, window.devicePixelRatio / display));
   return new LogicalSize(Math.round(width * text), Math.round(height * text));
 }
 
@@ -125,10 +127,9 @@ class App {
     watchSystemMode((mode) => (this.mode = mode));
     window.addEventListener("resize", () => {
       this.height = window.innerHeight;
-      // The Text size setting changed while open: the page grew or shrank
-      // inside the same window, so refit the window to it.
-      if (Math.abs(window.innerWidth - WINDOW_WIDTH) > 1) void this.setHeight(this.height);
+      if (window.devicePixelRatio === this.#ratio) this.#steadyHeight = this.height;
     });
+    this.#refitOnTextSize();
     await Promise.all([
       events.onStatus((status) => this.#onStatus(status)),
       events.onNotice((notice) => this.#onNotice(notice)),
@@ -263,6 +264,30 @@ class App {
       this.#heightBeforeTiny = this.height;
       await this.setHeight(TINY_HEIGHT);
     }
+  }
+
+  /** devicePixelRatio, and the page's height while the window had it. */
+  #ratio = window.devicePixelRatio;
+  #steadyHeight = window.innerHeight;
+
+  /**
+   * The Text size setting changed while open (or the window moved to a
+   * screen with another scale): refit the window so the page keeps its
+   * height. Only a change of devicePixelRatio counts: refitting on every
+   * resize event fought the user dragging the window's edge (the page's
+   * width lags behind the window's mid-drag), so the window flickered and
+   * jumped when let go.
+   */
+  #refitOnTextSize() {
+    matchMedia(`(resolution: ${this.#ratio}dppx)`).addEventListener(
+      "change",
+      () => {
+        this.#ratio = window.devicePixelRatio;
+        void this.setHeight(this.#steadyHeight);
+        this.#refitOnTextSize();
+      },
+      { once: true },
+    );
   }
 
   /**

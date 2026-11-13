@@ -18,8 +18,6 @@ const CATALOG = {
     hotel: { title: "Hotel California", artists: ["Eagles"], album: "Legacy", length: "6:32" },
     lotta: { title: "Whole Lotta Love (Remaster)", artists: ["Led Zeppelin"], album: "Led Zeppelin II", length: "5:35" },
     purple: { title: "Purple Rain", artists: ["Prince & The Revolution"], album: "Purple Rain", length: "8:42" },
-    // TIDAL spells the artist "Brad Breek".
-    gravity: { title: "Gravity Falls Main Title Theme", artists: ["Brad Breeck"], album: "Gravity Falls", length: "0:41" },
 };
 const PLAYER = { UNSTARTED: -1, ENDED: 0, PLAYING: 1, PAUSED: 2, BUFFERING: 3 };
 
@@ -755,7 +753,7 @@ test("A replace with a new song starts it where the replace says (protocol 2)", 
     assert.ok(Math.abs(state.playback.positionMs - 48_000) < 500, `position ${state.playback.positionMs}`);
 }));
 
-test("Remaster tags, a band credit and a misspelt artist still match the same recording", () => withAdapter(async ({ bridge }) => {
+test("Remaster tags and a band credit still match the same recording", () => withAdapter(async ({ bridge }) => {
     // Verified live: 16 of 81 songs of a Spotify rock playlist went missing.
     const track = (title, artists) => ({ title, artists });
     const outcome = await bridge.applySnapshot({
@@ -763,18 +761,14 @@ test("Remaster tags, a band credit and a misspelt artist still match the same re
             { entryId: "e-hotel", track: track("Hotel California - 2013 Remaster", ["Eagles"]) },
             { entryId: "e-lotta", track: track("Whole Lotta Love - 1990 Remaster", ["Led Zeppelin"]) },
             { entryId: "e-purple", track: track("Purple Rain", ["Prince"]) },
-            // One letter off in the artist's name is still the same act...
-            { entryId: "e-gravity", track: track("Gravity Falls Main Title Theme", ["Brad Breek"]) },
-            // ...two letters aren't.
-            { entryId: "e-princess", track: track("Purple Rain", ["Princess"]) },
             // A live recording is a different one: no match.
             { entryId: "e-live", track: track("Hotel California - Live", ["Eagles"]) },
         ],
         currentEntryId: "e-hotel",
         playback: playback(),
     });
-    assert.deepEqual([...outcome.unavailableEntryIds].sort(), ["e-live", "e-princess"]);
-    assert.deepEqual(entryIds(bridge.getState()), ["e-hotel", "e-lotta", "e-purple", "e-gravity"]);
+    assert.deepEqual([...outcome.unavailableEntryIds], ["e-live"]);
+    assert.deepEqual(entryIds(bridge.getState()), ["e-hotel", "e-lotta", "e-purple"]);
 }));
 
 // Verified live: a YouTube Music listener's player stuck loading published a

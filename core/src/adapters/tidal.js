@@ -357,25 +357,12 @@
      * Whether two normalized artist names are the same act. A name that
      * starts with the other one, as whole words, counts: YouTube Music
      * credits "Purple Rain" to "Prince & The Revolution", Spotify to
-     * "Prince" (verified live). So does one letter more, less or
-     * different in a longer name: TIDAL credits the Gravity Falls theme to
-     * "Brad Breek", YouTube Music to "Brad Breeck" (verified live). The
-     * titles must still match. Very short names must match exactly.
+     * "Prince" (verified live). Very short names must match exactly.
      */
     function sameArtist(a, b) {
         if (a === b) return true;
         const [short, long] = a.length < b.length ? [a, b] : [b, a];
-        if (short.length >= 4 && long.startsWith(`${short} `)) return true;
-        return short.length >= 6 && withinOneEdit(short, long);
-    }
-
-    /** Whether `short` becomes `long` by changing, adding or removing one character. */
-    function withinOneEdit(short, long) {
-        if (long.length - short.length > 1) return false;
-        let i = 0;
-        while (i < short.length && short[i] === long[i]) i += 1;
-        const skip = short.length === long.length ? 1 : 0;
-        return short.slice(i + skip) === long.slice(i + 1);
+        return short.length >= 4 && long.startsWith(`${short} `);
     }
 
     function artistOverlap(trackA, trackB) {
