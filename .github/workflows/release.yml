@@ -64,8 +64,10 @@ jobs:
 
       - run: npm ci
 
-      # Builds the NSIS installer, signs the update and publishes the
-      # release with latest.json, which installed copies check on launch.
+      # Builds the NSIS installer, signs the update and uploads both, with
+      # latest.json (what installed copies check on launch), to a draft
+      # release. Published by the next step once everything is there, so
+      # nobody sees a release without its files.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -76,6 +78,12 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: Attune ${{ github.ref_name }}
           releaseBody: ${{ env.RELEASE_NOTES }}
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
+
+      - name: Publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest
