@@ -24,7 +24,8 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror.workspace = true
-tokio.workspace = true
+# io-util: reading and writing frames on the Discord pipe.
+tokio = { workspace = true, features = ["io-util"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tauri-plugin-single-instance = { version = "2.5.5", features = ["deep-link"] }

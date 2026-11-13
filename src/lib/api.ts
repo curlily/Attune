@@ -30,6 +30,8 @@ export interface Settings {
   listeningOffsetMs: number;
   clientId: string;
   skippedUpdateVersion: string | null;
+  /** Show the session's song on your Discord profile. */
+  discordPresence: boolean;
 }
 
 export interface UpdateInfo {
@@ -48,6 +50,7 @@ export interface SettingsUpdate {
   displayName?: string;
   serverUrl?: string;
   listeningOffsetMs?: number;
+  discordPresence?: boolean;
 }
 
 export type SyncState =

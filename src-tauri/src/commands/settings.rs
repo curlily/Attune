@@ -2,6 +2,8 @@
 
 use tauri::State;
 
+use crate::discord::DiscordPresence;
+
 use crate::{
     error::AppError,
     settings::{Settings, SettingsUpdate},
@@ -19,10 +21,13 @@ pub fn get_settings(state: State<'_, AppState>) -> Settings {
 #[tauri::command]
 pub fn update_settings(
     state: State<'_, AppState>,
+    presence: State<'_, DiscordPresence>,
     update: SettingsUpdate,
 ) -> Result<Settings, AppError> {
-    state.update_settings(|settings| {
+    let settings = state.update_settings(|settings| {
         settings.apply(update)?;
         Ok(settings.clone())
-    })
+    })?;
+    presence.set_enabled(settings.discord_presence);
+    Ok(settings)
 }

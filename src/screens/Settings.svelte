@@ -23,6 +23,15 @@
       error = errorText(failure);
     }
   }
+  async function toggleDiscord() {
+    if (!app.settings) return;
+    try {
+      app.settings = await api.updateSettings({ discordPresence: !app.settings.discordPresence });
+    } catch (failure) {
+      error = errorText(failure);
+    }
+  }
+
   let saved = $state(false);
   let savedTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -139,6 +148,19 @@
   >
     <span class="switch-label">Remove songs not everyone has</span>
     <span class="switch" class:on={app.autoRemove}><span></span></span>
+  </button>
+
+  <button
+    class="switch-row"
+    role="switch"
+    aria-checked={app.settings?.discordPresence === true}
+    onclick={toggleDiscord}
+  >
+    <span class="switch-text">
+      <span class="switch-label">Show on Discord</span>
+      <span class="switch-hint">"Listening to" the session's song on your profile</span>
+    </span>
+    <span class="switch" class:on={app.settings?.discordPresence === true}><span></span></span>
   </button>
 
   <div class="divider"></div>
@@ -258,8 +280,17 @@
     background: none;
     text-align: left;
   }
-  .switch-row > .switch-label {
+  .switch-row > .switch-label,
+  .switch-row > .switch-text {
     flex: 1;
+  }
+  .switch-text {
+    display: flex;
+    flex-direction: column;
+  }
+  .switch-hint {
+    color: var(--text-3);
+    font-size: 11.5px;
   }
   .switch-row:disabled {
     opacity: 0.55;

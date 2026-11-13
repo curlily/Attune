@@ -1,4 +1,5 @@
 mod commands;
+mod discord;
 mod error;
 mod links;
 mod settings;
@@ -49,7 +50,10 @@ pub fn run() {
         .on_window_event(window::on_event)
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
-            app.manage(AppState::new(data_dir));
+            let state = AppState::new(data_dir);
+            let discord_presence = state.settings().discord_presence;
+            app.manage(state);
+            app.manage(discord::DiscordPresence::start(discord_presence));
             app.manage(window::WindowState::default());
             app.manage(links::PendingJoin::default());
             app.manage(updates::PendingUpdate::default());

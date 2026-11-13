@@ -218,6 +218,22 @@ Windows app from the Microsoft Store can't be connected to.
 Choose **Open Apple Music** and sign in with your Apple ID in the window that opens.
 Unlike Google, Apple allows signing in there, and the sign-in is remembered.
 
+## Discord
+
+While you're in a session and the Discord desktop app is running, your Discord
+profile shows **Listening to** the session's song, with its artists, cover, a
+progress bar and a **Get Attune** button for others. It goes away when you step
+out, can't play the song, or leave. Turn it off in Settings (**Show on Discord**).
+
+Attune talks to the Discord app on your computer over its local connection
+(`src-tauri/src/discord/`), as the "Attune" application (ID `1570918885920604200`).
+No Discord account is linked, and the join code is never part of the activity.
+To check against a running Discord client:
+
+```sh
+cargo test -p attune --lib discord::live -- --ignored --nocapture
+```
+
 ## How a session works
 
 - **Join code:** creating a session returns a four-letter code (like `KWPZ`; no

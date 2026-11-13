@@ -46,6 +46,8 @@ pub struct Settings {
     pub client_id: String,
     /// An update the user chose to skip: not offered on launch again.
     pub skipped_update_version: Option<String>,
+    /// Show the session's song on your Discord profile.
+    pub discord_presence: bool,
 }
 
 impl Default for Settings {
@@ -57,6 +59,7 @@ impl Default for Settings {
             listening_offset_ms: 0,
             client_id: new_client_id(),
             skipped_update_version: None,
+            discord_presence: true,
         }
     }
 }
@@ -68,6 +71,7 @@ pub struct SettingsUpdate {
     pub display_name: Option<String>,
     pub server_url: Option<String>,
     pub listening_offset_ms: Option<u32>,
+    pub discord_presence: Option<bool>,
 }
 
 impl Settings {
@@ -110,6 +114,9 @@ impl Settings {
         self.display_name = display_name;
         self.server_url = server_url;
         self.listening_offset_ms = listening_offset_ms;
+        if let Some(enabled) = update.discord_presence {
+            self.discord_presence = enabled;
+        }
         Ok(())
     }
 }

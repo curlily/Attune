@@ -11,12 +11,13 @@
 //! is over for this client.
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
 use crate::{
     commands::playback::connected_controller,
+    discord::DiscordPresence,
     error::AppError,
     settings::{RejoinInfo, Store},
     state::AppState,
@@ -48,15 +49,19 @@ fn forward_events(app: AppHandle, store: Store, runtime: &SessionRuntime) {
     let mut status = runtime.watch_status();
     let status_app = app.clone();
     tauri::async_runtime::spawn(async move {
+        let presence = status_app.state::<DiscordPresence>();
         let initial = status.borrow_and_update().clone();
         tray::set_status(&status_app, Some(initial.sync));
+        presence.show_status(Some(&initial));
         let _ = status_app.emit("session-status-changed", initial);
         while status.changed().await.is_ok() {
             let current = status.borrow_and_update().clone();
             tray::set_status(&status_app, Some(current.sync));
+            presence.show_status(Some(&current));
             let _ = status_app.emit("session-status-changed", current);
         }
         tray::set_status(&status_app, None);
+        presence.show_status(None);
         debug!("Session status forwarding stopped");
     });
 
