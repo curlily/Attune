@@ -60,8 +60,6 @@ class App {
   theme = $state<ThemeChoice>(savedTheme());
   /** Light or dark, following the system (always dark on Linux). */
   mode = $state<Mode>(systemMode());
-  /** Let the desktop show through, blurred (Windows acrylic). */
-  acrylic = $state(readFlag("attune.acrylic"));
   /** Take songs someone in the session can't play out of the queue. */
   autoRemove = $state(readFlag("attune.autoRemove"));
   /** Session view sections folded to their title (remembered). */
@@ -161,11 +159,6 @@ class App {
       this.#removing.add(warning.entryId);
       api.queueRemove(warning.entryId).catch(() => this.#removing.delete(warning.entryId));
     }
-  }
-
-  setAcrylic(on: boolean) {
-    this.acrylic = on;
-    writeFlag("attune.acrylic", on);
   }
 
   setTheme(theme: ThemeChoice) {

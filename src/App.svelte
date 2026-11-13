@@ -2,7 +2,8 @@
   import { onMount, untrack } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
-  import { Effect, LogicalSize, getCurrentWindow } from "@tauri-apps/api/window";
+  import { LogicalSize, getCurrentWindow } from "@tauri-apps/api/window";
+  import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { FULL_HEIGHT, TINY_HEIGHT, app } from "./lib/app.svelte";
   import { api, errorText } from "./lib/api";
   import Icon from "./lib/Icon.svelte";
@@ -35,17 +36,11 @@
 
   $effect(() => applyTheme(app.theme, app.connected, app.mode));
 
-  // Acrylic: Windows blurs what's behind the (transparent) window, and the
-  // page's backgrounds turn see-through (app.css, [data-acrylic]). It's
-  // Windows' blur-behind, not its "acrylic" effect: on Windows 11 that one
-  // is a system backdrop, which Windows only draws on windows with a frame,
-  // so on Attune's frameless window it left plain, unblurred transparency.
-  // The tint and grain that make it acrylic come from the page instead.
+  // The window's own background (seen for a moment while it opens or
+  // resizes) matches the page's: tauri.conf.json starts it dark.
   $effect(() => {
-    const on = app.acrylic;
-    document.documentElement.toggleAttribute("data-acrylic", on);
-    const window = getCurrentWindow();
-    (on ? window.setEffects({ effects: [Effect.Blur] }) : window.clearEffects()).catch(() => {});
+    const color: [number, number, number] = app.mode === "light" ? [244, 244, 246] : [17, 18, 21];
+    getCurrentWebviewWindow().setBackgroundColor(color).catch(() => {});
   });
 
   // Only the session view can be resized (by the user); elsewhere the
@@ -195,19 +190,6 @@
     position: relative;
     height: 100%;
     background: radial-gradient(130% 55% at 50% -8%, var(--glow), transparent 72%);
-    /* Its own stacking context, so the grain below can sit behind the
-       content (z-index -1) and never over the text. */
-    isolation: isolate;
-  }
-  /* Acrylic's fine grain over the blur, as Windows draws it. */
-  :global(:root[data-acrylic]) .window::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    z-index: -1;
-    pointer-events: none;
-    opacity: 0.035;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   }
 
   .resize {
