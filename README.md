@@ -55,6 +55,11 @@ to update. Settings has **Check for updates**, which also shows skipped versions
 Updates are signed. The app refuses one that doesn't match the public key in
 `tauri.conf.json`.
 
+The installer's sidebar and header images are drawn as HTML in
+[`src-tauri/installer/`](src-tauri/installer/) and rendered to the BMPs NSIS needs
+(at twice its sizes, so they stay sharp on high-DPI screens) with
+`scripts/render-installer-images.sh`. Commit the BMPs after changing the HTML.
+
 The download page, [curlily.github.io/Attune](https://curlily.github.io/Attune/), is
 the static site in [`site/`](site/), published by
 [`.github/workflows/pages.yml`](.github/workflows/pages.yml) when it changes. Its

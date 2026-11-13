@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- The installer's Welcome/Finish sidebar, at twice NSIS's 164x314 so it
+     stays sharp on high-DPI screens. Rendered by scripts/render-installer-images.sh. -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 328px; height: 628px; overflow: hidden; }
+  body {
+    position: relative;
+    background:
+      radial-gradient(120% 55% at 50% 0%, rgb(123 134 255 / 0.38), transparent 70%),
+      linear-gradient(180deg, #1b1c27 0%, #121318 100%);
+    color: #fff;
+    font-family: "Segoe UI Variable Display", "Segoe UI", sans-serif;
+    text-align: center;
+  }
+  .face { display: block; width: 132px; height: 132px; margin: 150px auto 0; color: #fff; }
+  h1 { margin: 26px 0 0; font-size: 46px; font-weight: 700; letter-spacing: -0.5px; }
+  p { margin: 6px 0 0; color: #a4a8b2; font-size: 21px; font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif; }
+  /* A quiet row of level bars along the bottom. */
+  .bars { position: absolute; left: 0; right: 0; bottom: 46px; display: flex; justify-content: center; align-items: flex-end; gap: 9px; height: 64px; }
+  .bars i { width: 9px; border-radius: 5px; background: rgb(123 134 255 / 0.32); }
+</style>
+</head>
+<body>
+  <svg class="face" viewBox="194 94.5 1544 1544" aria-hidden="true">
+    <g fill="none" stroke="currentColor" stroke-width="170" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M279 882C279 560 330 433 450 433C560 433 680 545 760 638Q966 564 1172 638C1252 545 1372 433 1482 433C1602 433 1653 560 1653 882"/>
+      <path d="M650 990V1250M966 1210V1300M1282 990V1250"/>
+    </g>
+  </svg>
+  <h1>Attune</h1>
+  <p>Listen together</p>
+  <div class="bars">
+    <i style="height:18px"></i><i style="height:34px"></i><i style="height:52px"></i><i style="height:28px"></i>
+    <i style="height:60px"></i><i style="height:40px"></i><i style="height:22px"></i><i style="height:46px"></i>
+    <i style="height:30px"></i><i style="height:14px"></i>
+  </div>
+</body>
+</html>
