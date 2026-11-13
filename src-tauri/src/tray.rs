@@ -195,7 +195,7 @@ pub fn draw_icon(dot: Option<[u8; 3]>, light_taskbar: bool) -> Vec<u8> {
     debug_assert_eq!((base.width(), base.height()), (ICON_SIZE, ICON_SIZE));
     let mut rgba = base.rgba().to_vec();
     if light_taskbar {
-        for pixel in rgba.chunks_exact_mut(4) {
+        for pixel in rgba.as_chunks_mut::<4>().0 {
             pixel[..3].copy_from_slice(&DARK);
         }
     }
