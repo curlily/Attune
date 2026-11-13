@@ -5,9 +5,12 @@
   //
   // Two levels of detail, as in src-tauri/icons: five bars, and below 24 px
   // three bars with heavier strokes (icon.ico's 16 px image and tray.png),
-  // since five bars run together that small. This is the master for those
-  // files: render at the size needed with a transparent background; for the
-  // large icons run `npx tauri icon <1024 px png>`.
+  // since five bars run together that small. Its short middle bar makes the
+  // three read as a cat's eyes and nose as well as a sound wave.
+  //
+  // This is the master for those files: render at the size needed with a
+  // transparent background; for the large icons run
+  // `npx tauri icon <1024 px png>`.
   let { size = 18, border = true }: { size?: number; border?: boolean } = $props();
 
   const HEAD =
@@ -18,7 +21,7 @@
       ring: 84,
       bars: "M523 1083V1227M745 979V1317M966 887V1420M1188 979V1317M1408 1083V1227",
     },
-    small: { stroke: 170, ring: 110, bars: "M650 1040V1290M966 920V1400M1282 1040V1290" },
+    small: { stroke: 170, ring: 110, bars: "M650 1000V1300M966 1110V1190M1282 1000V1300" },
   };
 
   let detail = $derived(size < 24 ? DETAIL.small : DETAIL.full);

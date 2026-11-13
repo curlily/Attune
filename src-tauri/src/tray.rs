@@ -181,7 +181,8 @@ pub fn draw_icon(dot: Option<[u8; 3]>) -> Vec<u8> {
     };
 
     let s = ICON_SIZE as f32;
-    let (dot_center, dot_radius, ring) = (s * 0.80, s * 0.18, s * 0.06);
+    // Tucked into the corner, clear of the right eye.
+    let (dot_center, dot_radius, ring) = (s * 0.845, s * 0.15, s * 0.05);
     for y in 0..ICON_SIZE {
         for x in 0..ICON_SIZE {
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
