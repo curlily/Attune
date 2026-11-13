@@ -29,6 +29,15 @@ if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
   exit 1
 fi
 
+# Start from what's on GitHub (pages edited there, say), or the push fails.
+git fetch -q origin master
+if ! git merge-base --is-ancestor HEAD origin/master; then
+  echo "master has commits that aren't on GitHub, and GitHub has ones that aren't here." >&2
+  echo "Sort that out first (git pull --rebase), then release." >&2
+  exit 1
+fi
+git merge -q --ff-only origin/master
+
 echo "==> Setting the version to $VERSION"
 node -e '
   const fs = require("fs");
@@ -39,10 +48,16 @@ node -e '
 ' "$VERSION"
 npm version "$VERSION" --no-git-tag-version --allow-same-version >/dev/null
 sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" src-tauri/Cargo.toml
-cargo metadata --format-version 1 >/dev/null # updates Cargo.lock
+# Only the workspace's own entries in Cargo.lock change; nothing is downloaded.
+cargo update --workspace --offline -q
 
 git add src-tauri/tauri.conf.json src-tauri/Cargo.toml package.json package-lock.json Cargo.lock
-git commit -q -m "Release v$VERSION"
+# Releasing the version that's already set (the first release) changes nothing.
+if git diff --cached --quiet; then
+  echo "    (already $VERSION)"
+else
+  git commit -q -m "Release v$VERSION"
+fi
 git tag -a "v$VERSION" -e -m "Attune $VERSION"
 
 echo "==> Pushing"

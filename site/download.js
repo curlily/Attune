@@ -16,7 +16,9 @@
     button.href = installer.browser_download_url;
     const version = release.tag_name.replace(/^v/, "");
     const size = (installer.size / 1024 / 1024).toFixed(1);
-    info.textContent = `Version ${version} · ${size} MB · Windows 10 and 11 · Free`;
+    button.title = `Attune ${version} · ${size} MB`;
+    // The page may leave out the line for version details.
+    if (info) info.textContent = `Version ${version} · ${size} MB · Windows 10 and 11 · Free`;
   } catch {
     // Keep the link to the releases page.
   }
