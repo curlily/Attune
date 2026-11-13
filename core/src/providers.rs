@@ -10,9 +10,12 @@ use crate::{
 const TIDAL_CDP_PORT: u16 = 9222;
 const SPOTIFY_CDP_PORT: u16 = 9223;
 const YOUTUBE_MUSIC_CDP_PORT: u16 = 9224;
+const APPLE_MUSIC_CDP_PORT: u16 = 9225;
 
 /// Overrides where the browser profile for YouTube Music is kept.
 const YOUTUBE_MUSIC_PROFILE_ENV: &str = "ATTUNE_YOUTUBE_MUSIC_PROFILE";
+/// Overrides where the browser profile for Apple Music is kept.
+const APPLE_MUSIC_PROFILE_ENV: &str = "ATTUNE_APPLE_MUSIC_PROFILE";
 
 fn env_dir(var: &'static str) -> Result<PathBuf> {
     std::env::var_os(var)
@@ -62,6 +65,30 @@ pub fn youtube_music() -> Result<ProviderConfig> {
         bridge_script: include_str!("adapters/youtube_music.js").to_owned(),
         browser: Some(BrowserPage {
             start_url: "https://music.youtube.com".to_owned(),
+            profile_dir,
+        }),
+    })
+}
+
+/// Apple Music runs as music.apple.com in an installed Chromium browser, in
+/// a profile of its own. Its Windows app (Microsoft Store) is native WinUI
+/// with the player inside its own process, so there is nothing to attach to.
+pub fn apple_music() -> Result<ProviderConfig> {
+    let profile_dir = match std::env::var_os(APPLE_MUSIC_PROFILE_ENV) {
+        Some(dir) => PathBuf::from(dir),
+        None => env_dir("LOCALAPPDATA")?
+            .join("Attune")
+            .join("AppleMusicProfile"),
+    };
+    Ok(ProviderConfig {
+        id: ProviderId::AppleMusic,
+        display_name: "Apple Music".to_owned(),
+        executable_path: chromium_browser(),
+        page_url: "music.apple.com".to_owned(),
+        debugging_port: APPLE_MUSIC_CDP_PORT,
+        bridge_script: include_str!("adapters/apple_music.js").to_owned(),
+        browser: Some(BrowserPage {
+            start_url: "https://music.apple.com".to_owned(),
             profile_dir,
         }),
     })

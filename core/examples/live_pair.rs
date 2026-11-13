@@ -2,7 +2,7 @@
 //!
 //!     cargo run -p attune-core --example live_pair -- daemon ws://127.0.0.1:8787/ws [<host> <guest>]
 //!
-//! Providers are `spotify`, `youtube` and `tidal` (default: spotify youtube).
+//! Providers are `spotify`, `youtube`, `apple` and `tidal` (default: spotify youtube).
 //! Attaches to both clients, creates a session on the host through
 //! `SessionRuntime` (the app's code path) and joins it from the guest.
 //! Every operation either provider publishes and every status change is
@@ -152,6 +152,7 @@ fn provider(name: &str) -> Outcome<(&'static str, ProviderConfig)> {
     Ok(match name {
         "spotify" => ("spotify", providers::spotify()?),
         "youtube" => ("youtube", providers::youtube_music()?),
+        "apple" => ("apple", providers::apple_music()?),
         "tidal" => ("tidal", providers::tidal()?),
         other => return Err(format!("unknown provider {other:?}").into()),
     })

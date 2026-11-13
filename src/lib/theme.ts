@@ -24,6 +24,10 @@ export const PROVIDER_COLORS: Record<string, Record<Mode, ProviderColors>> = {
     dark: { accent: "#ff5266", strong: "#ff0033", onAccent: "#ffffff" },
     light: { accent: "#d4002b", strong: "#ff0033", onAccent: "#ffffff" },
   },
+  applemusic: {
+    dark: { accent: "#ff4e6b", strong: "#fa2d48", onAccent: "#ffffff" },
+    light: { accent: "#d60f2d", strong: "#fa2d48", onAccent: "#ffffff" },
+  },
 };
 
 /** Accepts the Rust ID ("YoutubeMusic") or the participant label ("youtube-music"). */

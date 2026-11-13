@@ -1,7 +1,7 @@
 # Attune
 
 Listen together across music services. Everyone keeps using their own desktop
-client (TIDAL, Spotify or YouTube Music); Attune watches play/pause, seeking, skips and
+client (TIDAL, Spotify, YouTube Music or Apple Music); Attune watches play/pause, seeking, skips and
 queue edits there and mirrors them to everyone else in the session.
 
 ## Workspace
@@ -28,8 +28,8 @@ npm test
 
 `cargo test` includes the coordinator rules, the client against a test-only
 WebSocket peer (`core/tests/support`), and the real server driven by the real
-client (`server/tests/e2e.rs`). `npm test` runs the mocked TIDAL, Spotify and
-YouTube Music adapter tests. None of these replace a live test with the installed desktop clients.
+client (`server/tests/e2e.rs`). `npm test` runs the mocked TIDAL, Spotify,
+YouTube Music and Apple Music adapter tests. None of these replace a live test with the installed desktop clients.
 
 ## Running the relay server
 
@@ -149,6 +149,18 @@ to close it.
 Without a subscription YouTube Music plays advertisements. During one, Attune steps
 out of the session and rejoins when it is over, so you may come back a little into
 the song the others are hearing.
+
+## Using Apple Music
+
+Attune uses Apple Music's web player (music.apple.com), opened the same way as
+YouTube Music: in a window of an installed browser, with a profile of its own. The
+Windows app from the Microsoft Store can't be connected to.
+
+To listen with your account, choose **Sign in first** under Apple Music, sign in with
+your Apple ID, close that window, then choose **Open Apple Music**.
+
+**Full songs need an Apple Music subscription.** Without one, or signed out, the web
+player plays only 90-second previews, which can't keep up with a session.
 
 ## How a session works
 

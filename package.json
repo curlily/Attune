@@ -7,8 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "check:bridges": "node --check core/src/adapters/tidal.js && node --check core/src/adapters/spotify.js && node --check core/src/adapters/youtube_music.js",
-    "test": "node --test core/tests/tidal-bridge.test.mjs core/tests/spotify-bridge.test.mjs core/tests/youtube-music-bridge.test.mjs && npm run check:bridges",
+    "check:bridges": "node --check core/src/adapters/tidal.js && node --check core/src/adapters/spotify.js && node --check core/src/adapters/youtube_music.js && node --check core/src/adapters/apple_music.js",
+    "test": "node --test core/tests/tidal-bridge.test.mjs core/tests/spotify-bridge.test.mjs core/tests/youtube-music-bridge.test.mjs core/tests/apple-music-bridge.test.mjs && npm run check:bridges",
     "tauri": "tauri"
   },
   "devDependencies": {

@@ -151,12 +151,13 @@ async fn main() -> Outcome {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [provider_name, url] = args.as_slice() else {
-        return Err("usage: live_session <tidal|spotify|youtube> <ws-url>".into());
+        return Err("usage: live_session <tidal|spotify|youtube|apple> <ws-url>".into());
     };
     let config = match provider_name.as_str() {
         "tidal" => providers::tidal()?,
         "spotify" => providers::spotify()?,
         "youtube" => providers::youtube_music()?,
+        "apple" => providers::apple_music()?,
         other => return Err(format!("unknown provider {other}").into()),
     };
 

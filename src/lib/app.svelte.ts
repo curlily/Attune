@@ -56,9 +56,11 @@ export const PROVIDER_NAMES: Record<string, string> = {
   Tidal: "TIDAL",
   Spotify: "Spotify",
   YoutubeMusic: "YouTube Music",
+  AppleMusic: "Apple Music",
   tidal: "TIDAL",
   spotify: "Spotify",
   "youtube-music": "YouTube Music",
+  "apple-music": "Apple Music",
 };
 
 class App {

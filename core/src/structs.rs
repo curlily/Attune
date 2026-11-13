@@ -7,6 +7,7 @@ pub enum ProviderId {
     Spotify,
     Tidal,
     YoutubeMusic,
+    AppleMusic,
 }
 
 impl ProviderId {
@@ -16,6 +17,7 @@ impl ProviderId {
             Self::Spotify => "spotify",
             Self::Tidal => "tidal",
             Self::YoutubeMusic => "youtube-music",
+            Self::AppleMusic => "apple-music",
         }
     }
 }

@@ -23,7 +23,7 @@ Calls into the page are evaluated as user gestures, because browsers refuse to s
 
 The Browser, Page, handler task, and event-forwarding task are retained by the controller. `dispose` calls the adapter's cleanup method and aborts both tasks; it does not terminate the music application.
 
-TIDAL uses port `9222`, Spotify `9223` and YouTube Music `9224`. These values are provider configuration, not provider logic in the controller. Keeping them distinct allows both desktop clients to remain open without sharing one Chromium debugging listener.
+TIDAL uses port `9222`, Spotify `9223`, YouTube Music `9224` and Apple Music `9225`. These values are provider configuration, not provider logic in the controller. Keeping them distinct allows both desktop clients to remain open without sharing one Chromium debugging listener.
 
 ## Provider bridge contract v1
 
@@ -120,6 +120,17 @@ The session queue is the current track plus Spotify's queued and playlist ("cont
 - The app's network manager for song search (`/search`) and for queue items by video ID (`/music/get_queue`).
 - `player.adPlaying` in the store, reported as an `Interruption`.
 
+## Apple Music adapter notes
+
+`core/src/adapters/apple_music.js` runs in music.apple.com, opened in a Chromium browser like YouTube Music (the Windows app is native and can't be attached to; see [PROVIDER_ADAPTERS.md](PROVIDER_ADAPTERS.md)). It runs only in the top frame, as the page has a same-origin iframe. It uses the page's MusicKit JS v3 instance, mostly through Apple's documented API (all verified live):
+
+- `setQueue` (with `startPlaying` and `startTime`) to replace the queue and start its current song, `changeToMediaAtIndex` to start a queued one.
+- `playAt`, `playLater` and the queue's `remove` for edits that keep the current song.
+- `play`, `pause`, `seekToTime` (debounced by MusicKit: one seek at a time), `stop` and `clearQueue`.
+- The catalog API (`api.music`) for ISRC lookups (`filter[isrc]`) and song search.
+- `autoplayEnabled`, `repeatMode`, `shuffleMode` and `continuous` for the neutral state.
+- The `<audio id="apple-music-player">` element for millisecond positions and media events, and muted while a paused start begins (MusicKit's volume is put back afterwards).
+
 ## Validation
 
 Run:
@@ -128,4 +139,4 @@ Run:
 npm test
 ```
 
-This runs the mocked TIDAL, Spotify and YouTube Music adapter tests (shared API, skipping tracks the provider can't find, the structured `trackUnavailable` error, paused joins, queue edits that keep the song playing, and that remote applies are not echoed as local operations) plus JavaScript syntax checks for the scripts. The mocks stand in for the providers' private renderer interfaces, so they do not replace a live test against the installed desktop clients. Run `cargo test --workspace` for the Rust side.
+This runs the mocked TIDAL, Spotify, YouTube Music and Apple Music adapter tests (shared API, skipping tracks the provider can't find, the structured `trackUnavailable` error, paused joins, queue edits that keep the song playing, and that remote applies are not echoed as local operations) plus JavaScript syntax checks for the scripts. The mocks stand in for the providers' private renderer interfaces, so they do not replace a live test against the installed desktop clients. Run `cargo test --workspace` for the Rust side.

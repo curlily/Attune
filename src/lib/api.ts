@@ -4,7 +4,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export type ProviderId = "Tidal" | "Spotify" | "YoutubeMusic";
+export type ProviderId = "Tidal" | "Spotify" | "YoutubeMusic" | "AppleMusic";
 
 export interface ProviderAvailability {
   id: ProviderId;

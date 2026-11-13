@@ -45,6 +45,7 @@ pub async fn detect_providers() -> Result<Vec<ProviderAvailability>> {
         providers::tidal()?,
         providers::spotify()?,
         providers::youtube_music()?,
+        providers::apple_music()?,
     ] {
         found.push(detect(&system, &config).await);
     }
@@ -129,6 +130,7 @@ pub fn provider_config(id: ProviderId) -> Result<ProviderConfig> {
         ProviderId::Tidal => providers::tidal(),
         ProviderId::Spotify => providers::spotify(),
         ProviderId::YoutubeMusic => providers::youtube_music(),
+        ProviderId::AppleMusic => providers::apple_music(),
     }
 }
 

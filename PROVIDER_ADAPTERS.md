@@ -1,7 +1,8 @@
 # Provider adapters: known behaviour, problems and plans
 
 Attune controls music apps through their *private* internals (TIDAL's Redux store,
-Spotify's PlayerAPI, YouTube Music's store and player), injected over the Chrome DevTools Protocol. These internals
+Spotify's PlayerAPI, YouTube Music's store and player; for Apple Music, the web player's
+MusicKit JS, which is mostly documented), injected over the Chrome DevTools Protocol. These internals
 are undocumented and full of timing quirks. This file collects everything learned
 about them, what is still broken or unverified, and how to make adapters robust,
 so the next adapter starts from what we know.
@@ -584,7 +585,132 @@ selecting another song 0.9–1.7 s.
     browser from Attune (the code path exists, the test used a window started by hand),
     and the connect screen's sign-in button in the running app.
 
-## 5. Preventing these problems instead of patching them
+## 5. Apple Music
+
+Built and tested live against music.apple.com (MusicKit JS
+`playback/AppleMusic-2646.4.0-external`) in Microsoft Edge 157, **signed out**, by attaching
+over CDP and calling MusicKit directly. The Rust controller attached to it and ran a
+session with YouTube Music (`live_pair`, Apple Music hosting). Not yet run signed in, with a
+subscription, or from the Attune app itself.
+
+### Why the web player and not the Windows app
+
+The Windows app (Microsoft Store, `AppleInc.AppleMusicWin_1.1792.39942.0`) was examined
+first and can't be used:
+
+- It is native WinUI 3 / XAML on Apple's Windows ports of CoreFoundation, AVFoundation and
+  CoreMedia. There is no Chromium and no page, so nothing to attach to over CDP.
+- The player and queue (`Player`, `PlayQueue`, `PlaybackService`, `StartOrQueuePlaybackArgs`
+  in `AMP.Services.dll`) are WinRT classes inside `AppleMusic.exe` only.
+- The only interface it registers for other programs is the COM server in
+  `AMPLibraryAgent.exe` (`AMP.Core.IAMPMusicLibrary`, described in `AMP.Core.winmd`). It
+  covers the library database, fetches and play-count events, not playback or the queue.
+- It ships FairPlay DRM (`CoreFP.dll`, `CoreKE.dll`, `CoreADI.dll`): injecting into it risks
+  anti-tamper checks, and every Store update would break it.
+
+### One-time setup
+
+As for YouTube Music: Attune opens music.apple.com as an app window of an installed
+Chromium browser, in a profile kept only for this (`%LOCALAPPDATA%\Attune\AppleMusicProfile`,
+or `ATTUNE_APPLE_MUSIC_PROFILE`), on debug port `9225`. Signing in goes through the same
+"Sign in first" window without the debug port. Whether Apple's sign-in refuses a debugged
+browser, as Google's does, hasn't been tried.
+
+**Without a subscription (or signed out) the web player plays only 90-second previews**
+(`currentPlaybackDuration` 90, audio from `audio-ssl.itunes.apple.com/…/AudioPreview…`).
+Positions are then preview positions, so such a listener can't really follow a session.
+The connect screen says so. Everything below was verified with previews.
+
+### Verified behaviour
+
+**Where things live**
+- `window.MusicKit.getInstance()`: the page's MusicKit v3 instance, with Apple's documented
+  API: `setQueue`, `play`, `pause`, `seekToTime`, `skipToNextItem`, `changeToMediaAtIndex`,
+  `playNext`, `playLater`, `playAt`, `stop`, `clearQueue`, `autoplayEnabled`, `repeatMode`,
+  `shuffleMode`, `continuous`, `volume`, and `addEventListener` with `MusicKit.Events`.
+- `instance.api.music(path, params)`: the catalog API, authorised with the page's developer
+  token. **Works signed out.**
+- `<audio id="apple-music-player">` in the document: its `currentTime` has milliseconds
+  (MusicKit's `currentPlaybackTime` is whole seconds), and its media events can be caught on
+  `window` in the capture phase.
+- A same-origin iframe (`/includes/commerce/fetch-proxy.html`) also gets every script
+  injected with `evaluate_on_new_document`. MusicKit isn't there, so the adapter waited 30 s
+  for it and then reported an error. **It now runs only in the top frame.**
+- `MusicKit.PlaybackStates`: none 0, loading 1, playing 2, paused 3, stopped 4, ended 5,
+  seeking 6, waiting 8, stalled 9, completed 10.
+
+**The queue**
+- `instance.queue.items`: media items, the played ones first (history), the current one at
+  `queue.position`. `queue._queueItems[i].isAutoplay` marks songs autoplay added.
+- **`setQueue` puts a new queue object in place**, with new item objects, so the queue is
+  always read from the instance.
+- **One ID that `setQueue`, `playAt` or `playLater` can't find fails the whole call**
+  (`MKError [mk-007] NOT_FOUND`) and changes nothing. The adapter adds songs one at a time
+  when a batch fails.
+- **`setQueue({ startPlaying: false })` loads nothing**: `position` is -1, the state is
+  stopped, and a seek does nothing. A song can't be loaded paused.
+- `setQueue({ songs, startPlaying: true, startTime })` starts at a position.
+- `queue.remove(index)`, `playAt(index, { song })` and `playLater({ songs })` edit the queue
+  in place without touching the current song, and keep the other item objects. The same
+  song twice is two objects, so entry IDs are kept per item object (a `WeakMap`).
+- `changeToMediaAtIndex(index)` makes an item current and starts it from 0, playing.
+- `stop()` and `clearQueue()` empty it.
+- Items carry full catalog data: `attributes.isrc`, `name`, `artistName`, `albumName`,
+  `durationInMillis`, `artwork.url` (a `{w}x{h}` template), and the artists' IDs in
+  `relationships.artists`. **The credit is one string** ("Daft Punk, Pharrell Williams & Nile
+  Rodgers", with three artist IDs). The adapter splits it only when that gives as many names
+  as there are artists, so "Simon & Garfunkel" stays one name.
+
+**Lookups**
+- `/v1/catalog/{storefront}/songs?filter[isrc]=…` finds every release of a recording. "Get
+  Lucky" gave five (the album, an anniversary edition, three compilations), so the one on
+  the same album wins, then the closest length, then Apple's first.
+- `/v1/catalog/{storefront}/search?types=songs` for songs without an ISRC hit, with the same
+  title rules as the other adapters (remaster and featured-artist tags dropped).
+- Songs the storefront can't play have no `playParams` and are skipped.
+
+**Playback**
+- **Seeks are debounced by about 250 ms, and a new seek cancels the one waiting.**
+  `seekToTime` resolves when the seek is carried out or cancelled; seeks landed 250–340 ms
+  after the call. The hold re-seeked every 250 ms, so each retry cancelled the one before
+  and none landed: an advance took 10 s and stayed at the song's start. Fixed: a seek is
+  asked for only when none is on its way, aimed 250 ms ahead. The advance now takes 1.2 s.
+- **Signed out, `continuous` is off, and the player stops after every song** (`ended`, then
+  `stopped`, `nowPlayingItem` gone) instead of moving to the next. With `continuous = true`
+  it advances. `prepareForSession` turns it on and keeps it on.
+- At the end of the queue the player stops; the adapter reports that as a pause.
+- **Muting the `<audio>` sets MusicKit's volume to 0 and saves it as the user's volume**
+  (`localStorage["music-app-pref:volume-pref-for-user-undefined"]`); unmuting doesn't bring it
+  back. The adapter mutes the element while it starts a song that should end up paused (so
+  its first moments aren't heard), then puts MusicKit's volume back. Before that fix, a
+  paused join left the page silent.
+- The page's own controls (play, pause, next, a "Play" tile) go through the same instance;
+  the adapter saw each as the user's change.
+- While the window was hidden, the page's timers were throttled hard even while it played (a
+  1 s wait took 1.9 s, and much longer once the preview had ended). Waits react to MusicKit
+  and media events, as in the other adapters.
+
+**Live session with YouTube Music** (Apple Music hosting, local server)
+- Attaching: bridge ready 1.3–3 s after the reload.
+- Starting a three-song list in Apple Music: YouTube Music had all three, with the same entry
+  IDs, a moment later. (It then stepped out for an advertisement and resynced.)
+- Pause in YouTube Music, skip in Apple Music, seek to 1:00 and skip in YouTube Music: the
+  other side followed each, within 0.3–0.5 s.
+- Joining a session paused at 0:20: paused there 1.8 s later, silent, volume unchanged.
+
+### Open problems
+
+1. **Previews only without a subscription.** Nothing was verified with full songs: whether
+   `continuous` is on by default, whether autoplay comes back, whether seeks behave the same
+   on full (HLS) streams.
+2. **Signing in** wasn't tried, nor whether Apple refuses a debugged browser.
+3. **Shuffle**: switching it off may reorder the queue; not observed.
+4. **Library songs** (`i.` IDs, uploads) and music videos in the queue weren't tested.
+5. **Storefronts**: lookups use the page's storefront; a song missing there is unavailable.
+6. **Local-change suppression is partly time-based** (300 ms after a remote change).
+7. **Not done yet:** a session with TIDAL or Spotify, and connecting from the running app.
+
+## 6. Preventing these problems instead of patching them
 
 1. **Per-provider IDs in tracks.** Add an optional `providerIds: { tidal?: string, spotify?: string, youtube?: string }` to `TrackDescriptor` (a later protocol version; protocol 2 added only the replace's `playback`). Whoever has the track fills its own ID; same-provider clients skip search entirely, and others fill theirs in after a successful lookup. This fixes TIDAL problems 1 and 2 for same-provider groups and cuts search load in general. Unknown fields are dropped by v1 clients, hence v2.
 2. **Record real traces to build mocks.** A debug mode in the adapter that records every store action and state diff (or PlayerAPI event) with timestamps during a scripted live run (load a queue, pause, seek, skip, song end). Mocks built from these traces behave like the real app. The paused-join bug passed its first fix because the mock was "politer" than TIDAL.

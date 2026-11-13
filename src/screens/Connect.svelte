@@ -31,7 +31,10 @@
         state: "Not open",
         note:
           `${provider.displayName} opens in a browser window of its own. To use your account, ` +
-          "sign in once first, then close that window and connect.",
+          "sign in once first, then close that window and connect." +
+          (provider.id === "AppleMusic"
+            ? " Without an Apple Music subscription it plays only 90-second previews."
+            : ""),
         action: `Open ${provider.displayName}`,
       };
     }
