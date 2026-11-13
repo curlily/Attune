@@ -11,8 +11,6 @@
   --base-3: #282a30;
   --base-border: rgb(255 255 255 / 0.07);
   --base-border-strong: rgb(255 255 255 / 0.13);
-  /* The wash of accent at the top of the window. */
-  --glow-strength: 20%;
 
   --text: #e9eaee;
   --text-2: #a4a8b2;
@@ -53,7 +51,6 @@
   --surface-3: color-mix(in oklab, var(--accent) 9%, var(--base-3));
   --border: color-mix(in oklab, var(--accent) 22%, var(--base-border));
   --border-strong: color-mix(in oklab, var(--accent) 22%, var(--base-border-strong));
-  --glow: color-mix(in oklab, var(--accent) var(--glow-strength), transparent);
 }
 
 /* Light mode, when Windows uses it (data-mode is set in App.svelte; Linux
@@ -68,7 +65,6 @@
   --base-3: #dfe0e6;
   --base-border: rgb(0 0 0 / 0.08);
   --base-border-strong: rgb(0 0 0 / 0.14);
-  --glow-strength: 14%;
 
   --text: #17181c;
   --text-2: #4f525b;

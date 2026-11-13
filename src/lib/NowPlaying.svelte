@@ -114,8 +114,6 @@
     border-radius: var(--radius);
     background: var(--surface-2);
     color: var(--text-3);
-    /* Lifted off the page by a shadow in the accent. */
-    box-shadow: 0 6px 18px -4px color-mix(in oklab, var(--accent) 35%, transparent);
   }
   .art img {
     position: absolute;

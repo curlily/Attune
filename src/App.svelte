@@ -184,12 +184,9 @@
 <Toasts />
 
 <style>
-  /* A soft wash of the accent from the top, behind the header and the
-     current song, gone by the middle of the window. */
   .window {
     position: relative;
     height: 100%;
-    background: radial-gradient(130% 55% at 50% -8%, var(--glow), transparent 72%);
   }
 
   .resize {
