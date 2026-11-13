@@ -1,0 +1,24 @@
+# Temporary: checks whether the workflow token can create a release.
+name: Release probe
+
+on: workflow_dispatch
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Who am I
+        run: |
+          echo "repository=$GITHUB_REPOSITORY id=${{ github.repository_id }}"
+          gh api "repos/$GITHUB_REPOSITORY" --jq '{full_name, id, private}'
+      - name: Create a draft release on the existing tag
+        run: gh release create v0.1.1 --draft --verify-tag --title probe --notes probe
+      - name: Delete it
+        if: always()
+        run: gh release delete v0.1.1 --yes || true
