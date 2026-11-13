@@ -241,10 +241,6 @@ mod live {
                 end: Some(now + 90_000),
             }),
             assets: None,
-            buttons: vec![activity::Button {
-                label: "Get Attune".to_owned(),
-                url: "https://curlily.github.io/Attune/".to_owned(),
-            }],
         };
         let payload = serde_json::to_value(&activity).unwrap();
         ipc::send_activity(&mut writer, Some(&payload), 1)

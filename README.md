@@ -222,7 +222,7 @@ Unlike Google, Apple allows signing in there, and the sign-in is remembered.
 
 While you're in a session and the Discord desktop app is running, your Discord
 profile shows **Listening to** the session's song, with its artists, cover, a
-progress bar and a **Get Attune** button for others. It goes away when you step
+and a progress bar. It goes away when you step
 out, can't play the song, or leave. Turn it off in Settings (**Show on Discord**).
 
 Attune talks to the Discord app on your computer over its local connection

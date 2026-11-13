@@ -14,7 +14,6 @@ const LISTENING: u8 = 2;
 const SHOW_DETAILS: u8 = 2;
 /// Discord accepts 2 to 128 characters in its text fields.
 const MAX_TEXT: usize = 128;
-const DOWNLOAD_URL: &str = "https://curlily.github.io/Attune/";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Activity {
@@ -28,7 +27,6 @@ pub struct Activity {
     pub timestamps: Option<Timestamps>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assets: Option<Assets>,
-    pub buttons: Vec<Button>,
 }
 
 /// Unix milliseconds. With both, Discord draws a progress bar.
@@ -44,13 +42,6 @@ pub struct Assets {
     pub large_image: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub large_text: Option<String>,
-}
-
-/// Shown to others, never to yourself.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Button {
-    pub label: String,
-    pub url: String,
 }
 
 impl Activity {
@@ -77,7 +68,6 @@ impl Activity {
             && self.details == other.details
             && self.state == other.state
             && self.assets == other.assets
-            && self.buttons == other.buttons
     }
 }
 
@@ -129,10 +119,6 @@ pub fn from_status(status: &RuntimeStatus, now_ms: u64) -> Option<Activity> {
         state,
         timestamps,
         assets,
-        buttons: vec![Button {
-            label: "Get Attune".to_owned(),
-            url: DOWNLOAD_URL.to_owned(),
-        }],
     })
 }
 
