@@ -36,3 +36,5 @@ tauri-plugin-autostart = "2.7.0"
 [target.'cfg(windows)'.dependencies]
 # Reads whether the taskbar is light or dark, for the tray icon's colour.
 windows-registry = "0.6"
+# Sets the window's big (taskbar) icon, which Tauri's set_icon leaves out.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

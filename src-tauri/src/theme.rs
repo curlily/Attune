@@ -45,4 +45,54 @@ pub fn follow_taskbar<R: Runtime>(app: &AppHandle<R>) {
         }
         Err(error) => warn!(%error, "Could not read the window icon"),
     }
+    #[cfg(windows)]
+    set_taskbar_icon(&window, tile);
+}
+
+/// Tauri's `set_icon` only sets a window's small icon (title bar, Alt+Tab
+/// thumbnails). The taskbar shows the big one; with none set, Windows falls
+/// back to its cached icon for the exe file, which outlives icon changes
+/// (it showed an old icon long after the exe had the new one). So set the
+/// big icon too, at the system's icon size.
+#[cfg(windows)]
+fn set_taskbar_icon<R: Runtime>(window: &tauri::WebviewWindow<R>, png: &[u8]) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CreateIconFromResourceEx, DestroyIcon, SendMessageW, HICON, ICON_BIG, LR_DEFAULTCOLOR,
+        LR_DEFAULTSIZE, WM_SETICON,
+    };
+    /// The icon set last, destroyed once replaced.
+    static CURRENT: AtomicUsize = AtomicUsize::new(0);
+
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let Ok(len) = u32::try_from(png.len()) else {
+        return;
+    };
+    // PNG data is a valid icon resource since Windows Vista.
+    let icon: HICON = unsafe {
+        CreateIconFromResourceEx(
+            png.as_ptr(),
+            len,
+            1, // an icon, not a cursor
+            0x0003_0000,
+            0,
+            0,
+            LR_DEFAULTCOLOR | LR_DEFAULTSIZE,
+        )
+    };
+    if icon.is_null() {
+        warn!("Could not create the taskbar icon");
+        return;
+    }
+    unsafe {
+        SendMessageW(hwnd.0 as _, WM_SETICON, ICON_BIG as usize, icon as isize);
+    }
+    let previous = CURRENT.swap(icon as usize, Ordering::Relaxed);
+    if previous != 0 {
+        unsafe {
+            DestroyIcon(previous as HICON);
+        }
+    }
 }
