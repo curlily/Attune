@@ -5,6 +5,7 @@
   import CodeInput from "../lib/CodeInput.svelte";
   import Icon from "../lib/Icon.svelte";
   import ProviderLogo from "../lib/ProviderLogo.svelte";
+  import { providerColors } from "../lib/theme";
 
   type Busy = "join" | "create" | "rejoin" | null;
 
@@ -43,21 +44,20 @@
     void run("join", () => api.joinSession(code));
   }
 
-  async function change() {
-    try {
-      await api.disconnectProvider();
-      app.connected = null;
-    } catch (failure) {
-      error = errorText(failure);
-    }
+  // Pick another app; the current one stays connected until a new one is
+  // chosen, so Back on that screen returns here unchanged.
+  function change() {
+    app.choosingProvider = true;
   }
+
+  let brand = $derived(providerColors(app.connected, app.mode)?.accent);
 </script>
 
 <div class="lobby scroll">
 <div class="content" bind:offsetHeight={app.lobbyHeight}>
-  <div class="connected">
-    <ProviderLogo provider={app.connected} size={16} />
-    <span>Connected to {app.providerName}</span>
+  <div class="connected" style:--brand={brand}>
+    <span class="logo"><ProviderLogo provider={app.connected} size={16} /></span>
+    <span>Connected to <strong>{app.providerName}</strong></span>
     <span class="spacer"></span>
     <button class="btn ghost small" onclick={change} disabled={busy !== null}>Change</button>
   </div>
@@ -141,9 +141,18 @@
     height: 36px;
     padding: 0 4px 0 11px;
     margin-bottom: 16px;
+    border: 1px solid color-mix(in oklab, var(--brand, var(--accent)) 30%, var(--border));
     border-radius: var(--radius);
-    background: var(--surface-1);
+    background: color-mix(in oklab, var(--brand, var(--accent)) 9%, var(--surface-1));
     color: var(--text-2);
+  }
+  .connected strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .logo {
+    display: grid;
+    color: var(--brand, var(--text));
   }
   .spacer {
     flex: 1;

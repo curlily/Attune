@@ -51,6 +51,8 @@ class App {
   rejoinCode = $state<string | null>(null);
   toasts = $state<Toast[]>([]);
   showSettings = $state(false);
+  /** "Change" in the lobby: choosing another music app while one is connected. */
+  choosingProvider = $state(false);
   /** The window's height; the session view shows less as it shrinks. */
   height = $state(window.innerHeight);
   /** The lobby's content height, which the window fits. */
@@ -84,7 +86,7 @@ class App {
     if (!this.loaded) return "loading";
     if (!this.settings?.displayName) return "firstRun";
     if (this.status && this.status.sync !== "ended") return "jam";
-    if (!this.connected) return "connect";
+    if (!this.connected || this.choosingProvider) return "connect";
     return "lobby";
   });
 
@@ -111,6 +113,7 @@ class App {
       events.onJoinLink((code) => this.#onJoinLink(code)),
       events.onProviderLost((name) => {
         this.connected = null;
+        this.choosingProvider = false;
         this.showSettings = false;
         this.toast(`Lost the connection to ${name}. Connect again to keep listening.`, "warning");
         void this.refreshProviders();

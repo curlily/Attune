@@ -3,6 +3,7 @@
   import { slide } from "svelte/transition";
   import { api, errorText, type ProviderAvailability, type ProviderId } from "../lib/api";
   import { app } from "../lib/app.svelte";
+  import Icon from "../lib/Icon.svelte";
   import ProviderLogo from "../lib/ProviderLogo.svelte";
 
   const POLL_MS = 3000;
@@ -20,6 +21,7 @@
   });
 
   function describe(provider: ProviderAvailability): { state: string; note?: string; action?: string } {
+    if (provider.id === app.connected) return { state: "Connected", action: `Keep ${provider.displayName}` };
     if (provider.unsupported) return { state: "Not supported", note: provider.unsupported };
     if (provider.ready) return { state: "Ready", action: "Connect" };
     if (provider.inBrowser) {
@@ -52,12 +54,24 @@
     }
   }
 
+  /** Back to the lobby with the app that's still connected (from "Change"). */
+  function back() {
+    app.choosingProvider = false;
+  }
+
   async function connect(id: ProviderId) {
+    if (id === app.connected) return back();
     connecting = id;
     error = null;
     try {
+      // Switching: only now let go of the current app.
+      if (app.connected) {
+        await api.disconnectProvider();
+        app.connected = null;
+      }
       await api.connectProvider(id);
       app.connected = id;
+      app.choosingProvider = false;
     } catch (failure) {
       error = { id, text: errorText(failure) };
       void app.refreshProviders();
@@ -73,7 +87,12 @@
 </script>
 
 <div class="connect scroll">
-  <p class="section-title">Connect your music app</p>
+  {#if app.connected}
+    <button class="btn ghost back" onclick={back} disabled={connecting !== null}>
+      <Icon name="back" size={14} /> Back
+    </button>
+  {/if}
+  <p class="section-title">{app.connected ? "Switch music app" : "Connect your music app"}</p>
   <p class="muted intro">
     Attune follows along in your own app. You keep using it for play, pause, skip
     and the queue.
@@ -81,12 +100,12 @@
 
   {#each sorted as provider (provider.id)}
     {@const info = describe(provider)}
-    <div class="card" class:highlight={provider.ready} class:dim={!info.action}>
+    <div class="card" class:highlight={provider.ready || provider.id === app.connected} class:dim={!info.action}>
       <div class="row">
         <ProviderLogo provider={provider.id} size={20} />
         <span class="name">{provider.displayName}</span>
         <span class="spacer"></span>
-        <span class="state" class:ok={provider.ready}>{info.state}</span>
+        <span class="state" class:ok={provider.ready || provider.id === app.connected}>{info.state}</span>
       </div>
       {#if info.note}
         <p class="note">{info.note}</p>
@@ -94,7 +113,7 @@
       {#if info.action}
         <button
           class="btn wide"
-          class:primary={provider.ready}
+          class:primary={provider.ready && provider.id !== app.connected}
           disabled={connecting !== null}
           aria-busy={connecting === provider.id}
           onclick={() => connect(provider.id)}
@@ -126,6 +145,13 @@
 
   .intro {
     margin: 0 0 14px;
+  }
+
+  .back {
+    margin: -6px 0 8px -8px;
+    height: 28px;
+    padding: 0 8px;
+    color: var(--text-2);
   }
 
   .card {
