@@ -106,6 +106,7 @@ async fn start(app: AppHandle, state: &AppState, entry: Entry) -> Result<Session
     };
     let mut config = SessionClientConfig::new(server_url.clone(), settings.client_id, display_name);
     config.provider = Some(controller.provider_id().label().to_owned());
+    config.others_can_control = settings.others_can_control;
 
     let runtime = match entry {
         Entry::Create => SessionRuntime::create(controller, config).await?,

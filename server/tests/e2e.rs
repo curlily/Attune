@@ -177,6 +177,55 @@ async fn two_clients_sync_through_the_server_without_echo() {
 }
 
 #[tokio::test]
+async fn only_the_host_changes_whats_playing_when_they_say_so() {
+    let server = Server::start(ServerConfig::default()).await;
+    let mut host = server.client("a");
+    host.others_can_control = false;
+    let (a, a_start) = SessionClient::create(host, music(&["s1", "s2"]))
+        .await
+        .expect("create");
+    let (b, mut b_start) = SessionClient::join(server.client("b"), a_start.credentials.clone())
+        .await
+        .expect("join");
+
+    // B learns who hosts, and that it's locked.
+    let event = wait_for(&mut b_start.events, |e| {
+        matches!(e, SessionEvent::Control(_))
+    })
+    .await;
+    let SessionEvent::Control(control) = event else {
+        unreachable!()
+    };
+    assert_eq!(control.host_client_id, "a");
+    assert!(!control.others_can_control);
+
+    let refused = b
+        .submit_operation(Op::PlaybackSetPlaying { is_playing: false }, 0)
+        .await
+        .expect("submit");
+    assert!(matches!(
+        refused,
+        SubmitOutcome::Rejected {
+            code: attune_core::protocol::RejectCode::NotAllowed,
+            ..
+        }
+    ));
+
+    // The host opens it up; now B's change goes through.
+    a.set_control(true).await.expect("set control");
+    wait_for(
+        &mut b_start.events,
+        |e| matches!(e, SessionEvent::Control(c) if c.others_can_control),
+    )
+    .await;
+    let applied = b
+        .submit_operation(Op::PlaybackSetPlaying { is_playing: false }, 0)
+        .await
+        .expect("submit");
+    assert!(matches!(applied, SubmitOutcome::Applied { .. }));
+}
+
+#[tokio::test]
 async fn song_nobody_can_play_is_skipped_for_everyone() {
     let server = Server::start(ServerConfig::default()).await;
     let (a, mut a_start, b, mut b_start) = pair(&server).await;

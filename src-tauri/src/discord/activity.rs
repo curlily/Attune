@@ -245,6 +245,8 @@ mod tests {
             },
             participants: Vec::new(),
             warnings: Vec::new(),
+            host_client_id: Some("me".to_owned()),
+            others_can_control: true,
         }
     }
 

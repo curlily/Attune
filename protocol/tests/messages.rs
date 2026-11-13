@@ -3,7 +3,8 @@ mod common;
 use attune_protocol::{
     ClientMessage, CreateSession, ErrorCode, INVITE_SECRET_LEN, JoinSession, OperationRequest,
     PROTOCOL_VERSION, Participant, ParticipantStatus, RejectCode, ReplacePlayback, ServerMessage,
-    SessionInvite, SessionOperation, SessionSnapshot, is_invite_secret, normalize_join_code,
+    SessionControl, SessionInvite, SessionOperation, SessionSnapshot, is_invite_secret,
+    normalize_join_code,
 };
 use common::{entry, hello, state};
 use serde::{Serialize, de::DeserializeOwned};
@@ -133,6 +134,7 @@ fn every_client_message_round_trips() {
             ClientMessage::Create(CreateSession {
                 hello: hello("a"),
                 initial_state: state(&["x"], false, 0, 0),
+                others_can_control: None,
             }),
             "session.create",
         ),
@@ -251,6 +253,10 @@ fn every_server_message_round_trips() {
                     connected: false,
                     unavailable_entry_ids: vec!["e1".to_owned()],
                 }],
+                control: Some(SessionControl {
+                    host_client_id: "a".to_owned(),
+                    others_can_control: false,
+                }),
             },
             "session.participants",
         ),

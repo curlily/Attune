@@ -52,8 +52,8 @@ use crate::{
         SessionEvent, SubmitOutcome,
     },
     protocol::{
-        Participant, ParticipantStatus, QueueEntry, RejectCode, ReplacePlayback, SessionMusicState,
-        SessionOperation, SessionSnapshot, state,
+        Participant, ParticipantStatus, QueueEntry, RejectCode, ReplacePlayback, SessionControl,
+        SessionMusicState, SessionOperation, SessionSnapshot, state,
     },
     session::{
         bridge::ProviderBridge,
@@ -208,6 +208,8 @@ async fn restore<B: ProviderBridge>(bridge: &B, settings: &Value) {
 enum Command {
     StepOut,
     Resync,
+    /// This user's "Allow others to change what's playing".
+    AllowOthers(bool),
     Edit(QueueEdit, oneshot::Sender<Result<()>>),
     Leave(oneshot::Sender<Result<()>>),
 }
@@ -250,6 +252,7 @@ impl SessionRuntime {
             initial.playback.is_playing = false;
             initial.playback.position_ms = 0;
         }
+        let allow_others = config.others_can_control;
         let (client, start) = SessionClient::create(config, initial).await?;
         let mut worker = Worker::new(
             bridge,
@@ -259,6 +262,7 @@ impl SessionRuntime {
             SyncState::Synced,
         );
         worker.provider_settings = settings;
+        worker.allow_others = allow_others;
         Ok(Self::spawn(worker, start.credentials))
     }
 
@@ -287,6 +291,7 @@ impl SessionRuntime {
         // Let a freshly attached provider finish restoring its own queue, so
         // that restore isn't published as a local edit later.
         settled_state(bridge.as_ref()).await?;
+        let allow_others = config.others_can_control;
         let (client, start) = SessionClient::join(config, credentials).await?;
         let snapshot = start.snapshot.clone();
         let mut worker = Worker::new(
@@ -297,6 +302,7 @@ impl SessionRuntime {
             SyncState::Resyncing,
         );
         worker.provider_settings = settings;
+        worker.allow_others = allow_others;
         worker.apply_snapshot(snapshot).await;
         Ok(Self::spawn(worker, start.credentials))
     }
@@ -336,6 +342,15 @@ impl SessionRuntime {
     pub async fn step_out(&self) -> Result<()> {
         self.commands
             .send(Command::StepOut)
+            .await
+            .map_err(|_| Error::SessionClosed)
+    }
+
+    /// This user's "Allow others to change what's playing". It takes
+    /// effect while they're the host (now, or once they become it).
+    pub async fn set_others_can_control(&self, allowed: bool) -> Result<()> {
+        self.commands
+            .send(Command::AllowOthers(allowed))
             .await
             .map_err(|_| Error::SessionClosed)
     }
@@ -425,6 +440,12 @@ struct Worker<B> {
     reported_unavailable: Option<Vec<String>>,
     reported_status: Option<ParticipantStatus>,
     participants: Vec<Participant>,
+    /// Who hosts and whether others may change what's playing, as the
+    /// server last said.
+    control: Option<SessionControl>,
+    /// This user's own "Allow others to change what's playing", sent to the
+    /// server whenever they're the host and it differs.
+    allow_others: bool,
     /// The user's provider settings from before the session, restored when
     /// it ends (however it ends).
     provider_settings: Value,
@@ -459,6 +480,8 @@ impl<B: ProviderBridge> Worker<B> {
             playback: snapshot.state.playback.clone(),
             participants: Vec::new(),
             warnings: Vec::new(),
+            host_client_id: None,
+            others_can_control: true,
         };
         let (status, _) = watch::channel(initial_status);
         let (notices, _) = broadcast::channel(NOTICE_CAPACITY);
@@ -486,6 +509,8 @@ impl<B: ProviderBridge> Worker<B> {
             reported_unavailable: None,
             reported_status: sync.participant_status(),
             participants: Vec::new(),
+            control: None,
+            allow_others: true,
             provider_settings: Value::Null,
             interrupted: false,
             local_covers: HashMap::new(),
@@ -551,6 +576,11 @@ impl<B: ProviderBridge> Worker<B> {
                         Flow::Continue
                     }
                     Some(Command::Resync) => { self.resync().await; Flow::Continue }
+                    Some(Command::AllowOthers(allowed)) => {
+                        self.allow_others = allowed;
+                        self.apply_own_rule().await;
+                        Flow::Continue
+                    }
                     Some(Command::Edit(edit, reply)) => {
                         let _ = reply.send(self.edit(edit).await);
                         Flow::Continue
@@ -704,7 +734,40 @@ impl<B: ProviderBridge> Worker<B> {
             playback,
             participants: self.participants.clone(),
             warnings,
+            host_client_id: self.control.as_ref().map(|c| c.host_client_id.clone()),
+            others_can_control: self.control.as_ref().is_none_or(|c| c.others_can_control),
         });
+    }
+
+    fn is_host(&self) -> bool {
+        self.control
+            .as_ref()
+            .is_some_and(|c| c.host_client_id == self.client.client_id())
+    }
+
+    /// As host, make the session follow this user's rule.
+    async fn apply_own_rule(&mut self) {
+        let differs = self
+            .control
+            .as_ref()
+            .is_some_and(|c| c.others_can_control != self.allow_others);
+        if self.is_host() && differs {
+            if let Err(error) = self.client().set_control(self.allow_others).await {
+                debug!(%error, "Could not set who can change what's playing");
+            }
+        }
+    }
+
+    /// The host's display name, for messages.
+    fn host_name(&self) -> String {
+        self.control
+            .as_ref()
+            .and_then(|c| {
+                self.participants
+                    .iter()
+                    .find(|p| p.client_id == c.host_client_id)
+            })
+            .map_or_else(|| "the host".to_owned(), |p| p.display_name.clone())
     }
 
     /// Read the covers this computer's music app has for the session's
@@ -939,6 +1002,12 @@ impl<B: ProviderBridge> Worker<B> {
             SessionEvent::SequenceGap { .. } => self.resync().await,
             SessionEvent::Participants(participants) => {
                 self.participants = participants;
+                self.publish();
+            }
+            SessionEvent::Control(control) => {
+                self.control = Some(control);
+                // Just became host, perhaps: the session follows our rule.
+                self.apply_own_rule().await;
                 self.publish();
             }
             SessionEvent::Reconnecting { .. } => {
@@ -1423,8 +1492,12 @@ impl<B: ProviderBridge> Worker<B> {
             }
             Ok(SubmitOutcome::Unchanged { .. }) => {}
             Ok(SubmitOutcome::Rejected { code, .. }) => {
-                if code == RejectCode::StaleQueue {
-                    self.notify(Notice::QueueEditUndone);
+                match code {
+                    RejectCode::StaleQueue => self.notify(Notice::QueueEditUndone),
+                    RejectCode::NotAllowed => self.notify(Notice::NotAllowed {
+                        host: self.host_name(),
+                    }),
+                    RejectCode::InvalidOperation => {}
                 }
                 // Either way the provider now differs from the session.
                 self.resync().await;

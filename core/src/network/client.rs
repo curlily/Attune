@@ -54,9 +54,9 @@ use crate::{
     Error, Result,
     protocol::{
         ClientHello, ClientMessage, CreateSession, ErrorCode, JoinSession, OperationRequest,
-        PROTOCOL_VERSION, Participant, ParticipantStatus, RejectCode, ServerMessage, SessionInvite,
-        SessionMusicState, SessionOperation, SessionSnapshot, is_invite_secret,
-        normalize_join_code, state,
+        PROTOCOL_VERSION, Participant, ParticipantStatus, RejectCode, ServerMessage,
+        SessionControl, SessionInvite, SessionMusicState, SessionOperation, SessionSnapshot,
+        is_invite_secret, normalize_join_code, state,
     },
 };
 
@@ -199,6 +199,9 @@ pub struct SessionClientConfig {
     pub ping_interval: Duration,
     pub max_message_bytes: usize,
     pub reconnect: ReconnectPolicy,
+    /// "Allow others to change what's playing", sent when creating a
+    /// session (as its first host).
+    pub others_can_control: bool,
 }
 
 impl SessionClientConfig {
@@ -216,6 +219,7 @@ impl SessionClientConfig {
             ping_interval: Duration::from_secs(30),
             max_message_bytes: DEFAULT_MAX_MESSAGE_BYTES,
             reconnect: ReconnectPolicy::default(),
+            others_can_control: true,
         }
     }
 
@@ -323,6 +327,9 @@ pub enum SessionEvent {
         received: u64,
     },
     Participants(Vec<Participant>),
+    /// Who hosts, and whether others may change what's playing. Follows
+    /// `Participants` whenever either changes.
+    Control(SessionControl),
     /// The connection dropped; attempt `attempt` follows after `retry_in`.
     Reconnecting {
         attempt: u32,
@@ -414,6 +421,7 @@ impl SessionClient {
         let request = ClientMessage::Create(CreateSession {
             hello: config.hello(),
             initial_state,
+            others_can_control: Some(config.others_can_control),
         });
         let (socket, reply, early) = handshake(&config, &request).await?;
         let ServerMessage::Created {
@@ -573,6 +581,14 @@ impl SessionClient {
     /// Report this client's sync status to the other participants.
     pub async fn set_status(&self, status: ParticipantStatus) -> Result<()> {
         let message = ClientMessage::SetStatus { status };
+        self.request(|reply| Command::Notify { message, reply })
+            .await
+    }
+
+    /// As host, allow or stop others changing what's playing. The server
+    /// refuses it from anyone else.
+    pub async fn set_control(&self, others_can_control: bool) -> Result<()> {
+        let message = ClientMessage::SetControl { others_can_control };
         self.request(|reply| Command::Notify { message, reply })
             .await
     }
@@ -1033,8 +1049,14 @@ impl Actor {
                 let _ = reply.send(result);
             }
 
-            ServerMessage::Participants { participants } => {
-                self.emit(SessionEvent::Participants(participants))
+            ServerMessage::Participants {
+                participants,
+                control,
+            } => {
+                self.emit(SessionEvent::Participants(participants));
+                if let Some(control) = control {
+                    self.emit(SessionEvent::Control(control));
+                }
             }
 
             ServerMessage::Error { code, message } => {

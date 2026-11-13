@@ -137,6 +137,22 @@ class App {
     return "lobby";
   });
 
+  /** Whether you host the session you're in. */
+  get isHost(): boolean {
+    return !!this.status && this.status.hostClientId === this.status.clientId;
+  }
+
+  /** The host's display name, if known. */
+  get hostName(): string | null {
+    const host = this.status?.hostClientId;
+    return this.status?.participants.find((p) => p.clientId === host)?.displayName ?? null;
+  }
+
+  /** Whether you may change what's playing in the session you're in. */
+  get canControl(): boolean {
+    return !this.status || this.status.othersCanControl || this.isHost;
+  }
+
   get providerName(): string {
     return this.connected ? PROVIDER_NAMES[this.connected] : "your music app";
   }
@@ -211,7 +227,7 @@ class App {
    * Others with it on may ask too; a song already gone is no error.
    */
   #removeUnplayable() {
-    if (!this.autoRemove || !this.status) return;
+    if (!this.autoRemove || !this.status || !this.canControl) return;
     for (const warning of this.status.warnings) {
       if (!warning.missingFor.length || this.#removing.has(warning.entryId)) continue;
       this.#removing.add(warning.entryId);
@@ -390,6 +406,9 @@ class App {
   #onNotice(notice: Notice) {
     const provider = this.providerName;
     switch (notice.kind) {
+      case "notAllowed":
+        this.toast(`Only ${notice.host} can change what's playing right now.`, "warning");
+        break;
       case "queueEditUndone":
         this.toast("Someone changed the queue at the same time, so your change was undone.", "warning");
         break;

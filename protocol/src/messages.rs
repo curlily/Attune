@@ -94,6 +94,10 @@ pub enum ClientMessage {
     /// Clock-offset probe; answered at once with `time.pong`.
     #[serde(rename = "time.ping")]
     TimePing { client_time_ms: u64 },
+    /// The host's "Allow others to change what's playing". From anyone
+    /// else it's refused.
+    #[serde(rename = "session.setControl")]
+    SetControl { others_can_control: bool },
 }
 
 /// Who is connecting. Shared by create and join.
@@ -115,6 +119,10 @@ pub struct CreateSession {
     #[serde(flatten)]
     pub hello: ClientHello,
     pub initial_state: SessionMusicState,
+    /// The creator's (the first host's) "Allow others to change what's
+    /// playing". Absent means allowed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub others_can_control: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,6 +168,17 @@ pub enum ParticipantStatus {
     Detached,
     /// Unexpected bridge failure; needs a manual resync.
     Error,
+}
+
+/// Who hosts the session, and whether everyone else may change what's
+/// playing (playback and the queue). Only the host's setting counts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionControl {
+    /// Whoever created the session; once they leave, whoever has been in it
+    /// longest.
+    pub host_client_id: String,
+    pub others_can_control: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,7 +266,12 @@ pub enum ServerMessage {
         snapshot: SessionSnapshot,
     },
     #[serde(rename = "session.participants")]
-    Participants { participants: Vec<Participant> },
+    Participants {
+        participants: Vec<Participant>,
+        /// Absent from servers that predate hosts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        control: Option<SessionControl>,
+    },
     #[serde(rename = "session.left")]
     Left,
     #[serde(rename = "session.error")]
@@ -269,6 +293,8 @@ pub enum RejectCode {
     StaleQueue,
     /// The operation does not fit the current state (unknown entry, bad index...).
     InvalidOperation,
+    /// The host doesn't allow others to change what's playing.
+    NotAllowed,
 }
 
 /// Connection-level errors.

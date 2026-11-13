@@ -48,6 +48,9 @@ pub struct Settings {
     pub skipped_update_version: Option<String>,
     /// Show the session's song on your Discord profile.
     pub discord_presence: bool,
+    /// Let others in your session change what's playing. Counts only while
+    /// you're the session's host.
+    pub others_can_control: bool,
 }
 
 impl Default for Settings {
@@ -60,6 +63,7 @@ impl Default for Settings {
             client_id: new_client_id(),
             skipped_update_version: None,
             discord_presence: true,
+            others_can_control: true,
         }
     }
 }
@@ -72,6 +76,7 @@ pub struct SettingsUpdate {
     pub server_url: Option<String>,
     pub listening_offset_ms: Option<u32>,
     pub discord_presence: Option<bool>,
+    pub others_can_control: Option<bool>,
 }
 
 impl Settings {
@@ -116,6 +121,9 @@ impl Settings {
         self.listening_offset_ms = listening_offset_ms;
         if let Some(enabled) = update.discord_presence {
             self.discord_presence = enabled;
+        }
+        if let Some(allowed) = update.others_can_control {
+            self.others_can_control = allowed;
         }
         Ok(())
     }

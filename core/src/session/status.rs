@@ -111,6 +111,10 @@ pub struct RuntimeStatus {
     pub playback: SessionPlayback,
     pub participants: Vec<Participant>,
     pub warnings: Vec<UnavailableWarning>,
+    /// Who hosts the session; `None` on a server that predates hosts.
+    pub host_client_id: Option<String>,
+    /// Whether people other than the host may change what's playing.
+    pub others_can_control: bool,
 }
 
 /// One-off messages for the UI.
@@ -123,6 +127,11 @@ pub struct RuntimeStatus {
 pub enum Notice {
     /// A queue edit made here conflicted with someone else's and was undone.
     QueueEditUndone,
+    /// A change made here was undone: only the host may change what's
+    /// playing right now.
+    NotAllowed {
+        host: String,
+    },
     /// This provider can't play the current song; waiting for the next one.
     SongUnavailable {
         title: String,

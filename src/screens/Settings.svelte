@@ -23,6 +23,24 @@
       error = errorText(failure);
     }
   }
+  // Only the host's setting counts: someone else's is shown but can't be
+  // changed while they're in that session.
+  let controlLocked = $derived(app.screen === "jam" && !app.isHost && app.status?.hostClientId != null);
+  let controlTitle = $derived(
+    controlLocked
+      ? `Only the host's setting counts in a session. ${app.hostName ?? "The host"} is hosting this one.`
+      : undefined,
+  );
+
+  async function toggleControl() {
+    if (!app.settings || controlLocked) return;
+    try {
+      app.settings = await api.updateSettings({ othersCanControl: !app.settings.othersCanControl });
+    } catch (failure) {
+      error = errorText(failure);
+    }
+  }
+
   async function toggleDiscord() {
     if (!app.settings) return;
     try {
@@ -148,6 +166,27 @@
   >
     <span class="switch-label">Remove songs not everyone has</span>
     <span class="switch" class:on={app.autoRemove}><span></span></span>
+  </button>
+
+  <button
+    class="switch-row"
+    role="switch"
+    aria-checked={app.settings?.othersCanControl === true}
+    disabled={controlLocked}
+    title={controlTitle}
+    onclick={toggleControl}
+  >
+    <span class="switch-text">
+      <span class="switch-label">Allow others to change what's playing</span>
+      <span class="switch-hint">
+        {#if controlLocked}
+          {app.hostName ?? "The host"} hosts this session, so their setting counts
+        {:else}
+          Playback and the queue, when you host a session
+        {/if}
+      </span>
+    </span>
+    <span class="switch" class:on={app.settings?.othersCanControl === true}><span></span></span>
   </button>
 
   <button

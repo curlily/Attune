@@ -37,7 +37,7 @@ use crate::{
     messages::{
         ClientHello, ClientMessage, CreateSession, ErrorCode, JoinSession, MAX_DISPLAY_NAME_CHARS,
         MAX_ID_LEN, MAX_PROVIDER_LABEL_CHARS, OperationRequest, Participant, ParticipantStatus,
-        RejectCode, ServerMessage, SessionInvite,
+        RejectCode, ServerMessage, SessionControl, SessionInvite,
     },
     model::{SessionMusicState, SessionOperation, SessionSnapshot},
     state,
@@ -160,6 +160,10 @@ pub struct SessionCoordinator {
     /// Each participant's rejoin secret, by client ID. Never logged.
     rejoin_secrets: HashMap<String, String>,
     max_participants: usize,
+    /// Client ID of the host, whose rule below counts.
+    host: String,
+    /// The host's "Allow others to change what's playing".
+    others_can_control: bool,
     sequence: u64,
     /// Sequence of the last accepted operation that changed queue structure.
     last_queue_change_seq: u64,
@@ -191,7 +195,10 @@ impl SessionCoordinator {
         initial_state.playback.position_captured_at_ms = now_ms;
 
         let creator_id = hello.client_id.clone();
+        let others_can_control = request.others_can_control.unwrap_or(true);
         let mut coordinator = Self {
+            host: creator_id.clone(),
+            others_can_control,
             session_id,
             invite,
             rejoin_secrets: HashMap::from([(hello.client_id.clone(), rejoin_secret.clone())]),
@@ -343,6 +350,21 @@ impl SessionCoordinator {
                     },
                 )]
             }
+            ClientMessage::SetControl { others_can_control } => {
+                if client_id != self.host {
+                    return vec![error_to(
+                        client_id,
+                        ErrorCode::InvalidMessage,
+                        "only the host decides who can change what's playing",
+                    )];
+                }
+                if std::mem::replace(&mut self.others_can_control, others_can_control)
+                    == others_can_control
+                {
+                    return Vec::new();
+                }
+                vec![self.participants_update()]
+            }
             ClientMessage::TimePing { client_time_ms } => vec![Outbound::to_client(
                 client_id,
                 ServerMessage::TimePong {
@@ -353,6 +375,7 @@ impl SessionCoordinator {
             ClientMessage::Leave => {
                 self.participants.retain(|p| p.client_id != client_id);
                 self.rejoin_secrets.remove(client_id);
+                self.reassign_host();
                 let mut outbound = vec![Outbound::to_client(client_id, ServerMessage::Left)];
                 outbound.extend(self.after_change(now_ms, true));
                 outbound
@@ -415,6 +438,15 @@ impl SessionCoordinator {
                 operation_id,
                 RejectCode::StaleQueue,
                 "the queue changed after this edit was made".to_owned(),
+            )];
+        }
+
+        if !self.may_change(client_id, &operation, now_ms) {
+            return vec![self.reject(
+                client_id,
+                operation_id,
+                RejectCode::NotAllowed,
+                "only the host can change what's playing".to_owned(),
             )];
         }
 
@@ -626,6 +658,7 @@ impl SessionCoordinator {
         let before = self.participants.len();
         self.participants.retain(|p| p.client_id != client_id);
         self.rejoin_secrets.remove(client_id);
+        self.reassign_host();
         if self.participants.len() != before {
             self.after_change(now_ms, true)
         } else {
@@ -678,7 +711,53 @@ impl SessionCoordinator {
             to: Recipient::All,
             message: ServerMessage::Participants {
                 participants: self.participants.clone(),
+                control: Some(self.control()),
             },
+        }
+    }
+
+    pub fn control(&self) -> SessionControl {
+        SessionControl {
+            host_client_id: self.host.clone(),
+            others_can_control: self.others_can_control,
+        }
+    }
+
+    /// Whether `client_id` may make this change. The host always may;
+    /// others only if the host allows it, except to move on when the song
+    /// has ended (every client reports that, and the first report wins).
+    fn may_change(&self, client_id: &str, operation: &SessionOperation, now_ms: u64) -> bool {
+        if client_id == self.host || self.others_can_control {
+            return true;
+        }
+        matches!(operation, SessionOperation::PlaybackAdvance { .. }) && self.song_is_ending(now_ms)
+    }
+
+    /// The current song is playing within its last few seconds (or past).
+    fn song_is_ending(&self, now_ms: u64) -> bool {
+        const END_SLACK_MS: u64 = 5_000;
+        let Some(duration) = self
+            .state
+            .queue
+            .first()
+            .and_then(|entry| entry.track.duration_ms)
+        else {
+            return false;
+        };
+        self.state.playback.is_playing
+            && state::position_at(&self.state, now_ms) + END_SLACK_MS >= duration
+    }
+
+    /// After the host leaves, whoever has been here longest hosts, and the
+    /// session opens up until their own setting arrives: the old host's
+    /// rule shouldn't outlive them.
+    fn reassign_host(&mut self) {
+        if self.is_member(&self.host) {
+            return;
+        }
+        if let Some(next) = self.participants.first() {
+            self.host = next.client_id.clone();
+            self.others_can_control = true;
         }
     }
 }

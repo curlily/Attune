@@ -32,6 +32,8 @@ export interface Settings {
   skippedUpdateVersion: string | null;
   /** Show the session's song on your Discord profile. */
   discordPresence: boolean;
+  /** Let others change what's playing (counts while you host). */
+  othersCanControl: boolean;
 }
 
 /** A session to join: by its code, or by an invite passed on by Discord. */
@@ -61,6 +63,7 @@ export interface SettingsUpdate {
   serverUrl?: string;
   listeningOffsetMs?: number;
   discordPresence?: boolean;
+  othersCanControl?: boolean;
 }
 
 export type SyncState =
@@ -130,6 +133,10 @@ export interface RuntimeStatus {
   playback: Playback;
   participants: Participant[];
   warnings: UnavailableWarning[];
+  /** Who hosts the session; null on servers that predate hosts. */
+  hostClientId: string | null;
+  /** Whether people other than the host may change what's playing. */
+  othersCanControl: boolean;
 }
 
 export interface SessionInfo {
@@ -139,6 +146,7 @@ export interface SessionInfo {
 
 export type Notice =
   | { kind: "queueEditUndone" }
+  | { kind: "notAllowed"; host: string }
   | { kind: "songUnavailable"; title: string }
   | { kind: "resynced" }
   | { kind: "desynchronized"; message: string }

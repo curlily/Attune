@@ -2,7 +2,8 @@ mod common;
 
 use attune_protocol::{
     ClientMessage, CreateSession, ErrorCode, JoinSession, OperationRequest, PROTOCOL_VERSION,
-    ParticipantStatus, RejectCode, ServerMessage, SessionMusicState, SessionOperation as Op,
+    ParticipantStatus, RejectCode, ServerMessage, SessionControl, SessionMusicState,
+    SessionOperation as Op,
     coordinator::{Outbound, Recipient, SessionCoordinator},
     state,
 };
@@ -20,6 +21,7 @@ fn create_with(initial: SessionMusicState) -> (SessionCoordinator, Vec<Outbound>
         CreateSession {
             hello: hello("a"),
             initial_state: initial,
+            others_can_control: None,
         },
         8,
         T0,
@@ -75,7 +77,7 @@ fn only_to<'a>(out: &'a [Outbound], client: &str) -> &'a ServerMessage {
 fn participants(out: &[Outbound]) -> Vec<(String, ParticipantStatus, bool)> {
     out.iter()
         .find_map(|o| match &o.message {
-            ServerMessage::Participants { participants } => {
+            ServerMessage::Participants { participants, .. } => {
                 assert_eq!(o.to, Recipient::All);
                 Some(
                     participants
@@ -136,6 +138,7 @@ fn create_rejects_bad_version_identity_and_state() {
             CreateSession {
                 hello,
                 initial_state,
+                others_can_control: None,
             },
             8,
             T0,
@@ -182,6 +185,7 @@ fn display_name_is_trimmed_and_empty_provider_dropped() {
         CreateSession {
             hello: h,
             initial_state: state(&[], false, 0, 0),
+            others_can_control: None,
         },
         8,
         T0,
@@ -341,6 +345,7 @@ fn session_full_rejects_new_members_but_not_rejoins() {
         CreateSession {
             hello: hello("a"),
             initial_state: state(&[], false, 0, 0),
+            others_can_control: None,
         },
         2,
         T0,
@@ -854,7 +859,7 @@ fn unavailable_of(out: &[Outbound], client: &str) -> Vec<String> {
     out.iter()
         .rev()
         .find_map(|o| match &o.message {
-            ServerMessage::Participants { participants } => participants
+            ServerMessage::Participants { participants, .. } => participants
                 .iter()
                 .find(|p| p.client_id == client)
                 .map(|p| p.unavailable_entry_ids.clone()),
@@ -1111,4 +1116,168 @@ fn queued_entries_carry_their_senders_name() {
         T0 + 1,
     );
     assert_eq!(added(&session, "n1").as_deref(), Some("User b"));
+}
+
+// ---------------------------------------------------------------------------
+// Host and "Allow others to change what's playing"
+// ---------------------------------------------------------------------------
+
+fn control(out: &[Outbound]) -> SessionControl {
+    out.iter()
+        .find_map(|o| match &o.message {
+            ServerMessage::Participants { control, .. } => control.clone(),
+            _ => None,
+        })
+        .expect("participants update with control")
+}
+
+fn rejection_code(out: &[Outbound], client: &str) -> Option<RejectCode> {
+    match only_to(out, client) {
+        ServerMessage::OperationRejected { code, .. } => Some(*code),
+        _ => None,
+    }
+}
+
+/// a hosts (and doesn't let others change what's playing); b joins.
+fn locked_with_b() -> SessionCoordinator {
+    let (mut session, out) = SessionCoordinator::create(
+        SESSION.to_owned(),
+        SECRET_A.to_owned(),
+        None,
+        CreateSession {
+            hello: hello("a"),
+            initial_state: state(&["s1", "s2", "s3"], true, 0, T0),
+            others_can_control: Some(false),
+        },
+        8,
+        T0,
+    )
+    .expect("create session");
+    assert_eq!(
+        control(&out),
+        SessionControl {
+            host_client_id: "a".to_owned(),
+            others_can_control: false,
+        }
+    );
+    join(&mut session, "b");
+    session
+}
+
+#[test]
+fn the_creator_hosts_and_others_may_control_by_default() {
+    let (_, out) = create_with(state(&["s1"], true, 0, T0));
+    assert_eq!(
+        control(&out),
+        SessionControl {
+            host_client_id: "a".to_owned(),
+            others_can_control: true,
+        }
+    );
+}
+
+#[test]
+fn when_locked_only_the_host_changes_whats_playing() {
+    let mut session = locked_with_b();
+    let out = session.handle("b", op("b1", 0, pause()), T0 + 10);
+    assert_eq!(rejection_code(&out, "b"), Some(RejectCode::NotAllowed));
+    let out = session.handle(
+        "b",
+        op(
+            "b2",
+            0,
+            Op::QueueRemove {
+                entry_id: "s3".to_owned(),
+            },
+        ),
+        T0 + 10,
+    );
+    assert_eq!(rejection_code(&out, "b"), Some(RejectCode::NotAllowed));
+    assert_eq!(session.sequence(), 0);
+
+    let out = session.handle("a", op("a1", 0, pause()), T0 + 10);
+    assert!(matches!(
+        only_to(&out[..1], "a"),
+        ServerMessage::OperationAck { applied: true, .. }
+    ));
+}
+
+#[test]
+fn when_locked_anyone_may_move_on_at_the_end_of_a_song() {
+    let mut session = locked_with_b();
+    // Mid-song, "next" from b is a skip: refused.
+    let out = session.handle("b", op("b1", 0, advance_to("s2")), T0 + 60_000);
+    assert_eq!(rejection_code(&out, "b"), Some(RejectCode::NotAllowed));
+    // At the end, it's the song finishing on its own: accepted.
+    let end = T0 + common::DURATION_MS - 1_000;
+    let out = session.handle("b", op("b2", 0, advance_to("s2")), end);
+    assert!(matches!(
+        only_to(&out[..1], "b"),
+        ServerMessage::OperationAck { applied: true, .. }
+    ));
+}
+
+#[test]
+fn only_the_host_sets_the_rule() {
+    let mut session = locked_with_b();
+    let out = session.handle(
+        "b",
+        ClientMessage::SetControl {
+            others_can_control: true,
+        },
+        T0,
+    );
+    assert!(matches!(
+        only_to(&out, "b"),
+        ServerMessage::Error {
+            code: ErrorCode::InvalidMessage,
+            ..
+        }
+    ));
+    assert!(!session.control().others_can_control);
+
+    let out = session.handle(
+        "a",
+        ClientMessage::SetControl {
+            others_can_control: true,
+        },
+        T0,
+    );
+    assert!(control(&out).others_can_control);
+    // Saying it again changes nothing and sends nothing.
+    assert!(
+        session
+            .handle(
+                "a",
+                ClientMessage::SetControl {
+                    others_can_control: true
+                },
+                T0
+            )
+            .is_empty()
+    );
+    let out = session.handle("b", op("b1", 0, pause()), T0 + 10);
+    assert!(matches!(
+        only_to(&out[..1], "b"),
+        ServerMessage::OperationAck { applied: true, .. }
+    ));
+}
+
+#[test]
+fn when_the_host_leaves_the_longest_present_hosts_and_the_session_opens() {
+    let mut session = locked_with_b();
+    join(&mut session, "c");
+    let out = session.handle("a", ClientMessage::Leave, T0);
+    assert_eq!(
+        control(&out),
+        SessionControl {
+            host_client_id: "b".to_owned(),
+            others_can_control: true,
+        }
+    );
+
+    // Same when the host's reconnect grace period runs out.
+    let mut session = locked_with_b();
+    let out = session.remove("a", T0);
+    assert_eq!(control(&out).host_client_id, "b");
 }

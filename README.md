@@ -262,6 +262,12 @@ cargo test -p attune --lib discord::live -- --ignored --nocapture
 - **Songs a service doesn't have:** each client reports songs its service can't
   find as soon as they're queued. Others see who is missing what. If nobody
   listening can play the current song, the server skips it.
+- **Host:** whoever creates the session hosts it; if they leave, whoever has been
+  in it longest takes over. The host's **Allow others to change what's playing**
+  setting (on by default) decides whether everyone else may change playback and
+  the queue. When it's off, the server refuses others' changes and their app puts
+  the session's state back, except moving on when a song has ended. A new host
+  starts with it on until their own setting arrives.
 - **Stepping out:** a participant can stop following (and later resync) without
   leaving; songs they can't play then no longer count.
 

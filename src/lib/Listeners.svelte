@@ -36,6 +36,14 @@
           {/if}
         </span>
         <span class="name">{person.displayName}</span>
+        {#if person.clientId === status.hostClientId}
+          <span
+            class="host"
+            title={status.othersCanControl
+              ? "Hosts the session. Everyone can change what's playing."
+              : "Hosts the session. Only they can change what's playing."}>host</span
+          >
+        {/if}
         {#if person.clientId === status.clientId}<span class="you">you</span>{/if}
         <span class="spacer"></span>
         <span class="state {badge.tone}">
@@ -83,6 +91,13 @@
     border-radius: 10px;
     background: var(--accent-tint);
     color: var(--accent);
+    font-size: 11px;
+  }
+  .host {
+    padding: 0 6px;
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    color: var(--text-2);
     font-size: 11px;
   }
   .spacer {
