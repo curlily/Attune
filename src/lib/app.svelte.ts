@@ -26,13 +26,29 @@ export interface Toast {
 }
 
 const TOAST_MS = 5000;
-/** The window's width (logical px), always: tauri.conf.json fixes it too. */
+/** The window's width (page px), always: tauri.conf.json fixes it too. */
 export const WINDOW_WIDTH = 380;
 /** The window's full height; it can be made shorter, down to TINY_HEIGHT. */
 export const FULL_HEIGHT = 640;
 export const TINY_HEIGHT = 96;
 /** Below this the session shows only the tiny view. */
 const TINY_BELOW = 190;
+
+/**
+ * The window size that holds `width` x `height` page pixels. Windows' Text
+ * size setting (Accessibility) makes WebView2 draw the whole page bigger
+ * without growing the window, so one page pixel can be more than one
+ * logical pixel; sized in logical pixels the page overflowed and wrapped.
+ * The page's devicePixelRatio carries the display scale and the text
+ * scale; the window's scale factor only the display's.
+ */
+export async function windowSize(width: number, height: number): Promise<LogicalSize> {
+  const display = await getCurrentWindow()
+    .scaleFactor()
+    .catch(() => window.devicePixelRatio);
+  const text = Math.min(3, Math.max(1, window.devicePixelRatio / display));
+  return new LogicalSize(Math.round(width * text), Math.round(height * text));
+}
 
 export const PROVIDER_NAMES: Record<string, string> = {
   Tidal: "TIDAL",
@@ -107,7 +123,12 @@ class App {
     if (window.innerWidth !== WINDOW_WIDTH) void this.setHeight(window.innerHeight || FULL_HEIGHT);
     this.mode = systemMode();
     watchSystemMode((mode) => (this.mode = mode));
-    window.addEventListener("resize", () => (this.height = window.innerHeight));
+    window.addEventListener("resize", () => {
+      this.height = window.innerHeight;
+      // The Text size setting changed while open: the page grew or shrank
+      // inside the same window, so refit the window to it.
+      if (Math.abs(window.innerWidth - WINDOW_WIDTH) > 1) void this.setHeight(this.height);
+    });
     await Promise.all([
       events.onStatus((status) => this.#onStatus(status)),
       events.onNotice((notice) => this.#onNotice(notice)),
@@ -253,7 +274,10 @@ class App {
     height = Math.round(height);
     if (height === this.height && window.innerWidth === WINDOW_WIDTH) return;
     try {
-      await getCurrentWindow().setSize(new LogicalSize(WINDOW_WIDTH, height));
+      const win = getCurrentWindow();
+      await win.setMaxSize(await windowSize(WINDOW_WIDTH, FULL_HEIGHT));
+      await win.setMinSize(await windowSize(WINDOW_WIDTH, TINY_HEIGHT));
+      await win.setSize(await windowSize(WINDOW_WIDTH, height));
     } catch (error) {
       this.toast(errorText(error), "error");
     }

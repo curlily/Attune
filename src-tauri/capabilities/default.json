@@ -9,6 +9,7 @@
     "core:default",
     "core:window:allow-set-size",
     "core:window:allow-set-min-size",
+    "core:window:allow-set-max-size",
     "opener:default",
     "core:window:allow-hide",
     "core:window:allow-start-dragging",
