@@ -165,8 +165,10 @@ fn icon(status: TrayStatus) -> Image<'static> {
     Image::new_owned(draw_icon(status.dot()), ICON_SIZE, ICON_SIZE)
 }
 
-/// The app icon at tray size, generated with the others by `tauri icon`.
-const ICON_PNG: &[u8] = include_bytes!("../icons/32x32.png");
+/// The small-size version of the app icon (three bars, heavier strokes),
+/// which stays readable when Windows shrinks it to 16 px for the tray. Drawn
+/// from the same design as `icon.ico`'s 16 px image (see src/lib/Logo.svelte).
+const ICON_PNG: &[u8] = include_bytes!("../icons/tray.png");
 
 /// The app icon with an optional status dot in its lower right corner, as
 /// ICON_SIZE × ICON_SIZE RGBA.
