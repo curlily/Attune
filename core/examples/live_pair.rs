@@ -308,6 +308,7 @@ async fn join(url: &str, guest: &str, code: &str) -> Outcome<()> {
     let credentials = JoinCredentials {
         code: code.to_uppercase(),
         rejoin_secret: None,
+        invite: None,
     };
     let runtime = SessionRuntime::join(guest_bridge.clone(), config, credentials).await?;
     watch_runtime(guest_name, &runtime, log.clone());

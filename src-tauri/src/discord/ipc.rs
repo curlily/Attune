@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 const HANDSHAKE: u32 = 0;
-const FRAME: u32 = 1;
+pub const FRAME: u32 = 1;
 const CLOSE: u32 = 2;
 const PING: u32 = 3;
 const PONG: u32 = 4;
@@ -93,12 +93,12 @@ pub async fn send_pong<W: AsyncWrite + Unpin>(writer: &mut W, payload: &Value) -
 pub async fn send_activity<W: AsyncWrite + Unpin>(
     writer: &mut W,
     activity: Option<&Value>,
-    nonce: u64,
+    nonce: &str,
 ) -> io::Result<()> {
     let command = json!({
         "cmd": "SET_ACTIVITY",
         "args": { "pid": std::process::id(), "activity": activity },
-        "nonce": nonce.to_string(),
+        "nonce": nonce,
     });
     write_frame(writer, FRAME, &command).await
 }

@@ -225,6 +225,14 @@ profile shows **Listening to** the session's song, with its artists, cover, a
 and a progress bar. It goes away when you step
 out, can't play the song, or leave. Turn it off in Settings (**Show on Discord**).
 
+Friends can join from Discord too. Your status offers them **Ask to Join**, and
+Attune shows their request with **Accept** / **Decline**. You can also invite
+someone from a DM (the **+** button). Accepting opens Attune for them, starting it
+through the `discord-1570918885920604200://` link the installer registers, and
+joins your session. Joining needs Attune installed, and a relay new enough to
+issue invites: each session gets a random invite secret and party ID, so Discord
+never sees the join code.
+
 Attune talks to the Discord app on your computer over its local connection
 (`src-tauri/src/discord/`), as the "Attune" application (ID `1570918885920604200`).
 No Discord account is linked, and the join code is never part of the activity.

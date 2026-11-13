@@ -6,6 +6,8 @@
 //! Keep-alive uses WebSocket Ping/Pong frames; `time.ping` / `time.pong`
 //! exist only to estimate the client's clock offset from the server.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::model::{SessionMusicState, SessionOperation, SessionSnapshot};
@@ -29,6 +31,41 @@ pub fn normalize_join_code(code: &str) -> Option<String> {
     let valid =
         code.len() == JOIN_CODE_LEN && code.bytes().all(|byte| JOIN_CODE_ALPHABET.contains(&byte));
     valid.then_some(code)
+}
+
+/// Length of an invite secret: 64 lowercase hex digits, so it can never be
+/// mistaken for a join code.
+pub const INVITE_SECRET_LEN: usize = 64;
+
+/// Whether `value` has the shape of an invite secret.
+pub fn is_invite_secret(value: &str) -> bool {
+    value.len() == INVITE_SECRET_LEN
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Lets people join from outside Attune (Discord's Join button) without
+/// the join code ever leaving the app: the secret joins in its place, and
+/// the party ID only groups the session's members on Discord. Both are
+/// random and say nothing about the code.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInvite {
+    /// Accepted by `session.join` in place of the join code. Never log it.
+    pub secret: String,
+    pub party_id: String,
+    pub max_participants: u32,
+}
+
+impl fmt::Debug for SessionInvite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionInvite")
+            .field("secret", &"<redacted>")
+            .field("party_id", &self.party_id)
+            .field("max_participants", &self.max_participants)
+            .finish()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -85,7 +122,7 @@ pub struct CreateSession {
 pub struct JoinSession {
     #[serde(flatten)]
     pub hello: ClientHello,
-    /// The session's join code, which is also its ID.
+    /// The session's join code, which is also its ID, or its invite secret.
     pub session_id: String,
     /// Proves a returning participant is the same one: required when
     /// `clientId` already has a seat, ignored otherwise. Never log it.
@@ -155,12 +192,18 @@ pub enum ServerMessage {
         /// This participant's secret for reconnecting. Never log it.
         rejoin_secret: String,
         snapshot: SessionSnapshot,
+        /// For inviting others; absent from servers that predate it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invite: Option<SessionInvite>,
     },
     #[serde(rename = "session.joined")]
     Joined {
         snapshot: SessionSnapshot,
         /// Same meaning as in `session.created`; unchanged on a rejoin.
         rejoin_secret: String,
+        /// Same as in `session.created`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invite: Option<SessionInvite>,
     },
     /// Sent only to the operation's sender.
     ///

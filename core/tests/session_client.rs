@@ -184,6 +184,7 @@ async fn taking_a_seat_needs_its_secret_and_the_error_does_not_leak_it() {
     let wrong = JoinCredentials {
         code: a_start.credentials.code.clone(),
         rejoin_secret: Some("not-the-secret".to_owned()),
+        invite: None,
     };
 
     let error = SessionClient::join(config(&server, "a"), wrong)

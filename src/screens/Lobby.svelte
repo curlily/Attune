@@ -36,6 +36,14 @@
     join();
   });
 
+  // Join from Discord: by its invite, the code stays out of sight.
+  $effect(() => {
+    const invite = app.linkInvite;
+    if (!invite || busy) return;
+    app.linkInvite = null;
+    void run("join", () => api.joinInvite(invite));
+  });
+
   function join() {
     if (code.length !== 4) {
       error = "A join code has four letters.";

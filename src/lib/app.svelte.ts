@@ -6,6 +6,8 @@ import {
   api,
   errorText,
   events,
+  type JoinLink,
+  type JoinRequest,
   type Notice,
   type ProviderAvailability,
   type ProviderId,
@@ -26,6 +28,7 @@ export interface Toast {
 }
 
 const TOAST_MS = 5000;
+const JOIN_REQUEST_MS = 60_000;
 /** The window's width (page px), always: tauri.conf.json fixes it too. */
 export const WINDOW_WIDTH = 380;
 /** The window's full height; it can be made shorter, down to TINY_HEIGHT. */
@@ -111,6 +114,10 @@ class App {
   });
   /** Join code from a attune:// link, joined as soon as the lobby can. */
   linkCode = $state<string | null>(null);
+  /** Discord invite to join, the same way as `linkCode`. */
+  linkInvite = $state<string | null>(null);
+  /** Friends asking through Discord to join, newest last. */
+  joinRequests = $state<JoinRequest[]>([]);
   /** Bumped each time the window is shown, to replay the opening animation. */
   shown = $state(0);
 
@@ -157,7 +164,8 @@ class App {
       events.onProviderChanged((id) => {
         this.connected = id;
       }),
-      events.onJoinLink((code) => this.#onJoinLink(code)),
+      events.onJoinLink((link) => this.#onJoinLink(link)),
+      events.onDiscordJoinRequest((request) => this.#onJoinRequest(request)),
       events.onProviderLost((name) => {
         this.connected = null;
         this.choosingProvider = false;
@@ -221,15 +229,37 @@ class App {
     await api.setPinned(pinned).catch((error) => this.toast(errorText(error), "error"));
   }
 
-  #onJoinLink(code: string) {
+  #onJoinLink(link: JoinLink) {
+    const code = "code" in link ? link.code : null;
+    const name = code ?? "your friend's session";
     if (this.screen === "jam") {
-      if (this.code !== code) this.toast(`Leave this session first to join ${code}.`, "warning");
+      if (this.code !== code) this.toast(`Leave this session first to join ${name}.`, "warning");
       return;
     }
-    this.linkCode = code;
+    if ("invite" in link) this.linkInvite = link.invite;
+    else this.linkCode = link.code;
     if (this.screen !== "lobby") {
-      this.toast(`Attune joins ${code} once your music app is connected.`, "info");
+      this.toast(`Attune joins ${name} once your music app is connected.`, "info");
     }
+  }
+
+  #onJoinRequest(request: JoinRequest) {
+    this.joinRequests = [
+      ...this.joinRequests.filter((other) => other.userId !== request.userId),
+      request,
+    ].slice(-3);
+    // Discord lets a request lapse after a while; so does the card.
+    setTimeout(() => this.#dropRequest(request.userId), JOIN_REQUEST_MS);
+  }
+
+  /** Accept or decline a friend's request to join. */
+  async answerJoinRequest(userId: string, accept: boolean) {
+    this.#dropRequest(userId);
+    await api.answerJoinRequest(userId, accept).catch((error) => this.toast(errorText(error), "error"));
+  }
+
+  #dropRequest(userId: string) {
+    this.joinRequests = this.joinRequests.filter((request) => request.userId !== userId);
   }
 
   async refreshProviders() {

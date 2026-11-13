@@ -80,11 +80,6 @@
 
 <style>
   .offer {
-    position: fixed;
-    top: 52px;
-    left: 10px;
-    right: 10px;
-    z-index: 9;
     display: flex;
     flex-direction: column;
     gap: 8px;
