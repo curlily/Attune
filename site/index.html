@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Attune: listen together</title>
+  <meta name="description" content="Listen together across TIDAL, Spotify, YouTube Music and Apple Music. Everyone keeps their own music app; Attune keeps you in sync.">
+  <meta property="og:title" content="Attune: listen together">
+  <meta property="og:description" content="Friends on different music services, hearing the same song at the same moment.">
+  <meta property="og:image" content="assets/icon.png">
+  <meta name="theme-color" content="#111215">
+  <link rel="icon" type="image/png" href="assets/icon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- The Attune mark (same geometry as src/lib/Logo.svelte): a cat's head
+       over three bars that read as a sound wave and as its face. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="face" viewBox="194 94.5 1544 1544">
+      <g fill="none" stroke="currentColor" stroke-width="170" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M279 882C279 560 330 433 450 433C560 433 680 545 760 638Q966 564 1172 638C1252 545 1372 433 1482 433C1602 433 1653 560 1653 882"/>
+        <path d="M650 990V1250M966 1210V1300M1282 990V1250"/>
+      </g>
+    </symbol>
+  </svg>
+
+  <header class="nav wrap">
+    <a class="brand" href="./">
+      <span class="tile"><svg><use href="#face"/></svg></span>
+      Attune
+    </a>
+    <nav>
+      <a href="#how">How it works</a>
+      <a href="https://github.com/curlily/Attune">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero wrap">
+      <div class="pitch">
+        <h1>Listen together, <span class="accent">whatever you stream on.</span></h1>
+        <p class="lede">
+          Attune keeps TIDAL, Spotify, YouTube Music and Apple Music in step, so friends on
+          different services hear the same song at the same moment. Everyone keeps using
+          their own app.
+        </p>
+        <div class="cta">
+          <a class="btn primary" id="download" href="https://github.com/curlily/Attune/releases/latest">
+            <svg class="win" viewBox="0 0 16 16" aria-hidden="true"><path d="M0 2.3 6.5 1.4v6.2H0zm7.3-1L16 0v7.6H7.3zM0 8.4h6.5v6.2L0 13.7zm7.3 0H16V16l-8.7-1.2z"/></svg>
+            <span>Download for Windows</span>
+          </a>
+          <a class="btn" href="#how">See how it works</a>
+        </div>
+        <p class="fine" id="release-info">Free · Windows 10 and 11 · No account needed</p>
+      </div>
+
+      <!-- A picture of the app's session view, drawn in HTML. -->
+      <div class="widget" aria-label="Attune's session view: three people on different services listening to the same song" role="img">
+        <div class="w-head">
+          <span class="w-logo"><svg><use href="#face"/></svg></span>
+          <strong>Session</strong>
+          <span class="w-code">KWPZ</span>
+        </div>
+        <div class="w-now">
+          <div class="w-cover"></div>
+          <div class="w-track">
+            <strong>Midnight Static</strong>
+            <span>Paper Satellites</span>
+          </div>
+        </div>
+        <div class="w-progress"><span></span></div>
+        <div class="w-times"><span>1:42</span><span>3:58</span></div>
+        <p class="w-label">Listening</p>
+        <ul class="w-people">
+          <li><span class="p-logo" style="--logo:url(assets/spotify.svg)"></span>Sam<em>Spotify</em><i></i></li>
+          <li><span class="p-logo" style="--logo:url(assets/tidal.svg)"></span>Robin<em>TIDAL</em><i></i></li>
+          <li><span class="p-logo" style="--logo:url(assets/apple-music.svg)"></span>Alex<em>Apple Music</em><i></i></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="services wrap" aria-label="Supported music services">
+      <span><span class="p-logo" style="--logo:url(assets/tidal.svg)"></span>TIDAL</span>
+      <span><span class="p-logo" style="--logo:url(assets/spotify.svg)"></span>Spotify</span>
+      <span><span class="p-logo" style="--logo:url(assets/youtube-music.svg)"></span>YouTube Music</span>
+      <span><span class="p-logo" style="--logo:url(assets/apple-music.svg)"></span>Apple Music</span>
+    </section>
+
+    <section class="how wrap" id="how">
+      <h2>How it works</h2>
+      <ol class="steps">
+        <li>
+          <span class="num">1</span>
+          <h3>Connect your music app</h3>
+          <p>Attune connects to the TIDAL or Spotify desktop app you already use. YouTube Music
+            and Apple Music open in a browser window of their own.</p>
+        </li>
+        <li>
+          <span class="num">2</span>
+          <h3>Start a session</h3>
+          <p>You get a four-letter code. Send it to your friends, or send a link that opens
+            Attune and joins straight away.</p>
+        </li>
+        <li>
+          <span class="num">3</span>
+          <h3>Hear the same thing</h3>
+          <p>Play, pause, seeking, skips and queue changes are mirrored to everyone, on
+            whichever service they're using.</p>
+        </li>
+      </ol>
+    </section>
+
+    <section class="details wrap">
+      <div>
+        <h3>Songs a service doesn't have</h3>
+        <p>Each app looks every song up for itself. If someone's service is missing one,
+          everyone sees who, and a song nobody can play is skipped.</p>
+      </div>
+      <div>
+        <h3>No accounts</h3>
+        <p>A code is all it takes to join. Attune doesn't sign you up for anything, and the
+          server keeps sessions in memory only.</p>
+      </div>
+      <div>
+        <h3>Out of the way</h3>
+        <p>A small window that can shrink to a strip or stay in the tray, in your music app's
+          colours if you like.</p>
+      </div>
+      <div>
+        <h3>Updates when you say so</h3>
+        <p>Attune tells you when a new version is out and installs it only when you choose to.</p>
+      </div>
+    </section>
+
+    <section class="install wrap" id="install">
+      <h2>Installing</h2>
+      <ol>
+        <li>Download and run the installer. It installs for your account only, no admin
+          rights needed.</li>
+        <li>Windows may say <q>Windows protected your PC</q>, because Attune is new and isn't
+          code-signed yet. Choose <strong>More info</strong>, then <strong>Run anyway</strong>.</li>
+        <li>Open your music app from Attune's connect screen, pick a name, and start or join a
+          session.</li>
+      </ol>
+      <p class="fine">Attune works with each service's own player, so you need whatever that
+        service needs to play full songs. Without a subscription, YouTube Music plays ads;
+        Attune steps out during one and rejoins afterwards.</p>
+    </section>
+  </main>
+
+  <footer class="wrap">
+    <span>Attune isn't affiliated with TIDAL, Spotify, YouTube or Apple.</span>
+    <a href="https://github.com/curlily/Attune">Source on GitHub</a>
+  </footer>
+
+  <script src="download.js"></script>
+</body>
+</html>

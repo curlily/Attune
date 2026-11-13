@@ -1,0 +1,470 @@
+/* Same tokens as the app (src/app.css), so the page looks like Attune. */
+:root {
+  color-scheme: dark;
+  --bg: #121318;
+  --surface-1: #191a20;
+  --surface-2: #20222a;
+  --surface-3: #2a2c35;
+  --border: rgb(255 255 255 / 0.08);
+  --border-strong: rgb(255 255 255 / 0.14);
+  --text: #e9eaee;
+  --text-2: #a4a8b2;
+  --text-3: #767a85;
+  --accent: #7b86ff;
+  --accent-strong: #5f6cf5;
+  --accent-tint: rgb(123 134 255 / 0.14);
+  --on-accent: #fff;
+  --success: #53c98f;
+  --tile: #1a1b23;
+  --radius: 10px;
+  --radius-lg: 16px;
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --bg: #f4f4f6;
+    --surface-1: #ffffff;
+    --surface-2: #ebebef;
+    --surface-3: #dfe0e6;
+    --border: rgb(0 0 0 / 0.08);
+    --border-strong: rgb(0 0 0 / 0.14);
+    --text: #17181c;
+    --text-2: #4f525b;
+    --text-3: #7c7f8a;
+    --accent: #5561ea;
+    --accent-strong: #4f5be4;
+    --accent-tint: rgb(85 97 234 / 0.11);
+    --success: #1d8f58;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.6 var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.wrap {
+  width: min(1080px, 100% - 32px);
+  margin-inline: auto;
+}
+
+/* Navigation */
+.nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 72px;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 17px;
+  text-decoration: none;
+}
+.tile {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: var(--tile);
+  color: #fff;
+}
+.tile svg {
+  width: 26px;
+  height: 26px;
+}
+.nav nav {
+  display: flex;
+  gap: 22px;
+}
+.nav nav a {
+  color: var(--text-2);
+  font-size: 14.5px;
+  text-decoration: none;
+}
+.nav nav a:hover {
+  color: var(--text);
+}
+
+/* Hero */
+.hero {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  align-items: center;
+  gap: 56px;
+  padding: 56px 0 64px;
+}
+h1 {
+  margin: 0;
+  font: 700 clamp(36px, 5.2vw, 56px) / 1.08 var(--font-display);
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+.accent {
+  color: var(--accent);
+}
+.lede {
+  max-width: 34em;
+  margin: 20px 0 0;
+  color: var(--text-2);
+  font-size: 18px;
+}
+.cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 30px;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 48px;
+  padding: 0 20px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  font-weight: 600;
+  font-size: 15.5px;
+  text-decoration: none;
+  transition:
+    background 120ms,
+    border-color 120ms,
+    transform 120ms;
+}
+.btn:hover {
+  background: var(--surface-2);
+}
+.btn:active {
+  transform: translateY(1px);
+}
+.btn.primary {
+  border-color: transparent;
+  background: var(--accent-strong);
+  color: var(--on-accent);
+}
+.btn.primary:hover {
+  background: color-mix(in oklab, var(--accent-strong) 88%, #fff);
+}
+.win {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+.fine {
+  margin: 14px 0 0;
+  color: var(--text-3);
+  font-size: 14px;
+}
+
+/* The pictured session view */
+.widget {
+  justify-self: center;
+  width: min(360px, 100%);
+  padding: 0 16px 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  box-shadow:
+    0 30px 80px -20px rgb(0 0 0 / 0.45),
+    0 0 0 1px rgb(0 0 0 / 0.04);
+  font-size: 13px;
+  user-select: none;
+}
+.w-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 46px;
+  margin: 0 -16px 16px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+.w-logo svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+.w-code {
+  margin-left: 4px;
+  padding: 1px 8px;
+  border: 1px solid color-mix(in oklab, var(--accent) 30%, transparent);
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+  color: var(--text-2);
+  font: 600 12px var(--font-mono);
+  letter-spacing: 0.12em;
+}
+.w-now {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.w-cover {
+  flex: none;
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 30% 28%, #ffb27a 0 12%, transparent 13%),
+    linear-gradient(160deg, #3b2a6e 0%, #7b86ff 55%, #f28fb1 100%);
+}
+.w-track {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.w-track strong {
+  font-size: 15px;
+}
+.w-track span {
+  color: var(--text-2);
+}
+.w-progress {
+  height: 4px;
+  margin-top: 16px;
+  border-radius: 2px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.w-progress span {
+  display: block;
+  width: 43%;
+  height: 100%;
+  background: var(--accent);
+  animation: play 60s linear infinite;
+}
+@keyframes play {
+  from {
+    width: 43%;
+  }
+  to {
+    width: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .w-progress span {
+    animation: none;
+  }
+}
+.w-times {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  color: var(--text-3);
+  font: 11px var(--font-mono);
+}
+.w-label {
+  margin: 14px 0 6px;
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.w-people {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.w-people li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 34px;
+  font-weight: 600;
+}
+.w-people em {
+  color: var(--text-3);
+  font-style: normal;
+  font-weight: 400;
+}
+/* The green "in sync" dot. */
+.w-people i {
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--success) 18%, transparent);
+}
+
+/* Provider logos, as masks so they take the text colour. */
+.p-logo {
+  flex: none;
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  background: currentColor;
+  -webkit-mask: var(--logo) center / contain no-repeat;
+  mask: var(--logo) center / contain no-repeat;
+}
+
+/* Services strip */
+.services {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 14px 40px;
+  padding: 26px 0;
+  border-block: 1px solid var(--border);
+  color: var(--text-2);
+  font-weight: 600;
+}
+.services > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+.services .p-logo {
+  width: 20px;
+  height: 20px;
+}
+
+/* Sections */
+h2 {
+  margin: 0 0 28px;
+  font: 700 30px/1.2 var(--font-display);
+  letter-spacing: -0.01em;
+}
+h3 {
+  margin: 0 0 6px;
+  font-size: 17px;
+}
+section p {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.how {
+  padding: 80px 0 40px;
+}
+.steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.steps li {
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+}
+.num {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  margin-bottom: 14px;
+  border-radius: 50%;
+  background: var(--accent-tint);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.details {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 32px 48px;
+  padding: 40px 0 72px;
+}
+
+.install {
+  padding: 56px 0 64px;
+  border-top: 1px solid var(--border);
+}
+.install ol {
+  max-width: 44em;
+  margin: 0;
+  padding-left: 1.3em;
+  color: var(--text-2);
+}
+.install li + li {
+  margin-top: 10px;
+}
+.install li strong {
+  color: var(--text);
+}
+.install .fine {
+  max-width: 44em;
+  margin-top: 22px;
+}
+
+footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 24px;
+  padding: 24px 0 40px;
+  border-top: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: 14px;
+}
+
+/* Narrow screens */
+@media (max-width: 860px) {
+  .hero {
+    grid-template-columns: 1fr;
+    gap: 44px;
+    padding-top: 28px;
+  }
+  .steps {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 560px) {
+  .nav nav a:first-child {
+    display: none;
+  }
+  .lede {
+    font-size: 16.5px;
+  }
+  .cta .btn {
+    flex: 1 1 100%;
+    justify-content: center;
+  }
+  .details {
+    grid-template-columns: 1fr;
+  }
+  .services {
+    gap: 12px 24px;
+  }
+}

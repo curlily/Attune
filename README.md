@@ -55,6 +55,12 @@ to update. Settings has **Check for updates**, which also shows skipped versions
 Updates are signed. The app refuses one that doesn't match the public key in
 `tauri.conf.json`.
 
+The download page, [curlily.github.io/Attune](https://curlily.github.io/Attune/), is
+the static site in [`site/`](site/), published by
+[`.github/workflows/pages.yml`](.github/workflows/pages.yml) when it changes. Its
+download button looks up the latest release's installer through the GitHub API and
+falls back to the releases page.
+
 The repository needs these Actions secrets:
 
 | Secret | What |
