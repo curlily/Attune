@@ -40,6 +40,36 @@
   --slow: 320ms;
 }
 
+/* Light mode, when Windows uses it (data-mode is set in App.svelte; Linux
+   always stays dark). Same roles as above, tuned for a light background:
+   darker accent and status colours so text in them stays readable. */
+:root[data-mode="light"] {
+  color-scheme: light;
+
+  --bg: #f4f4f6;
+  --surface-1: #ffffff;
+  --surface-2: #ebebef;
+  --surface-3: #dfe0e6;
+  --border: rgb(0 0 0 / 0.08);
+  --border-strong: rgb(0 0 0 / 0.14);
+
+  --text: #17181c;
+  --text-2: #4f525b;
+  --text-3: #858893;
+
+  --accent: #5561ea;
+  --accent-strong: #4f5be4;
+  --accent-tint: rgb(85 97 234 / 0.11);
+  --on-accent: #ffffff;
+
+  --success: #1d8f58;
+  --success-tint: rgb(29 143 88 / 0.11);
+  --warning: #a8670a;
+  --warning-tint: rgb(196 125 20 / 0.13);
+  --danger: #cf3a3a;
+  --danger-tint: rgb(207 58 58 / 0.1);
+}
+
 /* Acrylic: the window is see-through and Windows blurs the desktop behind
    it, so the background lets it through and surfaces become tints. */
 :root[data-acrylic] {
@@ -47,6 +77,12 @@
   --surface-1: rgb(255 255 255 / 0.04);
   --surface-2: rgb(255 255 255 / 0.07);
   --surface-3: rgb(255 255 255 / 0.11);
+}
+:root[data-mode="light"][data-acrylic] {
+  --bg: rgb(244 244 246 / 0.6);
+  --surface-1: rgb(255 255 255 / 0.55);
+  --surface-2: rgb(0 0 0 / 0.05);
+  --surface-3: rgb(0 0 0 / 0.09);
 }
 
 *,

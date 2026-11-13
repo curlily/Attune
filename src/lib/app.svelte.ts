@@ -12,7 +12,7 @@ import {
   type RuntimeStatus,
   type Settings,
 } from "./api";
-import { saveTheme, savedTheme, type ThemeChoice } from "./theme";
+import { saveTheme, savedTheme, systemMode, watchSystemMode, type Mode, type ThemeChoice } from "./theme";
 
 export type SectionId = "queue" | "listeners";
 
@@ -58,6 +58,8 @@ class App {
   pinned = $state(false);
   /** "auto" takes the connected music app's colour. */
   theme = $state<ThemeChoice>(savedTheme());
+  /** Light or dark, following the system (always dark on Linux). */
+  mode = $state<Mode>(systemMode());
   /** Let the desktop show through, blurred (Windows acrylic). */
   acrylic = $state(readFlag("attune.acrylic"));
   /** Take songs someone in the session can't play out of the queue. */
@@ -99,6 +101,8 @@ class App {
 
   async init() {
     this.height = window.innerHeight;
+    this.mode = systemMode();
+    watchSystemMode((mode) => (this.mode = mode));
     window.addEventListener("resize", () => (this.height = window.innerHeight));
     await Promise.all([
       events.onStatus((status) => this.#onStatus(status)),

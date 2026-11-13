@@ -33,7 +33,7 @@
     );
   });
 
-  $effect(() => applyTheme(app.theme, app.connected));
+  $effect(() => applyTheme(app.theme, app.connected, app.mode));
 
   // Acrylic: Windows blurs what's behind the (transparent) window, and the
   // page's backgrounds turn see-through (app.css, [data-acrylic]).

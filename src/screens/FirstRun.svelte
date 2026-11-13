@@ -90,7 +90,7 @@
   .hero span:nth-child(2) {
     height: 100%;
     animation-delay: -0.4s;
-    background: #9c8cff;
+    background: color-mix(in srgb, var(--accent) 70%, #c4b5ff);
   }
   .hero span:nth-child(3) {
     height: 75%;

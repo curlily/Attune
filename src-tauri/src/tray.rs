@@ -174,24 +174,10 @@ pub fn refresh_icon<R: Runtime>(app: &AppHandle<R>) {
 
 fn icon(status: TrayStatus) -> Image<'static> {
     Image::new_owned(
-        draw_icon(status.dot(), light_taskbar()),
+        draw_icon(status.dot(), crate::theme::light_taskbar()),
         ICON_SIZE,
         ICON_SIZE,
     )
-}
-
-/// Whether Windows draws the taskbar light ("Choose your Windows mode").
-#[cfg(windows)]
-fn light_taskbar() -> bool {
-    windows_registry::CURRENT_USER
-        .open(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
-        .and_then(|key| key.get_u32("SystemUsesLightTheme"))
-        .is_ok_and(|light| light != 0)
-}
-
-#[cfg(not(windows))]
-fn light_taskbar() -> bool {
-    false
 }
 
 /// The face from the app icon without its tile, in the small-size version

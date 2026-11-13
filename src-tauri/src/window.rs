@@ -94,11 +94,11 @@ pub fn on_event<R: Runtime>(window: &tauri::Window<R>, event: &WindowEvent) {
             // Cheap, and catches a taskbar colour change that came without
             // a theme change (Windows' "custom" mode).
             if *focused {
-                crate::tray::refresh_icon(window.app_handle());
+                crate::theme::follow_taskbar(window.app_handle());
             }
         }
-        // The tray face follows the taskbar: white on dark, dark on light.
-        WindowEvent::ThemeChanged(_) => crate::tray::refresh_icon(window.app_handle()),
+        // The taskbar and tray icons follow the taskbar's colour.
+        WindowEvent::ThemeChanged(_) => crate::theme::follow_taskbar(window.app_handle()),
         _ => {}
     }
 }

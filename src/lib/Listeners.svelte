@@ -4,7 +4,7 @@
   import { cubicOut } from "svelte/easing";
   import type { RuntimeStatus } from "./api";
   import Icon from "./Icon.svelte";
-  import { PROVIDER_NAMES } from "./app.svelte";
+  import { PROVIDER_NAMES, app } from "./app.svelte";
   import ProviderLogo from "./ProviderLogo.svelte";
   import Section from "./Section.svelte";
   import { participantBadge } from "./status";
@@ -18,7 +18,7 @@
   <ul>
     {#each status.participants as person (person.clientId)}
       {@const badge = participantBadge(person)}
-      {@const colors = providerColors(person.provider)}
+      {@const colors = providerColors(person.provider, app.mode)}
       <li
         animate:flip={{ duration: 220 }}
         in:fly={{ x: -12, duration: 260, easing: cubicOut }}

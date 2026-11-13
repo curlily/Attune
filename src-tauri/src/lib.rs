@@ -3,6 +3,7 @@ mod error;
 mod links;
 mod settings;
 mod state;
+mod theme;
 mod tray;
 mod window;
 
@@ -50,6 +51,7 @@ pub fn run() {
             app.manage(window::WindowState::default());
             app.manage(links::PendingJoin::default());
             tray::create(app.handle())?;
+            theme::follow_taskbar(app.handle());
 
             // Links that reach the running app, and the one that started it.
             let handle = app.handle().clone();
