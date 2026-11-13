@@ -954,6 +954,7 @@ impl<B: ProviderBridge> Worker<B> {
                 }
             }
             self.applied = sequence;
+            debug!(sequence, remote, operation = %operation_summary(&operation), "Session change");
             if remote {
                 self.follow(&operation, at).await;
             }
@@ -1442,6 +1443,28 @@ impl<B: ProviderBridge> Worker<B> {
             }
             other => other,
         }
+    }
+}
+
+/// A short description of a change for the debug log (a replace lists
+/// only its size and current entry).
+fn operation_summary(operation: &SessionOperation) -> String {
+    let short = |id: &str| id.chars().take(8).collect::<String>();
+    match operation {
+        SessionOperation::QueueReplace {
+            entries,
+            current_entry_id,
+            playback,
+        } => format!(
+            "queue.replace {} entries, current {:?}, playback {:?}",
+            entries.len(),
+            current_entry_id.as_deref().map(short),
+            playback
+        ),
+        SessionOperation::QueueInsert { entry, index } => {
+            format!("queue.insert {} at {index}", short(&entry.entry_id))
+        }
+        other => serde_json::to_string(other).unwrap_or_default(),
     }
 }
 

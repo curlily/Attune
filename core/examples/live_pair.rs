@@ -24,7 +24,7 @@ use std::{
 
 use attune_core::{
     bridge_controller::{BridgeController, BridgeEvent},
-    network::{SessionClientConfig, new_client_id},
+    network::{JoinCredentials, SessionClientConfig, new_client_id},
     protocol::SessionMusicState,
     providers,
     session::SessionRuntime,
@@ -286,6 +286,47 @@ async fn daemon(url: &str, host: &str, guest: &str) -> Outcome<()> {
         ],
         log,
     };
+    serve(pair).await
+}
+
+/// Join an existing session from one provider, e.g. to watch a real jam.
+async fn join(url: &str, guest: &str, code: &str) -> Outcome<()> {
+    let log: Log = Arc::default();
+    let (guest_name, guest_config) = provider(guest)?;
+    eprintln!("[pair] attaching to {guest_name} ...");
+    let guest_bridge = Arc::new(BridgeController::initialise(guest_config).await?);
+    watch_bridge(guest_name, &guest_bridge, log.clone());
+    eprintln!("[pair] joining {code} from {guest_name} ...");
+    let joined_at = now_ms();
+    let mut config = SessionClientConfig::new(
+        url.to_owned(),
+        new_client_id(),
+        format!("Debug {guest_name}"),
+    );
+    config.provider = Some(guest_name.to_owned());
+    let credentials = JoinCredentials {
+        code: code.to_uppercase(),
+        rejoin_secret: None,
+    };
+    let runtime = SessionRuntime::join(guest_bridge.clone(), config, credentials).await?;
+    watch_runtime(guest_name, &runtime, log.clone());
+    eprintln!(
+        "[pair] in session {} (join took {} ms); control port {CONTROL}",
+        runtime.status().session_id,
+        now_ms() - joined_at
+    );
+    let pair = Pair {
+        members: vec![Member {
+            name: guest_name,
+            bridge: guest_bridge,
+            runtime,
+        }],
+        log,
+    };
+    serve(pair).await
+}
+
+async fn serve(pair: Pair) -> Outcome<()> {
     let listener = TcpListener::bind(CONTROL).await?;
     loop {
         let (stream, _) = listener.accept().await?;
@@ -317,19 +358,29 @@ async fn send(command: &str) -> Outcome<()> {
 #[tokio::main]
 async fn main() -> Outcome<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("daemon") {
-        let (url, host, guest) = match &args[1..] {
-            [url] => (url.as_str(), "spotify", "youtube"),
-            [url, host, guest] => (url.as_str(), host.as_str(), guest.as_str()),
-            _ => return Err("usage: live_pair daemon <ws-url> [<host> <guest>]".into()),
-        };
+    let tracing = || {
         tracing_subscriber::fmt()
             .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| {
                 "attune_core::session=debug,attune_core=info,warn,chromiumoxide::handler=error"
                     .into()
             }))
             .with_writer(std::io::stderr)
-            .init();
+            .init()
+    };
+    if args.first().map(String::as_str) == Some("join") {
+        let [_, url, guest, code] = &args[..] else {
+            return Err("usage: live_pair join <ws-url> <provider> <code>".into());
+        };
+        tracing();
+        return join(url, guest, code).await;
+    }
+    if args.first().map(String::as_str) == Some("daemon") {
+        let (url, host, guest) = match &args[1..] {
+            [url] => (url.as_str(), "spotify", "youtube"),
+            [url, host, guest] => (url.as_str(), host.as_str(), guest.as_str()),
+            _ => return Err("usage: live_pair daemon <ws-url> [<host> <guest>]".into()),
+        };
+        tracing();
         return daemon(url, host, guest).await;
     }
     if args.is_empty() {

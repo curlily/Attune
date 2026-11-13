@@ -135,16 +135,25 @@ pub fn validate_entry(entry: &QueueEntry) -> Result<(), StateError> {
 /// with the sender's name, so nobody can queue in someone else's name;
 /// clients apply it with their own so their edits match what the server
 /// accepts.
+///
+/// Entries already in the queue also keep their track. A provider that
+/// republishes its whole queue (a replace) describes each song as it found
+/// it, without the ISRC, cover and album the provider that queued it gave:
+/// a YouTube Music user selecting a song replaced every TIDAL cover with
+/// one from YouTube (verified live).
 pub fn stamp_added_by(
     state: &SessionMusicState,
     operation: SessionOperation,
     added_by: Option<&str>,
 ) -> SessionOperation {
     let stamp = |mut entry: QueueEntry| {
-        entry.added_by = match state.queue.iter().find(|e| e.entry_id == entry.entry_id) {
-            Some(existing) => existing.added_by.clone(),
-            None => added_by.map(str::to_owned),
-        };
+        match state.queue.iter().find(|e| e.entry_id == entry.entry_id) {
+            Some(existing) => {
+                entry.added_by = existing.added_by.clone();
+                entry.track = existing.track.clone();
+            }
+            None => entry.added_by = added_by.map(str::to_owned),
+        }
         entry
     };
     match operation {

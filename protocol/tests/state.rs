@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use attune_protocol::{
     ReplacePlayback, SessionOperation as Op,
     state::{
-        MAX_QUEUE_ENTRIES, StateError, apply, is_noop, position_at, reinsert_unavailable,
+        MAX_QUEUE_ENTRIES, StateError, apply, is_noop, position_at, reinsert_unavailable, stamp_added_by,
         validate_state,
     },
 };
@@ -771,4 +771,37 @@ fn reinsert_is_identity_without_unavailable_entries() {
         reinsert_unavailable(&local, &session, &HashSet::new()),
         local
     );
+}
+
+// ---------------------------------------------------------------------------
+// stamp_added_by
+// ---------------------------------------------------------------------------
+
+#[test]
+fn republished_entries_keep_the_sessions_track_and_queuer() {
+    let mut session = state(&["a", "b"], true, 0, 0);
+    session.queue[0].added_by = Some(id("Lily"));
+    session.queue[0].track.isrc = Some(id("USRC17607839"));
+    session.queue[0].track.cover_url = Some(id("https://resources.tidal.com/images/a/320x320.jpg"));
+
+    // Another provider's view of the same entries: no ISRC, its own cover.
+    let mut republished = entry("a");
+    republished.track.cover_url = Some(id("https://yt3.googleusercontent.com/x"));
+    let mut fresh = entry("c");
+    fresh.track.cover_url = Some(id("https://yt3.googleusercontent.com/c"));
+    let operation = Op::QueueReplace {
+        entries: vec![republished, entry("b"), fresh],
+        current_entry_id: Some(id("a")),
+        playback: None,
+    };
+
+    let Op::QueueReplace { entries, .. } = stamp_added_by(&session, operation, Some("Zoe")) else {
+        panic!("still a replace");
+    };
+    assert_eq!(entries[0].track, session.queue[0].track);
+    assert_eq!(entries[0].added_by.as_deref(), Some("Lily"));
+    assert_eq!(entries[1].track, session.queue[1].track);
+    // A new entry is described by whoever adds it.
+    assert_eq!(entries[2].track.cover_url.as_deref(), Some("https://yt3.googleusercontent.com/c"));
+    assert_eq!(entries[2].added_by.as_deref(), Some("Zoe"));
 }

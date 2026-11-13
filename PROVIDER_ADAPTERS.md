@@ -450,7 +450,26 @@ Signing in is optional: the page also plays signed out. The launch command is
   Seeks don't pass through the store. The adapter learns of them from the `<video>`'s
   `seeked` event (listened for in the capture phase on `window`, since media events don't
   bubble; verified live) and checks the position every 500 ms as a fallback.
+- **A player can stay stuck "loading"**: seen right after a join, player state 3
+  (buffering) with the `<video>` at 0, `readyState` 4 and 130 s buffered, for about
+  100 s while the session played on (2026-11-13). Local changes wait 3 s
+  (`BUFFERING_WAIT_MS`) for a loading track and then go ahead. The position read then
+  (0 if the loaded video isn't the queue item's, else where it stalled) was compared
+  with a baseline that expected 3 s of playing, published as a seek, and again every
+  3 s: a TIDAL host heard its song restart every 3 s after a YouTube Music listener
+  caught up, until she started another song (verified live, fixed). Positions read
+  while the track is loading are now never taken for a seek; after one, the baseline
+  is re-anchored silently unless the user's own `seeked` event came in between.
+  Tests: "A player stuck buffering …", "A player holding another video …".
 - Durations in the queue are whole seconds ("3:22").
+- **Covers** are on `yt3.googleusercontent.com` (`=w544-h544-…`), besides
+  `lh3.googleusercontent.com` and `i.ytimg.com`. That host was missing from the app's
+  CSP, so YouTube Music covers didn't show (verified live, fixed).
+- **Republishing the queue:** selecting a song further down publishes the page's whole
+  queue (`queue.replace`), each song described as YouTube Music found it (no ISRC, its
+  own cover and album). Entries the session already has now keep the session's track
+  (`state::stamp_added_by`, client and server); before, one click replaced every TIDAL
+  cover and ISRC in the session.
 - **Song end:** `SET_INDEX` to the next item, which starts about 0.6 s later.
 - **End of the queue** (autoplay off): the player stops on the last track (state 0).
 - **`Leave site?` dialog:** while a song plays, the page blocks unloading, which holds

@@ -1220,18 +1220,33 @@
     // ---------------------------------------------------------------------
 
     let baseline = null;
+    // Whether the baseline's position was read from a player that had the
+    // track and wasn't buffering. Only such positions show a seek.
+    let baselineSettled = false;
+    // A `seeked` event that wasn't ours since the baseline: the user moved
+    // the song, even if the player buffered meanwhile.
+    let userSeeked = false;
     let eventTimer = null;
     let pollTimer = null;
     let bufferingSince = null;
     let unsubscribe = null;
     let interrupted = false;
 
+    /** Whether the current track is still on its way (loading or buffering). */
+    function trackLoading(queue = readQueue()) {
+        return queue.length > 0 && (isBuffering() || loadedVideoId() !== queue[0].videoId);
+    }
+
     function rebase() {
         try {
-            baseline = getState();
+            const queue = readQueue();
+            baseline = stateFromQueue(queue);
+            baselineSettled = !trackLoading(queue);
         } catch {
             baseline = null;
+            baselineSettled = false;
         }
+        userSeeked = false;
     }
 
     const ids = queue => queue.map(entry => entry.entryId);
@@ -1307,7 +1322,7 @@
 
         // A track that is loading or buffering hasn't arrived yet.
         const queue = readQueue();
-        const loading = queue.length > 0 && (isBuffering() || loadedVideoId() !== queue[0].videoId);
+        const loading = trackLoading(queue);
         if (loading && Date.now() - (bufferingSince ??= Date.now()) < BUFFERING_WAIT_MS) {
             scheduleEmit();
             return;
@@ -1315,8 +1330,10 @@
         bufferingSince = null;
 
         const before = baseline;
+        const beforeSettled = baselineSettled;
         const after = stateFromQueue(queue);
         baseline = after;
+        baselineSettled = !loading;
         if (!before) return;
 
         const currentChanged = before.currentEntryId !== after.currentEntryId;
@@ -1352,7 +1369,20 @@
         if (before.playback.isPlaying !== after.playback.isPlaying) {
             sendOperation({ type: "playback.setPlaying", isPlaying: after.playback.isPlaying });
         }
-        const sought = positionWasSought(before, after);
+        // A position read while the track is still on its way says nothing:
+        // the player reports 0 (or where it stalled) while the song should
+        // have moved on. Taking that for a seek published one every 3 s
+        // (BUFFERING_WAIT_MS) for as long as the player stayed stuck, and the
+        // others were thrown back each time (verified live: TIDAL restarting
+        // a song every 3 s after a YouTube Music listener joined). Once the
+        // player has settled again, only the user's own seek counts.
+        let sought = false;
+        if (!loading) {
+            sought = beforeSettled
+                ? positionWasSought(before, after)
+                : userSeeked && before.currentEntryId === after.currentEntryId;
+            userSeeked = false;
+        }
         if (sought) {
             sendOperation({
                 type: "playback.seek",
@@ -1387,7 +1417,12 @@
         interrupted = isAdPlaying();
         // Seeks don't pass through the store: the <video>'s `seeked` event
         // reports them, the poll is the fallback.
-        unsubscribe = onPageChange(scheduleEmit, ["seeked"]);
+        unsubscribe = onPageChange(event => {
+            if (event?.type === "seeked" && applying === 0 && Date.now() >= suppressLocalChangesUntil) {
+                userSeeked = true;
+            }
+            scheduleEmit();
+        }, ["seeked"]);
         pollTimer = setInterval(() => {
             if (!eventTimer) runEmit();
         }, POSITION_POLL_MS);

@@ -19,7 +19,7 @@ const CATALOG = {
     lotta: { title: "Whole Lotta Love (Remaster)", artists: ["Led Zeppelin"], album: "Led Zeppelin II", length: "5:35" },
     purple: { title: "Purple Rain", artists: ["Prince & The Revolution"], album: "Purple Rain", length: "8:42" },
 };
-const PLAYER = { UNSTARTED: -1, ENDED: 0, PLAYING: 1, PAUSED: 2 };
+const PLAYER = { UNSTARTED: -1, ENDED: 0, PLAYING: 1, PAUSED: 2, BUFFERING: 3 };
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -769,4 +769,38 @@ test("Remaster tags and a band credit still match the same recording", () => wit
     });
     assert.deepEqual([...outcome.unavailableEntryIds], ["e-live"]);
     assert.deepEqual(entryIds(bridge.getState()), ["e-hotel", "e-lotta", "e-purple"]);
+}));
+
+// Verified live: a YouTube Music listener's player stuck loading published a
+// seek to 0 every 3 s (BUFFERING_WAIT_MS), and TIDAL restarted the song each
+// time. A position read while the track is on its way isn't a seek.
+test("A player stuck buffering doesn't publish seeks", () => withAdapter(async ({ bridge, page, events }) => {
+    await loadSession(bridge, ["a", "b", "c"], playback(true, 30_000));
+    await settle();
+
+    page.setPlayer({ state: PLAYER.BUFFERING });
+    await sleep(7_000); // two buffering waits
+    page.setPlayer({ state: PLAYER.PLAYING }); // plays on from where it stalled
+    await settle();
+    assert.deepEqual(operations(events).filter(op => op.type === "playback.seek"), []);
+
+    // Positive control: the user's seek, even with buffering after it.
+    page.userSeeks(90_000);
+    page.setPlayer({ state: PLAYER.BUFFERING });
+    await sleep(3_500);
+    page.setPlayer({ state: PLAYER.PLAYING });
+    await settle();
+    const seeks = operations(events).filter(op => op.type === "playback.seek");
+    assert.equal(seeks.length, 1, JSON.stringify(seeks));
+    assert.ok(Math.abs(seeks[0].positionMs - 90_000) < 1_500, `position ${seeks[0].positionMs}`);
+}));
+
+test("A player holding another video than the queue item doesn't publish seeks to 0", () => withAdapter(async ({ bridge, page, events }) => {
+    await loadSession(bridge, ["a", "b", "c"], playback(true, 30_000));
+    await settle();
+
+    // E.g. the video version of the song: the item's ID never shows up.
+    page.setPlayer({ videoId: "other-version" });
+    await sleep(7_000);
+    assert.deepEqual(operations(events).filter(op => op.type === "playback.seek"), []);
 }));
