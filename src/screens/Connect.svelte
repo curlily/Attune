@@ -20,6 +20,14 @@
     return () => clearInterval(timer);
   });
 
+  // Browser providers whose sign-in refuses the window Attune connects to
+  // (Google's does), so signing in is a step of its own. Apple's sign-in
+  // works in the connected window (verified by the user).
+  const SIGN_IN_FIRST = new Set<ProviderId>(["YoutubeMusic"]);
+
+  const needsSignInStep = (provider: ProviderAvailability) =>
+    SIGN_IN_FIRST.has(provider.id) && provider.inBrowser && provider.installed && !provider.ready;
+
   function describe(provider: ProviderAvailability): { state: string; note?: string; action?: string } {
     if (provider.id === app.connected) return { state: "Connected", action: `Keep ${provider.displayName}` };
     if (provider.unsupported) return { state: "Not supported", note: provider.unsupported };
@@ -27,16 +35,7 @@
     if (provider.inBrowser) {
       if (!provider.installed)
         return { state: "No browser", note: "Needs Microsoft Edge, Google Chrome or Brave." };
-      return {
-        state: "Not open",
-        note:
-          `${provider.displayName} opens in a browser window of its own. To use your account, ` +
-          "sign in once first, then close that window and connect." +
-          (provider.id === "AppleMusic"
-            ? " Without an Apple Music subscription it plays only 90-second previews."
-            : ""),
-        action: `Open ${provider.displayName}`,
-      };
+      return { state: "Not open", action: `Open ${provider.displayName}` };
     }
     if (provider.running)
       return {
@@ -128,10 +127,19 @@
           {/if}
         </button>
       {/if}
-      {#if provider.inBrowser && provider.installed && !provider.ready}
-        <button class="btn ghost wide" disabled={connecting !== null} onclick={() => signIn(provider.id)}>
-          Sign in first
-        </button>
+      {#if needsSignInStep(provider)}
+        <!-- Opens while the card is hovered or focused, so it stays tidy. -->
+        <div class="extra">
+          <div class="extra-inner">
+            <p class="note">
+              {provider.displayName} opens in a browser window of its own. To use your account,
+              sign in once first, then close that window and connect.
+            </p>
+            <button class="btn ghost wide" disabled={connecting !== null} onclick={() => signIn(provider.id)}>
+              Sign in first
+            </button>
+          </div>
+        </div>
       {/if}
       {#if error?.id === provider.id}
         <p class="error-text" transition:slide={{ duration: 160 }}>{error.text}</p>
@@ -201,6 +209,33 @@
     margin: 8px 0 0;
     color: var(--text-2);
     font-size: 12px;
+  }
+
+  /* Grid rows animate from 0 to the content's height. */
+  .extra {
+    display: grid;
+    grid-template-rows: 0fr;
+    opacity: 0;
+    transition:
+      grid-template-rows var(--base),
+      opacity var(--base);
+  }
+  .extra-inner {
+    min-height: 0;
+    overflow: hidden;
+  }
+  .card:hover .extra,
+  .card:focus-within .extra {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+  /* Hidden, its button can't be reached with Tab until the card opens. */
+  .card:not(:hover):not(:focus-within) .extra {
+    visibility: hidden;
+    transition:
+      grid-template-rows var(--base),
+      opacity var(--base),
+      visibility 0s var(--base);
   }
 
   .btn {

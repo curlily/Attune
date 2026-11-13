@@ -894,27 +894,97 @@ fn launch_browser_page(
     };
     std::fs::create_dir_all(&browser.profile_dir).map_err(launch_failed)?;
 
-    let mut command = Command::new(path);
-    command.arg(format!("--user-data-dir={}", browser.profile_dir.display()));
+    let mut args = vec![format!("--user-data-dir={}", browser.profile_dir.display())];
     if let Some(port) = debugging_port {
-        command
-            .arg(format!("--remote-debugging-port={port}"))
-            // Lets the session start playback without a click in the page.
-            .arg("--autoplay-policy=no-user-gesture-required");
+        args.push(format!("--remote-debugging-port={port}"));
+        // Lets the session start playback without a click in the page.
+        args.push("--autoplay-policy=no-user-gesture-required".to_owned());
     }
-    command
-        .args(["--no-first-run", "--no-default-browser-check"])
-        .arg(format!("--app={}", browser.start_url))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(launch_failed)?;
+    args.push("--no-first-run".to_owned());
+    args.push("--no-default-browser-check".to_owned());
+    args.push(format!("--app={}", browser.start_url));
+    spawn_outside_job(path, &args).map_err(launch_failed)?;
     info!(
         debugging = debugging_port.is_some(),
         "Opened {} in a browser window", browser.start_url
     );
     Ok(())
+}
+
+/// Start the browser outside any job object Attune runs in.
+///
+/// Verified live: started by an Attune that `cargo run` (and so `tauri dev`)
+/// had launched, the browser could play no media at all, not even a WAV
+/// made in the page (its `<audio>` stayed at "loading"). With cargo's exact
+/// environment, from a shell, it played; so it is cargo's job object, which
+/// its children inherit. That job doesn't allow breaking away either, so
+/// then Windows' shell (Explorer) starts the browser: `ShellExecute` runs in
+/// Explorer's process, outside our job. The browser is the user's and
+/// outlives Attune anyway.
+#[cfg(windows)]
+fn spawn_outside_job(path: &Path, args: &[String]) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let mut command = Command::new(path);
+    command
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    match command.creation_flags(CREATE_BREAKAWAY_FROM_JOB).spawn() {
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+        Err(error) => return Err(error),
+    }
+
+    // The job doesn't allow breaking away: let Explorer start it.
+    let quoted = |text: &str| format!("'{}'", text.replace('\'', "''"));
+    let line = args
+        .iter()
+        .map(|arg| {
+            if arg.contains([' ', '\t']) {
+                format!("\"{arg}\"")
+            } else {
+                arg.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let script = format!(
+        "(New-Object -ComObject Shell.Application).ShellExecute({}, {}, '', 'open', 1)",
+        quoted(&path.display().to_string()),
+        quoted(&line),
+    );
+    let shell = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+    match shell {
+        Ok(status) if status.success() => {
+            info!("Started the browser through the shell, outside Attune's job");
+            Ok(())
+        }
+        _ => {
+            info!("Starting the browser inside Attune's job (the shell couldn't start it)");
+            command.creation_flags(0).spawn().map(drop)
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn spawn_outside_job(path: &Path, args: &[String]) -> std::io::Result<()> {
+    Command::new(path)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(drop)
 }
 
 /// Open the provider's page in an ordinary window of its browser profile,

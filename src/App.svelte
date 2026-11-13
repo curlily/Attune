@@ -130,7 +130,7 @@
           aria-pressed={app.showSettings}
           onclick={() => (app.showSettings = !app.showSettings)}
         >
-          <Icon name="sliders" label="Settings" />
+          <Icon name="cog" label="Settings" />
         </button>
       {/if}
       <button

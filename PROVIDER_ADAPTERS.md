@@ -31,6 +31,7 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
 | Echoes | Applying a remote change makes the app emit store changes that look like local edits | Verified live | 300 ms adapter suppression window plus runtime echo check (`state::is_noop` after translation). 1.2 s was too long: it swallowed real song-end advances. |
 | Restarting the app | Killing a client that is merely mid-reload (port open, page missing) closed the user's app for nothing | Verified live, fixed | Only restart when the debug port is closed; the UI asks first |
 | Child process stdio | A launched client inheriting our stdio kept our pipes open after exit | Verified live, fixed | Launch with null stdio |
+| Browser started inside cargo's job | Started by an Attune that `cargo run` / `tauri dev` launched, the browser played **no media at all** (even a WAV made in the page stayed at "loading"); Apple Music hung at "loading". From a shell, with cargo's exact environment, it played, so it is cargo's job object, inherited by children. That job doesn't allow `CREATE_BREAKAWAY_FROM_JOB` | Verified live (Apple Music), fixed | `spawn_outside_job`: break away from the job, else let Explorer start the browser (`Shell.Application.ShellExecute`), else start it normally |
 | Microsoft Store installs | Packaged apps live under `WindowsApps` and are launched through aliases. Passing the debug port is untested. | Assumed | Detected and reported as unsupported |
 | chromiumoxide noise | Logs warnings for CDP messages it can't parse from newer Chromium | Verified live | Log filter `chromiumoxide::handler=error` |
 | Playback needs a gesture | A browser refuses to start playback from a script until the page had a user gesture. Desktop apps allow it. | Verified live (YouTube Music) | Calls are evaluated as user gestures; the browser is launched with `--autoplay-policy=no-user-gesture-required` |
@@ -612,14 +613,13 @@ first and can't be used:
 
 As for YouTube Music: Attune opens music.apple.com as an app window of an installed
 Chromium browser, in a profile kept only for this (`%LOCALAPPDATA%\Attune\AppleMusicProfile`,
-or `ATTUNE_APPLE_MUSIC_PROFILE`), on debug port `9225`. Signing in goes through the same
-"Sign in first" window without the debug port. Whether Apple's sign-in refuses a debugged
-browser, as Google's does, hasn't been tried.
+or `ATTUNE_APPLE_MUSIC_PROFILE`), on debug port `9225`. **Apple's sign-in works in the
+debugged window** (verified live by the user), so unlike YouTube Music there is no separate
+"Sign in first" step: the connect screen offers it only for YouTube Music.
 
-**Without a subscription (or signed out) the web player plays only 90-second previews**
-(`currentPlaybackDuration` 90, audio from `audio-ssl.itunes.apple.com/…/AudioPreview…`).
-Positions are then preview positions, so such a listener can't really follow a session.
-The connect screen says so. Everything below was verified with previews.
+Without a subscription (or signed out) the web player plays only 90-second previews
+(`currentPlaybackDuration` 90, audio from `audio-ssl.itunes.apple.com/…/AudioPreview…`), and
+positions are preview positions. Everything below was verified with previews.
 
 ### Verified behaviour
 
@@ -703,7 +703,7 @@ The connect screen says so. Everything below was verified with previews.
 1. **Previews only without a subscription.** Nothing was verified with full songs: whether
    `continuous` is on by default, whether autoplay comes back, whether seeks behave the same
    on full (HLS) streams.
-2. **Signing in** wasn't tried, nor whether Apple refuses a debugged browser.
+2. **Signed in** (verified to work in the debugged window), the adapter hasn't run yet.
 3. **Shuffle**: switching it off may reorder the queue; not observed.
 4. **Library songs** (`i.` IDs, uploads) and music videos in the queue weren't tested.
 5. **Storefronts**: lookups use the page's storefront; a song missing there is unavailable.

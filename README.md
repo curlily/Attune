@@ -156,11 +156,8 @@ Attune uses Apple Music's web player (music.apple.com), opened the same way as
 YouTube Music: in a window of an installed browser, with a profile of its own. The
 Windows app from the Microsoft Store can't be connected to.
 
-To listen with your account, choose **Sign in first** under Apple Music, sign in with
-your Apple ID, close that window, then choose **Open Apple Music**.
-
-**Full songs need an Apple Music subscription.** Without one, or signed out, the web
-player plays only 90-second previews, which can't keep up with a session.
+Choose **Open Apple Music** and sign in with your Apple ID in the window that opens.
+Unlike Google, Apple allows signing in there, and the sign-in is remembered.
 
 ## How a session works
 
