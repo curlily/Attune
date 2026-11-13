@@ -1006,3 +1006,21 @@ test("A song started from the session begins where the session says, whatever TI
     const position = state.playback.positionMs + (Date.now() - state.playback.positionCapturedAtMs);
     assert.ok(position < 5_000, `the new song is ${position} ms in`);
 });
+
+test("Clicking another song in TIDAL starts it at 0, not where the old start time runs on to", async () => {
+    const { bridge, store } = await loadAdapter();
+    // The current song started 70 s ago: TIDAL keeps "0 s at its start".
+    store.dispatch({ type: "test/SET_PLAYBACK", payload: { latestCurrentTime: 0, latestCurrentTimeSyncTimestamp: Date.now() - 70_000 } });
+    await sleep(STORE_EVENT_SETTLE_MS);
+
+    // Verified live: the clicked song shows for about 150 ms with position 0
+    // and the previous song's start time, before TIDAL writes its own.
+    store.dispatch({
+        type: "test/SET_PLAYBACK",
+        payload: { mediaProduct: { productId: "202", referenceId: "upcoming-b" } },
+    });
+    store.getState().playQueue.currentIndex = 3;
+    const playback = bridge.getState().playback;
+    const position = playback.positionMs + (Date.now() - playback.positionCapturedAtMs);
+    assert.ok(position < 1_500, `the clicked song reads ${position} ms in`);
+});
