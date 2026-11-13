@@ -53,7 +53,7 @@
     </div>
     {#if current}
       <div class="progress" aria-hidden="true">
-        <div class="bar" style:width="{playback.fraction * 100}%"></div>
+        <div class="bar" style:transform="scaleX({playback.fraction})"></div>
       </div>
     {/if}
   </div>
@@ -104,9 +104,12 @@
     height: 3px;
     background: var(--surface-2);
   }
+  /* Scaled rather than sized: smooth at fractions of a pixel. */
   .bar {
     height: 100%;
     background: var(--accent);
+    transform-origin: left;
+    will-change: transform;
   }
 
   .song {

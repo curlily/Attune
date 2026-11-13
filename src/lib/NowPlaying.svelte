@@ -53,7 +53,7 @@
   <div class="timeline" class:paused={!status.playback.isPlaying} title={status.playback.isPlaying ? undefined : "Paused"}>
     <span class="time">{formatTime(playback.position)}</span>
     <div class="progress" aria-hidden="true">
-      <div class="bar" style:width="{playback.fraction * 100}%"></div>
+      <div class="bar" style:transform="scaleX({playback.fraction})"></div>
     </div>
     <span class="time">{playback.duration ? formatTime(playback.duration) : "–:––"}</span>
   </div>
@@ -162,10 +162,15 @@
     border-radius: 2px;
     background: var(--surface-3);
   }
+  /* Full width, scaled from the left: a scale is drawn at fractions of a
+     pixel, a width snaps to whole ones (the bar stepped about once a
+     second), and it needs no layout per frame. The track's own rounded,
+     clipping edge shapes it. */
   .bar {
     height: 100%;
-    border-radius: 2px;
     background: var(--accent);
+    transform-origin: left;
+    will-change: transform;
     transition: background var(--base);
   }
   .timeline.paused .bar {
