@@ -6,21 +6,19 @@
 <meta charset="utf-8">
 <style>
   html, body { margin: 0; width: 328px; height: 628px; overflow: hidden; }
+  /* The logo, name and tagline, centred on the app's dark background. */
   body {
-    position: relative;
-    background:
-      radial-gradient(120% 55% at 50% 0%, rgb(123 134 255 / 0.38), transparent 70%),
-      linear-gradient(180deg, #1b1c27 0%, #121318 100%);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    background: linear-gradient(180deg, #1b1c27 0%, #121318 100%);
     color: #fff;
     font-family: "Segoe UI Variable Display", "Segoe UI", sans-serif;
     text-align: center;
   }
-  .face { display: block; width: 132px; height: 132px; margin: 150px auto 0; color: #fff; }
+  .face { display: block; width: 132px; height: 132px; margin: 0 auto; color: #fff; }
   h1 { margin: 26px 0 0; font-size: 46px; font-weight: 700; letter-spacing: -0.5px; }
   p { margin: 6px 0 0; color: #a4a8b2; font-size: 21px; font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif; }
-  /* A quiet row of level bars along the bottom. */
-  .bars { position: absolute; left: 0; right: 0; bottom: 46px; display: flex; justify-content: center; align-items: flex-end; gap: 9px; height: 64px; }
-  .bars i { width: 9px; border-radius: 5px; background: rgb(123 134 255 / 0.32); }
 </style>
 </head>
 <body>
@@ -32,10 +30,5 @@
   </svg>
   <h1>Attune</h1>
   <p>Listen together</p>
-  <div class="bars">
-    <i style="height:18px"></i><i style="height:34px"></i><i style="height:52px"></i><i style="height:28px"></i>
-    <i style="height:60px"></i><i style="height:40px"></i><i style="height:22px"></i><i style="height:46px"></i>
-    <i style="height:30px"></i><i style="height:14px"></i>
-  </div>
 </body>
 </html>
