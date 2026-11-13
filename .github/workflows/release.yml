@@ -36,6 +36,11 @@ jobs:
             echo "::error::Set the ATTUNE_DEFAULT_SERVER_URL and TAURI_SIGNING_PRIVATE_KEY secrets"
             exit 1
           fi
+          # A real address, not a placeholder like ws://<your relay>/ws.
+          if ! [[ "$ATTUNE_DEFAULT_SERVER_URL" =~ ^wss?://[A-Za-z0-9.:-]+(/[A-Za-z0-9._/-]*)?$ ]]; then
+            echo "::error::ATTUNE_DEFAULT_SERVER_URL isn't a ws:// or wss:// address"
+            exit 1
+          fi
 
       # The tag's message becomes the release notes shown in the update offer.
       - name: Read the release notes
