@@ -208,6 +208,17 @@ The adapter was injected into the running app and driven directly, not through
   up after that and added with CLEAR_UPCOMING + APPEND_ELEMENTS (`appendUpcoming`),
   if the song is still current. Joining an 81-song Spotify queue (no ISRCs) played
   after 2 s; the lookups took another 36 s. An empty session queue is CLEAR_QUEUE.
+- **No loud resume after attaching:** connecting while a song played blasted it
+  for a split second, then the pause from `settle` put it back to the user's
+  volume. TIDAL saves `_TIDAL_<user>playerState` (`currentlyPlaying`, position,
+  time) as the page unloads, and after `BOOTSTRAP_DONE` resumes if it was playing
+  less than 15 s ago. Its native player is created with `setVolume(100)` and only
+  gets the user's volume (`desiredVolumeLevel` × normalisation) once the stream's
+  info is in, so the resume starts at full volume. Read from TIDAL 2.48's bundles
+  (`nativePlayer-*.js`, the restore saga in `index-*.js`); the user's volume was 2
+  of 100. The init script runs before TIDAL's scripts and marks the saved state
+  paused (`keepRestorePaused`), so TIDAL restores the song where it was, paused.
+  `settle` still pauses if anything plays. Not yet heard live with the fix.
 - **Entry IDs live in the uids** (`pq__attune__<entryId>`). TIDAL saves its queue
   with them, so they survive a bridge reload.
 - **Lookups:** ISRCs in batches of 20 first (cached per ISRC), then the open API's

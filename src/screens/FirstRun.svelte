@@ -24,9 +24,6 @@
 </script>
 
 <form class="first-run" onsubmit={save}>
-  <div class="hero" aria-hidden="true">
-    <span></span><span></span><span></span>
-  </div>
   <h2>Listen together</h2>
   <p class="muted">
     Attune keeps your music app in step with your friends'. Everyone controls
@@ -58,7 +55,7 @@
   }
 
   h2 {
-    margin: 18px 0 6px;
+    margin: 0 0 6px;
     font-size: 19px;
     font-weight: 600;
   }
@@ -69,40 +66,5 @@
 
   .btn {
     margin-top: 16px;
-  }
-
-  /* Three bars bouncing like an equaliser. */
-  .hero {
-    display: flex;
-    align-items: flex-end;
-    gap: 5px;
-    height: 34px;
-  }
-  .hero span {
-    width: 8px;
-    border-radius: 3px;
-    background: var(--accent);
-    animation: bar 1.1s var(--ease-out) infinite alternate;
-  }
-  .hero span:nth-child(1) {
-    height: 60%;
-  }
-  .hero span:nth-child(2) {
-    height: 100%;
-    animation-delay: -0.4s;
-    background: color-mix(in srgb, var(--accent) 70%, #c4b5ff);
-  }
-  .hero span:nth-child(3) {
-    height: 75%;
-    animation-delay: -0.8s;
-    background: var(--accent-strong);
-  }
-  @keyframes bar {
-    to {
-      transform: scaleY(0.35);
-    }
-  }
-  .hero span {
-    transform-origin: bottom;
   }
 </style>

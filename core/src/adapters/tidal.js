@@ -42,6 +42,8 @@
     const REMOTE_CHANGE_SUPPRESSION_MS = 300;
     const SOURCE_CONTEXT = { id: null, type: "UNKNOWN" };
 
+    keepRestorePaused();
+
     // A page can be reloaded or the init script can be evaluated more than
     // once. Reuse a compatible installation instead of subscribing twice.
     const existingBridge = window[BRIDGE_KEY];
@@ -51,6 +53,30 @@
     }
     if (typeof existingBridge?.dispose === "function") {
         await existingBridge.dispose();
+    }
+
+    /**
+     * Attaching reloads TIDAL. On the way out TIDAL saves whether it was
+     * playing (`_TIDAL_<user>playerState`), and once it has started again it
+     * resumes if it was, less than 15 s ago. Its native player starts at
+     * full volume and gets the user's volume only once the stream has
+     * started, so that resume was heard loud for a moment before `settle`
+     * paused it (verified live, TIDAL 2.48, volume 2 of 100). This runs
+     * before TIDAL's own scripts: with the saved state marked paused, TIDAL
+     * loads the song where it was, paused, and nothing sounds.
+     */
+    function keepRestorePaused() {
+        try {
+            for (let index = 0; index < localStorage.length; index++) {
+                const key = localStorage.key(index);
+                if (!key || !/^_TIDAL_.*playerState$/.test(key)) continue;
+                const saved = JSON.parse(localStorage.getItem(key) ?? "null");
+                if (saved?.currentlyPlaying !== true) continue;
+                localStorage.setItem(key, JSON.stringify({ ...saved, currentlyPlaying: false }));
+            }
+        } catch {
+            // No storage, or not TIDAL's shape: `settle` still pauses.
+        }
     }
 
     // ---------------------------------------------------------------------

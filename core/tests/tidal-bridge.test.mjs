@@ -372,7 +372,7 @@ function createStore() {
     return store;
 }
 
-async function loadAdapter({ store = createStore(), withOpenApi = true } = {}) {
+async function loadAdapter({ store = createStore(), withOpenApi = true, localStorage } = {}) {
     const events = [];
     const context = { observerDisconnected: false };
     let randomId = 0;
@@ -406,6 +406,7 @@ async function loadAdapter({ store = createStore(), withOpenApi = true } = {}) {
         loadModule: async () => withOpenApi
             ? { getGlobalStore, getPosition, openApi: store.openApi }
             : { getGlobalStore, getPosition },
+        ...(localStorage ? { localStorage } : {}),
         structuredClone,
         setTimeout,
         clearTimeout,
@@ -475,6 +476,30 @@ test("TIDAL adapter exposes the shared API and normalizes queue history/duplicat
     assert.equal(context.observerDisconnected, true);
     assert.equal(window.__ATTUNE_BRIDGE_V1__, undefined);
     assert.equal(window.bridge, undefined);
+});
+
+function memoryStorage(entries) {
+    const items = new Map(Object.entries(entries));
+    return {
+        get length() { return items.size; },
+        key: index => [...items.keys()][index] ?? null,
+        getItem: key => items.get(key) ?? null,
+        setItem: (key, value) => items.set(key, String(value)),
+        items,
+    };
+}
+
+test("TIDAL is kept from resuming by itself after the attach reload", async () => {
+    const saved = { currentlyPlaying: true, mediaId: "101", mediaTimestamp: 42.5, mediaType: "track", setTime: 1 };
+    const storage = memoryStorage({
+        "_TIDAL_123playerState": JSON.stringify(saved),
+        "_TIDAL_456playerState": JSON.stringify({ ...saved, currentlyPlaying: false }),
+        unrelated: JSON.stringify({ currentlyPlaying: true }),
+    });
+    await loadAdapter({ localStorage: storage });
+    assert.deepEqual(JSON.parse(storage.items.get("_TIDAL_123playerState")), { ...saved, currentlyPlaying: false });
+    assert.equal(JSON.parse(storage.items.get("_TIDAL_456playerState")).currentlyPlaying, false);
+    assert.equal(JSON.parse(storage.items.get("unrelated")).currentlyPlaying, true);
 });
 
 test("TIDAL skips upcoming tracks it cannot find and reports them", async () => {

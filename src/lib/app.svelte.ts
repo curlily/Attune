@@ -52,6 +52,24 @@ export async function windowSize(width: number, height: number): Promise<Logical
   return new LogicalSize(Math.round(width * text), Math.round(height * text));
 }
 
+/**
+ * The window's invisible resize borders, in logical pixels. On Windows a
+ * frameless window with a shadow keeps them around its page, and tao sizes
+ * the page right (it adds them) but applies min/max sizes to the window
+ * *with* them. Limits of 380 page px let the whole window be 380 wide, so
+ * the first drag of an edge snapped the page narrower by the borders. Sent
+ * with the limits, they make min and max the page's size again.
+ */
+async function resizeBorders(): Promise<{ width: number; height: number }> {
+  if (!navigator.userAgent.includes("Windows")) return { width: 0, height: 0 };
+  const win = getCurrentWindow();
+  const [outer, inner, scale] = await Promise.all([win.outerSize(), win.innerSize(), win.scaleFactor()]);
+  return {
+    width: Math.max(0, outer.width - inner.width) / scale,
+    height: Math.max(0, outer.height - inner.height) / scale,
+  };
+}
+
 export const PROVIDER_NAMES: Record<string, string> = {
   Tidal: "TIDAL",
   Spotify: "Spotify",
@@ -132,6 +150,7 @@ class App {
       if (window.devicePixelRatio === this.#ratio) this.#steadyHeight = this.height;
     });
     this.#refitOnTextSize();
+    void this.#applyLimits();
     await Promise.all([
       events.onStatus((status) => this.#onStatus(status)),
       events.onNotice((notice) => this.#onNotice(notice)),
@@ -301,13 +320,27 @@ class App {
     height = Math.round(height);
     if (height === this.height && window.innerWidth === WINDOW_WIDTH) return;
     try {
-      const win = getCurrentWindow();
-      await win.setMaxSize(await windowSize(WINDOW_WIDTH, FULL_HEIGHT));
-      await win.setMinSize(await windowSize(WINDOW_WIDTH, TINY_HEIGHT));
-      await win.setSize(await windowSize(WINDOW_WIDTH, height));
+      await this.#applyLimits();
+      await getCurrentWindow().setSize(await windowSize(WINDOW_WIDTH, height));
     } catch (error) {
       this.toast(errorText(error), "error");
     }
+  }
+
+  /**
+   * Fix the width and bound the height (in page px, see `windowSize`).
+   * tauri.conf.json's limits leave out the resize borders, so these are
+   * set at start-up too, not only when the window is resized from here.
+   */
+  async #applyLimits() {
+    const win = getCurrentWindow();
+    const borders = await resizeBorders();
+    const limit = async (height: number) => {
+      const size = await windowSize(WINDOW_WIDTH, height);
+      return new LogicalSize(size.width + borders.width, size.height + borders.height);
+    };
+    await win.setMaxSize(await limit(FULL_HEIGHT));
+    await win.setMinSize(await limit(TINY_HEIGHT));
   }
 
   #onStatus(status: RuntimeStatus) {

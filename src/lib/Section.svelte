@@ -8,7 +8,8 @@
   // A titled part of the session view, below a divider. It can be folded to
   // its title (remembered), and leaves altogether, animated, when the window
   // gets too short for it (`shown`). Its content scrolls on its own when it
-  // doesn't fit, fading out at the bottom while there's more below.
+  // doesn't fit, fading out at the bottom while there's more below and at
+  // the top once it's scrolled.
   let {
     id,
     title,
@@ -30,11 +31,11 @@
 
   let collapsed = $derived(app.collapsed[id]);
 
-  /** Fades the bottom edge while there's more content below it. */
+  /** Fades an edge while there's more content past it. */
   function fadeOverflow(node: HTMLElement) {
     const update = () => {
-      const more = node.scrollTop + node.clientHeight < node.scrollHeight - 1;
-      node.classList.toggle("more-below", more);
+      node.classList.toggle("more-above", node.scrollTop > 1);
+      node.classList.toggle("more-below", node.scrollTop + node.clientHeight < node.scrollHeight - 1);
     };
     const resized = new ResizeObserver(update);
     resized.observe(node);
@@ -111,10 +112,25 @@
   }
 
   .content {
+    --fade-top: 0px;
+    --fade-bottom: 0px;
     min-height: 0;
     flex: 0 1 auto;
   }
+  .content:global(.more-above) {
+    --fade-top: 24px;
+  }
   .content:global(.more-below) {
-    mask-image: linear-gradient(to bottom, black calc(100% - 32px), transparent);
+    --fade-bottom: 32px;
+  }
+  .content:global(.more-above),
+  .content:global(.more-below) {
+    mask-image: linear-gradient(
+      to bottom,
+      transparent,
+      black var(--fade-top),
+      black calc(100% - var(--fade-bottom)),
+      transparent
+    );
   }
 </style>
