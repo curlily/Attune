@@ -39,7 +39,7 @@
   let visibleItems = $derived(order.slice(0, SHOWN));
 
   function startDrag(event: PointerEvent, item: QueueItem) {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || !app.canControl) return;
     const from = order.findIndex((entry) => entry.entryId === item.entryId);
     drag = { entryId: item.entryId, from, startY: event.clientY, dy: 0 };
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
@@ -113,6 +113,7 @@
 
   /** Keyboard reordering on the grip: arrow keys move by one. */
   function onGripKey(event: KeyboardEvent, item: QueueItem) {
+    if (!app.canControl) return;
     const from = order.findIndex((entry) => entry.entryId === item.entryId);
     const to = event.key === "ArrowUp" ? from - 1 : event.key === "ArrowDown" ? from + 1 : from;
     if (to === from || to < 0 || to >= order.length) return;
@@ -145,7 +146,8 @@
       >
         <button
           class="grip"
-          title="Drag to reorder"
+          disabled={!app.canControl}
+          title={app.lockedReason ?? "Drag to reorder"}
           aria-label="Move {item.track.title}. Use the arrow keys to move it."
           onpointerdown={(event) => startDrag(event, item)}
           onpointermove={moveDrag}
@@ -155,7 +157,12 @@
         >
           <Icon name="grip" size={14} />
         </button>
-        <button class="play" title="Play now" onclick={() => playNow(item)}>
+        <button
+          class="play"
+          disabled={!app.canControl}
+          title={app.lockedReason ?? "Play now"}
+          onclick={() => playNow(item)}
+        >
         <span class="cover" aria-hidden="true">
           <Cover url={item.track.coverUrl} lazy />
           <span class="play-mark"><Icon name="play" size={14} /></span>
@@ -179,7 +186,12 @@
         {#if warning || !item.playableHere}
           <span class="flag" title="Not everyone can play this"><Icon name="alert" size={14} /></span>
         {/if}
-        <button class="icon-btn remove" title="Remove from the queue" onclick={() => remove(item)}>
+        <button
+          class="icon-btn remove"
+          disabled={!app.canControl}
+          title={app.lockedReason ?? "Remove from the queue"}
+          onclick={() => remove(item)}
+        >
           <Icon name="trash" size={14} label="Remove {item.track.title}" />
         </button>
       </li>

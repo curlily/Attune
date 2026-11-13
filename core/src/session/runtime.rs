@@ -52,8 +52,9 @@ use crate::{
         SessionEvent, SubmitOutcome,
     },
     protocol::{
-        Participant, ParticipantStatus, QueueEntry, RejectCode, ReplacePlayback, SessionControl,
-        SessionMusicState, SessionOperation, SessionSnapshot, state,
+        PROTOCOL_VERSION, Participant, ParticipantStatus, QueueEntry, RejectCode, RepeatMode,
+        ReplacePlayback, SessionControl, SessionMusicState, SessionOperation, SessionSnapshot,
+        state,
     },
     session::{
         bridge::ProviderBridge,
@@ -62,6 +63,11 @@ use crate::{
 };
 
 const NOTICE_CAPACITY: usize = 32;
+/// A song moving on within this much of its end finished on its own (not a
+/// skip). Matches the server's allowance.
+const SONG_END_SLACK_MS: u64 = 5_000;
+/// Tell the user at most this often that a change of theirs was undone.
+const REFUSAL_NOTICE_EVERY: Duration = Duration::from_secs(20);
 const COMMAND_CAPACITY: usize = 8;
 /// Accepted changes waiting for an earlier sequence. More means we are
 /// badly out of step, and a snapshot is cheaper.
@@ -174,8 +180,15 @@ async fn settled_state<B: ProviderBridge>(bridge: &B) -> Result<SessionMusicStat
 /// playback is controlled in the music client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueueEdit {
-    Move { entry_id: String, to_index: usize },
-    Remove { entry_id: String },
+    Move {
+        entry_id: String,
+        to_index: usize,
+    },
+    Remove {
+        entry_id: String,
+    },
+    /// Repeat the current song, or stop repeating it.
+    Repeat(RepeatMode),
 }
 
 impl QueueEdit {
@@ -183,6 +196,7 @@ impl QueueEdit {
         match self {
             Self::Move { entry_id, to_index } => SessionOperation::QueueMove { entry_id, to_index },
             Self::Remove { entry_id } => SessionOperation::QueueRemove { entry_id },
+            Self::Repeat(mode) => SessionOperation::PlaybackSetRepeat { mode },
         }
     }
 }
@@ -446,6 +460,8 @@ struct Worker<B> {
     /// This user's own "Allow others to change what's playing", sent to the
     /// server whenever they're the host and it differs.
     allow_others: bool,
+    /// When the user was last told a change of theirs was undone.
+    last_refusal_notice: Option<Instant>,
     /// The user's provider settings from before the session, restored when
     /// it ends (however it ends).
     provider_settings: Value,
@@ -482,6 +498,7 @@ impl<B: ProviderBridge> Worker<B> {
             warnings: Vec::new(),
             host_client_id: None,
             others_can_control: true,
+            repeat: Default::default(),
         };
         let (status, _) = watch::channel(initial_status);
         let (notices, _) = broadcast::channel(NOTICE_CAPACITY);
@@ -511,6 +528,7 @@ impl<B: ProviderBridge> Worker<B> {
             participants: Vec::new(),
             control: None,
             allow_others: true,
+            last_refusal_notice: None,
             provider_settings: Value::Null,
             interrupted: false,
             local_covers: HashMap::new(),
@@ -736,7 +754,117 @@ impl<B: ProviderBridge> Worker<B> {
             warnings,
             host_client_id: self.control.as_ref().map(|c| c.host_client_id.clone()),
             others_can_control: self.control.as_ref().is_none_or(|c| c.others_can_control),
+            repeat: self.mirror.repeat,
         });
+    }
+
+    /// Whether this user may change what's playing (the host's rule).
+    fn can_control(&self) -> bool {
+        self.control
+            .as_ref()
+            .is_none_or(|c| c.others_can_control || c.host_client_id == self.client.client_id())
+    }
+
+    /// The session's song is playing in its last few seconds: moving on now
+    /// is the song ending, not a skip.
+    fn song_is_ending(&self) -> bool {
+        let Some(duration) = self.target_duration_of_current() else {
+            return false;
+        };
+        self.mirror.playback.is_playing
+            && state::position_at(&self.mirror, self.server_now()) + SONG_END_SLACK_MS >= duration
+    }
+
+    fn target_duration_of_current(&self) -> Option<u64> {
+        self.mirror
+            .queue
+            .first()
+            .and_then(|entry| entry.track.duration_ms)
+    }
+
+    /// Tell the user (not too often) that only the host may change things.
+    fn notify_not_allowed(&mut self) {
+        let recently = self
+            .last_refusal_notice
+            .is_some_and(|at| at.elapsed() < REFUSAL_NOTICE_EVERY);
+        if !recently {
+            self.last_refusal_notice = Some(Instant::now());
+            self.notify(Notice::NotAllowed {
+                host: self.host_name(),
+            });
+        }
+    }
+
+    /// Undo a change made in the provider that the host doesn't allow,
+    /// without asking the server: the mirror is what the session plays.
+    async fn refuse_local(&mut self, operation: &SessionOperation) {
+        self.notify_not_allowed();
+        match operation {
+            // Small and common: put play state and position back directly.
+            SessionOperation::PlaybackSetPlaying { .. } | SessionOperation::PlaybackSeek { .. } => {
+                if let Some(entry_id) = self.mirror.current_entry_id.clone() {
+                    let position_ms = state::position_at(&self.mirror, self.server_now());
+                    let _ = self
+                        .bridge
+                        .apply_operation(&SessionOperation::PlaybackSeek {
+                            entry_id,
+                            position_ms,
+                        })
+                        .await;
+                }
+                let is_playing = self.mirror.playback.is_playing;
+                let _ = self
+                    .bridge
+                    .apply_operation(&SessionOperation::PlaybackSetPlaying { is_playing })
+                    .await;
+            }
+            // The provider's own repeat stays off; nothing to undo there.
+            SessionOperation::PlaybackSetRepeat { .. } => {}
+            // Anything else: load the session's state again.
+            _ => self.reapply().await,
+        }
+    }
+
+    /// Apply the session's state (as this client knows it) to the provider.
+    ///
+    /// Boxed like `resync`: it's reachable from itself (follow -> reapply
+    /// -> apply_snapshot -> drain -> follow).
+    fn reapply(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            let snapshot = SessionSnapshot {
+                protocol_version: PROTOCOL_VERSION,
+                session_id: self.session_id.clone(),
+                revision: self.applied,
+                updated_at_ms: self.server_now(),
+                state: self.mirror.clone(),
+            };
+            self.apply_snapshot(snapshot).await;
+        })
+    }
+
+    /// Repeat one: the song that just ended starts over, here and (through
+    /// the server) for everyone. The provider has already moved on and
+    /// dropped the song from its queue, so the session's state is loaded
+    /// back rather than the song selected.
+    async fn restart_current(&mut self) {
+        let Some(entry_id) = self.mirror.current_entry_id.clone() else {
+            return;
+        };
+        // Someone else may have restarted it already; either way the
+        // mirror ends up at the start of the song.
+        self.submit_local(SessionOperation::PlaybackSeek {
+            entry_id,
+            position_ms: 0,
+        })
+        .await;
+        self.reapply().await;
+    }
+
+    /// A restart of the repeated song, as opposed to an ordinary seek.
+    fn is_repeat_restart(&self, operation: &SessionOperation) -> bool {
+        const RESTART_SLACK_MS: u64 = 3_000;
+        self.mirror.repeat == RepeatMode::One
+            && matches!(operation, SessionOperation::PlaybackSeek { position_ms, .. } if *position_ms <= RESTART_SLACK_MS)
     }
 
     fn is_host(&self) -> bool {
@@ -1090,6 +1218,16 @@ impl<B: ProviderBridge> Worker<B> {
     /// Bring the provider along for one remote change (already in the
     /// mirror), accepted by the server at `accepted_at_ms`.
     async fn follow(&mut self, operation: &SessionOperation, accepted_at_ms: u64) {
+        // Repeat lives in the session only; providers keep theirs off.
+        if matches!(operation, SessionOperation::PlaybackSetRepeat { .. }) {
+            return;
+        }
+        // Someone's song ended and started over. This provider may have
+        // moved on already (and dropped the song): load the state back.
+        if self.sync == SyncState::Synced && self.is_repeat_restart(operation) {
+            self.reapply().await;
+            return;
+        }
         match self.sync {
             SyncState::Synced => {}
             SyncState::WaitingForNextSong => {
@@ -1393,6 +1531,18 @@ impl<B: ProviderBridge> Worker<B> {
                 return;
             }
         }
+        // A song finishing moves on in every app; anything else is a change
+        // someone made.
+        let ends_song =
+            matches!(operation, SessionOperation::PlaybackAdvance { .. }) && self.song_is_ending();
+        if ends_song && self.mirror.repeat == RepeatMode::One {
+            self.restart_current().await;
+            return;
+        }
+        if !ends_song && !self.can_control() {
+            self.refuse_local(&operation).await;
+            return;
+        }
         let operation = self.with_actual_playback(operation).await;
         self.submit_local(operation).await;
     }
@@ -1494,9 +1644,7 @@ impl<B: ProviderBridge> Worker<B> {
             Ok(SubmitOutcome::Rejected { code, .. }) => {
                 match code {
                     RejectCode::StaleQueue => self.notify(Notice::QueueEditUndone),
-                    RejectCode::NotAllowed => self.notify(Notice::NotAllowed {
-                        host: self.host_name(),
-                    }),
+                    RejectCode::NotAllowed => self.notify_not_allowed(),
                     RejectCode::InvalidOperation => {}
                 }
                 // Either way the provider now differs from the session.
@@ -1533,6 +1681,14 @@ impl<B: ProviderBridge> Worker<B> {
                 ),
                 current_entry_id,
                 playback,
+            },
+            // A repeat press in the music app (adapters switch the app's
+            // own back off) turns the session's repeat on or off.
+            SessionOperation::PlaybackSetRepeat { .. } => SessionOperation::PlaybackSetRepeat {
+                mode: match self.mirror.repeat {
+                    RepeatMode::Off => RepeatMode::One,
+                    RepeatMode::One => RepeatMode::Off,
+                },
             },
             // At song end the provider skips straight to the next song it
             // has. For the session, the song that ended is followed by the

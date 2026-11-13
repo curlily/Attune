@@ -253,7 +253,7 @@ The adapter was injected into the running app and driven directly, not through
 5. **Local-change suppression is still partly time-based** (300 ms after a remote
    change, and while holding a loaded track). A real user action inside that window
    is lost.
-6. **Autoplay, shuffle and repeat aren't synced.** Mitigated: they're turned off for the length of a jam (see 5.9). Changing them in TIDAL during a jam isn't detected yet.
+6. **Autoplay, shuffle and repeat during a jam.** They're turned off for the length of a jam (see 5.9). A repeat press is reported as `playback.setRepeat` (the runtime toggles the session's repeat) and TIDAL's own repeat is set back to `REPEAT_OFF`. TIDAL's shuffle button (`…_AND_SHUFFLE_ITEMS`) reorders the queue in the same action, so the new order is shared like any queue edit; then only the flag is cleared (`DISABLE_SHUFFLE_MODE`, keeps the order). Mocked only: **check live** that the button's reorder reaches the store before the debounced comparison.
 7. **Casting and the cloud queue:** writes are refused while casting; `cloudV2`
    (server queue) is untested and RESET is not synced to the server there.
 8. **Not done yet:** the `live_session` example and a two-person jam with the reworked
@@ -371,7 +371,7 @@ went both ways without echoes; YouTube Music trailed by 0.1–1.2 s.
 4. **Changes from another device** (Spotify Connect) haven't been tested.
 5. **Starting a jam from a playlist** publishes the window of upcoming playlist tracks Spotify shows (about 15–50). As it moves on and shows more, those are published as inserts. Not tested with a session server.
 6. **The local-change suppression is still partly time-based:** 300 ms after a remote change, though the change itself is now waited for. A user action in that window is lost.
-7. **Changing shuffle, repeat or autoplay during a jam** isn't detected (same as TIDAL).
+7. **Shuffle and repeat during a jam.** A repeat press is reported as `playback.setRepeat` and `setRepeat(0)` puts Spotify's back. For shuffle the adapter waits 600 ms (Spotify shows the shuffled order a moment after the flag), shares the order, then calls `setShuffle(false)`; Spotify then puts its old order back, so the shuffled order is written again with `writeUpcoming`. Mocked only: **check live** that `setShuffle(true)` reorders `nextItems` within 600 ms, and that the rewrite after `setShuffle(false)` isn't published as a user change. Autoplay changes are still not detected.
 8. **Debug port:** Attune's config expects Spotify on 9223. `--remote-debugging-port=<port>` needs the `=`; with a space Spotify ignores it without a word.
 9. **Store version:** still unchecked.
 10. **Not done yet:** a song missing on the Spotify side. Sessions with YouTube Music and with TIDAL were run live (`live_pair`).
@@ -715,7 +715,7 @@ positions are preview positions. Everything below was verified with previews.
    `continuous` is on by default, whether autoplay comes back, whether seeks behave the same
    on full (HLS) streams.
 2. **Signed in** (verified to work in the debugged window), the adapter hasn't run yet.
-3. **Shuffle**: switching it off may reorder the queue; not observed.
+3. **Shuffle**: switching it off may reorder the queue; not observed. During a jam a shuffle press is simply undone (MusicKit's `shuffleModeDidChange` now triggers the check), not shared, until it's known whether MusicKit's shuffle reorders `queue.items`. A repeat press (`repeatModeDidChange`) is reported as `playback.setRepeat` and `repeatMode` is set back to 0.
 4. **Library songs** (`i.` IDs, uploads) and music videos in the queue weren't tested.
 5. **Storefronts**: lookups use the page's storefront; a song missing there is unavailable.
 6. **Local-change suppression is partly time-based** (300 ms after a remote change).
@@ -748,5 +748,5 @@ positions are preview positions. Everything below was verified with previews.
     - **Left out: clearing the queue.** "Start a jam with your current queue" needs it, joining replaces it anyway, and TIDAL can't safely unload the current track (TIDAL problem 4).
     - **Caveats:**
       - TIDAL saves these settings. If Attune crashes mid-jam, they stay off until changed by hand. A fix would be to save `previous` in Attune's settings and restore it on the next start.
-      - Turning shuffle back on *during* a jam isn't detected yet. Detect it and either re-disable it or tell the user.
+      - Turning shuffle back on *during* a jam is undone at once (see open problem 3).
 10. **Version awareness.** Record the client version (Electron/app version from CDP `Browser.getVersion` or the exe) with each live verification above, so a client update that breaks something is recognisable.

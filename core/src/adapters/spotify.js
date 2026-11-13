@@ -28,6 +28,8 @@
     // which covers the debounced event of its last update. The change itself
     // is covered exactly: applying waits until Spotify shows it.
     const REMOTE_CHANGE_SUPPRESSION_MS = 300;
+    // Spotify shows a shuffled order a moment after its shuffle flag.
+    const SHUFFLE_SETTLE_MS = 600;
     // How long Spotify may take to show a change we asked for.
     const CHANGE_TIMEOUT_MS = 5_000;
     // Waits check on Spotify's events (see `watchPlayer`); this is only a
@@ -1270,12 +1272,16 @@
             if (previous.autoPlay === true) {
                 await waitFor(now => !(now?.nextItems ?? []).some(item => item.provider === "autoplay"), 2_000);
             }
+            keepNeutral = true;
             return previous;
         });
     }
 
     /** Put back the settings `prepareForSession` returned. */
     function restoreAfterSession(previous) {
+        keepNeutral = false;
+        clearTimeout(shuffleTimer);
+        shuffleTimer = null;
         if (!previous || typeof previous !== "object") return Promise.resolve();
         return asRemoteChange(async () => {
             const attempt = async action => {
@@ -1503,10 +1509,63 @@
             eventTimer = null;
             try {
                 emitLocalChanges();
+                keepShuffleAndRepeatOff();
             } catch (error) {
                 sendEvent("Error", `Could not follow Spotify's state: ${error.message}`);
             }
         }, EVENT_DEBOUNCE_MS);
+    }
+
+    // ---------------------------------------------------------------------
+    // Shuffle and repeat during a session
+    // ---------------------------------------------------------------------
+
+    // Set while a session runs: Spotify's own shuffle and repeat stay off.
+    let keepNeutral = false;
+    let neutralizing = false;
+    let shuffleTimer = null;
+
+    function neutralize(action) {
+        neutralizing = true;
+        return asRemoteChange(action)
+            .catch(error => console.warn("[Attune] Could not switch Spotify's shuffle or repeat off", error))
+            .finally(() => { neutralizing = false; });
+    }
+
+    /**
+     * The user pressed repeat or shuffle in Spotify during a session.
+     *
+     * Repeat belongs to the session: report the press (the runtime turns
+     * the session's repeat on or off) and switch Spotify's off again.
+     *
+     * Shuffle reorders Spotify's upcoming list, and that new order is
+     * shared like any other queue change. Then the mode goes off again, so
+     * Spotify doesn't shuffle what the session writes later. Switching it
+     * off makes Spotify put its old order back, so the shuffled order is
+     * written again right after.
+     */
+    function keepShuffleAndRepeatOff() {
+        if (!keepNeutral || neutralizing || applying > 0 || !player) return;
+        const state = player.getState();
+        if (Number.isInteger(state?.repeat) && state.repeat !== REPEAT_OFF) {
+            sendOperation({ type: "playback.setRepeat", mode: "one" });
+            neutralize(() => player.setRepeat(REPEAT_OFF));
+            return;
+        }
+        if (state?.shuffle && !shuffleTimer) {
+            shuffleTimer = setTimeout(() => {
+                shuffleTimer = null;
+                if (!keepNeutral || !player) return;
+                // Share the shuffled order if it hasn't been yet.
+                emitLocalChanges();
+                const order = (baselineView?.upcoming ?? [])
+                    .map(item => ({ entryId: entryIdFor(item.uid), uri: item.uri }));
+                neutralize(async () => {
+                    await player.setShuffle(false);
+                    await writeUpcoming(order);
+                });
+            }, SHUFFLE_SETTLE_MS);
+        }
     }
 
     function subscribe() {
@@ -1583,6 +1642,9 @@
     async function dispose() {
         clearTimeout(eventTimer);
         eventTimer = null;
+        clearTimeout(shuffleTimer);
+        shuffleTimer = null;
+        keepNeutral = false;
         removeListeners.forEach(remove => remove?.());
         removeListeners = [];
         player = null;

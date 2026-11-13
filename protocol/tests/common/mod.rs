@@ -40,6 +40,7 @@ pub fn state(
             position_ms,
             position_captured_at_ms: captured_at_ms,
         },
+        repeat: Default::default(),
     }
 }
 

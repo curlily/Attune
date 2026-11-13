@@ -16,8 +16,8 @@ use attune_core::{
     bridge_controller::{ApplyOutcome, BridgeEvent, Interruption},
     network::{ReconnectPolicy, SessionClientConfig},
     protocol::{
-        ParticipantStatus, QueueEntry, SessionMusicState, SessionOperation as Op, SessionPlayback,
-        SessionSnapshot, TrackDescriptor, state,
+        ParticipantStatus, QueueEntry, RepeatMode, SessionMusicState, SessionOperation as Op,
+        SessionPlayback, SessionSnapshot, TrackDescriptor, state,
     },
     session::{Notice, ProviderBridge, QueueEdit, SessionRuntime, SyncState},
 };
@@ -57,6 +57,7 @@ fn music(ids: &[&str]) -> SessionMusicState {
             position_ms: 0,
             position_captured_at_ms: now_ms(),
         },
+        repeat: Default::default(),
     }
 }
 
@@ -197,6 +198,7 @@ impl FakeProvider {
             current_entry_id: kept.first().map(|e| e.entry_id.clone()),
             queue: kept,
             playback: target.playback,
+            repeat: Default::default(),
         };
         *self.loads.lock().unwrap() += 1;
         Ok(ApplyOutcome {
@@ -1061,4 +1063,123 @@ async fn covers_come_from_this_computers_app_and_the_session_otherwise() {
         cover_of(&b, "s4") == cover("b.example", "s4")
     })
     .await;
+}
+
+// ---------------------------------------------------------------------------
+// The host's rule, and repeat
+// ---------------------------------------------------------------------------
+
+/// A hosts from `a_music` without letting others change what's playing
+/// (when `locked`); B joins.
+async fn hosted_session(a_music: SessionMusicState, locked: bool) -> Session {
+    let server = TestServer::start().await;
+    let a_provider = FakeProvider::new(&[]);
+    *a_provider.state.lock().unwrap() = a_music;
+    let mut a_config = config(&server, "a");
+    a_config.others_can_control = !locked;
+    let a = SessionRuntime::create(a_provider.clone(), a_config)
+        .await
+        .expect("create");
+    let b_provider = FakeProvider::new(&["x1"]);
+    let b = SessionRuntime::join(
+        b_provider.clone(),
+        config(&server, "b"),
+        a.credentials().clone(),
+    )
+    .await
+    .expect("join");
+    eventually("B knows A hosts", || {
+        b.status().host_client_id.as_deref() == Some("a")
+    })
+    .await;
+    Session {
+        server,
+        a,
+        a_provider,
+        b,
+        b_provider,
+    }
+}
+
+/// Playing near the end of s1 (of 200 s).
+fn near_the_end(ids: &[&str]) -> SessionMusicState {
+    let mut music = music(ids);
+    music.playback.position_ms = 198_000;
+    music
+}
+
+#[tokio::test]
+async fn a_listeners_change_is_undone_here_when_the_host_doesnt_allow_it() {
+    let s = hosted_session(music(&["s1", "s2", "s3"]), true).await;
+    let session_id = s.a.credentials().code.clone();
+    sync_is(&s.b, SyncState::Synced).await;
+    let mut notices = s.b.notices();
+
+    s.b_provider
+        .local(Op::PlaybackSetPlaying { is_playing: false });
+
+    eventually("B plays again", || s.b_provider.playing()).await;
+    let notice = timeout(WAIT, notices.recv())
+        .await
+        .expect("a notice")
+        .expect("notice");
+    assert!(
+        matches!(notice, Notice::NotAllowed { ref host } if host == "User a"),
+        "{notice:?}"
+    );
+    // Never sent: the session didn't change.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(s.server.sequence(&session_id), 0);
+    assert!(s.a_provider.playing());
+}
+
+#[tokio::test]
+async fn a_song_ending_moves_everyone_on_even_when_locked() {
+    let s = hosted_session(near_the_end(&["s1", "s2", "s3"]), true).await;
+    sync_is(&s.b, SyncState::Synced).await;
+
+    s.b_provider.local(advance("s2"));
+
+    eventually("A plays s2", || {
+        s.a_provider.current().as_deref() == Some("s2")
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn repeat_one_restarts_the_song_instead_of_moving_on() {
+    let s = hosted_session(near_the_end(&["s1", "s2", "s3"]), false).await;
+    sync_is(&s.b, SyncState::Synced).await;
+    s.a.edit_queue(QueueEdit::Repeat(RepeatMode::One))
+        .await
+        .expect("repeat");
+    eventually("B sees repeat", || s.b.status().repeat == RepeatMode::One).await;
+
+    // A's music app reaches the end of s1 and moves on by itself.
+    s.a_provider.local(advance("s2"));
+
+    eventually("A is back on s1", || {
+        s.a_provider.current().as_deref() == Some("s1")
+    })
+    .await;
+    eventually("the session restarted s1", || {
+        let status = s.b.status();
+        status.queue.first().map(|item| item.entry_id.as_str()) == Some("s1")
+            && status.playback.position_ms < 5_000
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_repeat_press_in_the_music_app_turns_the_sessions_repeat_on_and_off() {
+    let s = hosted_session(music(&["s1", "s2"]), false).await;
+    sync_is(&s.b, SyncState::Synced).await;
+    let press = || Op::PlaybackSetRepeat {
+        mode: RepeatMode::One,
+    };
+
+    s.b_provider.emit(press());
+    eventually("repeat is on", || s.a.status().repeat == RepeatMode::One).await;
+    s.b_provider.emit(press());
+    eventually("repeat is off", || s.a.status().repeat == RepeatMode::Off).await;
 }

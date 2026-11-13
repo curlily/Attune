@@ -24,6 +24,15 @@
     >
       <Icon name={ICON[toast.tone]} size={15} />
       <span>{toast.text}</span>
+      {#if toast.action}
+        <button
+          class="btn action"
+          onclick={() => {
+            toast.action?.run();
+            app.dismissToast(toast.id);
+          }}>{toast.action.label}</button
+        >
+      {/if}
       <button class="icon-btn" title="Dismiss" onclick={() => app.dismissToast(toast.id)}>
         <Icon name="x" size={13} label="Dismiss" />
       </button>
@@ -57,6 +66,12 @@
   }
   .toast span {
     flex: 1;
+  }
+  .toast .action {
+    flex: none;
+    height: 26px;
+    padding: 0 9px;
+    font-size: 12px;
   }
   .toast .icon-btn {
     width: 22px;

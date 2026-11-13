@@ -1525,11 +1525,13 @@
         if (previous.shuffle) dispatch("playQueue/DISABLE_SHUFFLE_MODE");
         if (previous.repeatMode !== REPEAT_OFF) dispatch("playQueue/SET_REPEAT_MODE", REPEAT_OFF);
         if (previous.autoPlay === true) dispatch("settings/SET_AUTOPLAY", false);
+        keepNeutral = true;
         return previous;
     }
 
     /** Put back the settings `prepareForSession` returned. */
     function restoreAfterSession(previous) {
+        keepNeutral = false;
         if (!previous || typeof previous !== "object") return;
         setRemoteMutationWindow();
         if (previous.shuffle === true) dispatch("playQueue/ENABLE_SHUFFLE_MODE");
@@ -1864,8 +1866,35 @@
                 pendingStoreState = null;
                 storeEventTimer = null;
                 if (before && after) emitLocalChanges(before, after);
+                if (after) keepShuffleAndRepeatOff(after);
             }, STORE_EVENT_DEBOUNCE_MS);
         });
+    }
+
+    // Set while a session runs: TIDAL's own shuffle and repeat stay off.
+    let keepNeutral = false;
+
+    /**
+     * The user pressed repeat or shuffle in TIDAL during a session.
+     *
+     * Repeat belongs to the session: report the press (the runtime turns
+     * the session's repeat on or off) and switch TIDAL's off again.
+     *
+     * TIDAL's shuffle button reorders the queue in the same action, so the
+     * new order has just been shared like any other queue change. Only the
+     * flag is switched off again (that keeps the order), so TIDAL doesn't
+     * shuffle what the session writes later.
+     */
+    function keepShuffleAndRepeatOff(reduxState) {
+        if (!keepNeutral || Date.now() < suppressLocalChangesUntil) return;
+        const queue = reduxState?.playQueue;
+        const repeatOn = Number.isInteger(queue?.repeatMode) && queue.repeatMode !== REPEAT_OFF;
+        const shuffleOn = Boolean(queue?.shuffleModeEnabled);
+        if (!repeatOn && !shuffleOn) return;
+        if (repeatOn) sendOperation({ type: "playback.setRepeat", mode: "one" });
+        setRemoteMutationWindow();
+        if (repeatOn) dispatch("playQueue/SET_REPEAT_MODE", REPEAT_OFF);
+        if (shuffleOn) dispatch("playQueue/DISABLE_SHUFFLE_MODE");
     }
 
     // ---------------------------------------------------------------------
@@ -1930,6 +1959,7 @@
     }
 
     async function dispose() {
+        keepNeutral = false;
         if (storeEventTimer) clearTimeout(storeEventTimer);
         storeEventTimer = null;
         storeUnsubscribe?.();

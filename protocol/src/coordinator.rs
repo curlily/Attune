@@ -39,7 +39,7 @@ use crate::{
         MAX_ID_LEN, MAX_PROVIDER_LABEL_CHARS, OperationRequest, Participant, ParticipantStatus,
         RejectCode, ServerMessage, SessionControl, SessionInvite,
     },
-    model::{SessionMusicState, SessionOperation, SessionSnapshot},
+    model::{RepeatMode, SessionMusicState, SessionOperation, SessionSnapshot},
     state,
 };
 
@@ -151,6 +151,10 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
             .fold(0u8, |acc, (l, r)| acc | (l ^ r))
             == 0
 }
+
+/// How far into a repeated song a restart may be reported (clients notice
+/// the song ended a little late).
+const RESTART_SLACK_MS: u64 = 3_000;
 
 #[derive(Debug)]
 pub struct SessionCoordinator {
@@ -730,7 +734,15 @@ impl SessionCoordinator {
         if client_id == self.host || self.others_can_control {
             return true;
         }
-        matches!(operation, SessionOperation::PlaybackAdvance { .. }) && self.song_is_ending(now_ms)
+        let ends_song = match operation {
+            SessionOperation::PlaybackAdvance { .. } => true,
+            // Repeat one: the song starting over is how it ends.
+            SessionOperation::PlaybackSeek { position_ms, .. } => {
+                self.state.repeat == RepeatMode::One && *position_ms <= RESTART_SLACK_MS
+            }
+            _ => false,
+        };
+        ends_song && self.song_is_ending(now_ms)
     }
 
     /// The current song is playing within its last few seconds (or past).

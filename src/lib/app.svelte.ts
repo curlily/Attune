@@ -25,6 +25,8 @@ export interface Toast {
   id: number;
   text: string;
   tone: Tone;
+  /** A button on the message, e.g. "Step out". */
+  action?: { label: string; run: () => void };
 }
 
 const TOAST_MS = 5000;
@@ -151,6 +153,11 @@ class App {
   /** Whether you may change what's playing in the session you're in. */
   get canControl(): boolean {
     return !this.status || this.status.othersCanControl || this.isHost;
+  }
+
+  /** Why a control is unavailable, for its tooltip; null when it isn't. */
+  get lockedReason(): string | null {
+    return this.canControl ? null : `Only ${this.hostName ?? "the host"} can change what's playing`;
   }
 
   get providerName(): string {
@@ -313,10 +320,11 @@ class App {
     await this.setHeight(FULL_HEIGHT);
   }
 
-  toast(text: string, tone: Tone = "info") {
+  toast(text: string, tone: Tone = "info", action?: Toast["action"]) {
     const id = this.#nextToast++;
-    this.toasts = [...this.toasts, { id, text, tone }].slice(-3);
-    setTimeout(() => this.dismissToast(id), TOAST_MS);
+    this.toasts = [...this.toasts, { id, text, tone, action }].slice(-3);
+    // One with a button stays a little longer, to be pressed.
+    setTimeout(() => this.dismissToast(id), action ? TOAST_MS * 2 : TOAST_MS);
   }
 
   dismissToast(id: number) {
@@ -407,7 +415,12 @@ class App {
     const provider = this.providerName;
     switch (notice.kind) {
       case "notAllowed":
-        this.toast(`Only ${notice.host} can change what's playing right now.`, "warning");
+        this.toast(`Only ${notice.host} can change what's playing, so your change was undone.`, "warning", {
+          label: "Step out",
+          run: () => {
+            api.stepOut().catch((error) => this.toast(errorText(error), "error"));
+          },
+        });
         break;
       case "queueEditUndone":
         this.toast("Someone changed the queue at the same time, so your change was undone.", "warning");

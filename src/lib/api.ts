@@ -137,7 +137,11 @@ export interface RuntimeStatus {
   hostClientId: string | null;
   /** Whether people other than the host may change what's playing. */
   othersCanControl: boolean;
+  /** What happens when the current song ends. */
+  repeat: RepeatMode;
 }
+
+export type RepeatMode = "off" | "one";
 
 export interface SessionInfo {
   code: string;
@@ -200,6 +204,7 @@ export const api = {
   resync: () => invoke<void>("resync"),
   queueMove: (entryId: string, toIndex: number) => invoke<void>("queue_move", { entryId, toIndex }),
   queueRemove: (entryId: string) => invoke<void>("queue_remove", { entryId }),
+  setRepeat: (mode: RepeatMode) => invoke<void>("set_repeat", { mode }),
   /** Play a queued song now, in place of the current one. */
   queuePlayNow: (entryId: string) => invoke<void>("queue_play_now", { entryId }),
   getSessionStatus: () => invoke<RuntimeStatus | null>("get_session_status"),

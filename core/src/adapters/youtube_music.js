@@ -1173,13 +1173,20 @@
      * app believes the user chose the setting. So mark it as chosen, and
      * switch it off again should it come back.
      */
-    function keepAutoplayOff() {
+    function keepAutoplayOff({ fromUser = false } = {}) {
         const queue = appState().queue ?? {};
         if (queue.hasUserChangedDefaultAutoplayMode !== true) {
             dispatch("HAS_USER_CHANGED_DEFAULT_AUTOPLAY_MODE", true);
         }
         if (queue.autoplay !== false) dispatch("SET_AUTOPLAY_ENABLED", false);
-        if (queue.repeatMode && queue.repeatMode !== REPEAT_OFF) dispatch("SET_REPEAT", REPEAT_OFF);
+        if (queue.repeatMode && queue.repeatMode !== REPEAT_OFF) {
+            // Repeat belongs to the session: a press here is reported (the
+            // runtime turns the session's repeat on or off), and the app's
+            // own goes off again. Shuffle needs nothing: here it's a one-time
+            // reordering, shared like any other queue change.
+            if (fromUser) sendOperation({ type: "playback.setRepeat", mode: "one" });
+            dispatch("SET_REPEAT", REPEAT_OFF);
+        }
     }
 
     /**
@@ -1313,7 +1320,9 @@
     }
 
     function emitLocalChanges() {
-        if (sessionSettings) keepAutoplayOff();
+        if (sessionSettings) {
+            keepAutoplayOff({ fromUser: applying === 0 && Date.now() >= suppressLocalChangesUntil });
+        }
         if (noteInterruption()) return;
         if (applying > 0 || Date.now() < suppressLocalChangesUntil) {
             rebase();

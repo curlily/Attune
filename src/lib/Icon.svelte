@@ -27,6 +27,8 @@
     minimize: ["M6 12h12"],
     play: ["M8 5.5v13l10.5-6.5z"],
     skip: ["M6 5.5v13l9-6.5z", "M18 5v14"],
+    // Two arrows chasing each other round.
+    repeat: ["M17 3l3 3-3 3", "M4 11V9a3 3 0 0 1 3-3h13", "M7 21l-3-3 3-3", "M20 13v2a3 3 0 0 1-3 3H4"],
   } satisfies Record<string, string[]>;
 
   export type IconName = keyof typeof ICONS;

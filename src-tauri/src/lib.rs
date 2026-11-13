@@ -47,6 +47,7 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .on_window_event(window::on_event)
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -112,6 +113,7 @@ pub fn run() {
             commands::session::resync,
             commands::session::queue_move,
             commands::session::queue_remove,
+            commands::session::set_repeat,
             commands::session::queue_play_now,
             commands::session::get_session_status,
             commands::session::get_join_code,

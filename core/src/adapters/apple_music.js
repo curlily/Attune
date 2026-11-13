@@ -54,6 +54,8 @@
     const MUSICKIT_EVENTS = [
         "playbackStateDidChange", "nowPlayingItemDidChange", "queueItemsDidChange",
         "queuePositionDidChange", "mediaPlaybackError",
+        // So a repeat or shuffle press is noticed (and undone) at once.
+        "repeatModeDidChange", "shuffleModeDidChange",
     ];
     const POSITION_TOLERANCE_MS = 1_000;
     // A position jump larger than this is a seek.
@@ -1138,9 +1140,18 @@
      * `continuous` is off and the player stops after every song instead of
      * moving on to the next.
      */
-    function keepSessionSettings() {
+    function keepSessionSettings({ fromUser = false } = {}) {
         if (music.autoplayEnabled) music.autoplayEnabled = false;
-        if (music.repeatMode !== REPEAT_NONE) music.repeatMode = REPEAT_NONE;
+        if (music.repeatMode !== REPEAT_NONE) {
+            // Repeat belongs to the session: a press here is reported (the
+            // runtime turns the session's repeat on or off), and MusicKit's
+            // own goes off again.
+            if (fromUser) sendOperation({ type: "playback.setRepeat", mode: "one" });
+            music.repeatMode = REPEAT_NONE;
+        }
+        // Not yet shared: whether MusicKit's shuffle reorders the queue it
+        // shows, and puts the old order back when switched off, isn't known
+        // (PROVIDER_ADAPTERS.md). Until it's checked, it's simply undone.
         if (music.shuffleMode !== SHUFFLE_OFF) music.shuffleMode = SHUFFLE_OFF;
         if (music.continuous === false) music.continuous = true;
     }
@@ -1262,7 +1273,9 @@
     }
 
     function emitLocalChanges() {
-        if (sessionSettings) keepSessionSettings();
+        if (sessionSettings) {
+            keepSessionSettings({ fromUser: applying === 0 && Date.now() >= suppressLocalChangesUntil });
+        }
         if (applying > 0 || Date.now() < suppressLocalChangesUntil) {
             rebase();
             return;

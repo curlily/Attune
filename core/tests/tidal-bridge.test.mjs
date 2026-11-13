@@ -309,6 +309,12 @@ function createStore() {
                 state.playQueue.shuffleModeEnabled = false;
             } else if (type === "playQueue/ENABLE_SHUFFLE_MODE") {
                 state.playQueue.shuffleModeEnabled = true;
+            } else if (type === "playQueue/ENABLE_SHUFFLE_MODE_AND_SHUFFLE_ITEMS") {
+                // TIDAL's own button: the flag, and what comes next reordered.
+                state.playQueue.shuffleModeEnabled = true;
+                const { elements, currentIndex } = state.playQueue;
+                const upcoming = elements.slice(currentIndex + 1).reverse();
+                elements.splice(currentIndex + 1, upcoming.length, ...upcoming);
             } else if (type === "playQueue/SET_REPEAT_MODE") {
                 state.playQueue.repeatMode = payload;
             } else if (type === "settings/SET_AUTOPLAY") {
@@ -885,6 +891,26 @@ test("TIDAL turns off shuffle, repeat and autoplay for a session and puts them b
     assert.equal(store.getState().settings.autoPlay, true);
     await sleep(STORE_EVENT_SETTLE_MS);
     assert.deepEqual(operations(events), []);
+});
+
+test("During a session, a repeat press is reported and shuffle keeps its order with the mode off", async () => {
+    const { bridge, store, events } = await loadAdapter();
+    const queue = () => store.getState().playQueue;
+    await bridge.prepareForSession();
+    await sleep(STORE_EVENT_SETTLE_MS * 2);
+    events.length = 0;
+
+    store.dispatch({ type: "playQueue/SET_REPEAT_MODE", payload: 1 });
+    await sleep(STORE_EVENT_SETTLE_MS);
+    assert.deepEqual(operations(events).map(event => event.data), [{ type: "playback.setRepeat", mode: "one" }]);
+    assert.equal(queue().repeatMode, 0, "TIDAL's own repeat is off again");
+
+    await sleep(STORE_EVENT_SETTLE_MS * 2);
+    store.dispatch({ type: "playQueue/ENABLE_SHUFFLE_MODE_AND_SHUFFLE_ITEMS" });
+    const shuffled = queue().elements.map(e => e.uid);
+    await sleep(STORE_EVENT_SETTLE_MS);
+    assert.equal(queue().shuffleModeEnabled, false, "TIDAL's shuffle is off again");
+    assert.deepEqual(queue().elements.map(e => e.uid), shuffled, "the shuffled order stays");
 });
 
 test("TIDAL starts the current song before looking up the rest of a new queue", async () => {

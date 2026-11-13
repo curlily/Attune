@@ -635,6 +635,33 @@ test("Session settings are switched off and put back", async () => {
     assert.deepEqual(operations(events), []);
 });
 
+test("During a session, repeat is reported and shuffle's order shared, and both go off again", async () => {
+    const { bridge, spotify, events } = await loadAdapter();
+    await bridge.prepareForSession();
+    await loadSession(bridge);
+    await sleep(400);
+    events.length = 0;
+
+    // The user presses repeat in Spotify.
+    await spotify.act(model => { model.repeat = 1; });
+    await sleep(500);
+    assert.deepEqual(operations(events), [{ type: "playback.setRepeat", mode: "one" }]);
+    assert.equal(spotify.model.repeat, 0, "Spotify's own repeat is off again");
+
+    // The user presses shuffle: Spotify reorders what comes next.
+    events.length = 0;
+    await spotify.act(model => { model.shuffle = true; model.next.reverse(); });
+    await sleep(1_500);
+    const ops = operations(events);
+    assert.ok(ops.length > 0 && ops.every(op => op.type.startsWith("queue.")), JSON.stringify(ops));
+    assert.equal(spotify.model.shuffle, false, "Spotify's shuffle is off again");
+    assert.deepEqual(
+        entryIds(bridge.getState()).slice(1),
+        ["session-c", "session-b"],
+        "the shuffled order stays",
+    );
+});
+
 test("Settling after attaching pauses Spotify", async () => {
     const { bridge, spotify, events } = await loadAdapter();
 

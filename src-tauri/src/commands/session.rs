@@ -25,7 +25,7 @@ use crate::{
 };
 use attune_core::{
     network::{JoinCredentials, SessionClientConfig},
-    protocol::ErrorCode,
+    protocol::{ErrorCode, RepeatMode},
     session::{Notice, QueueEdit, RuntimeStatus, SessionRuntime, SyncState},
 };
 
@@ -77,6 +77,9 @@ fn forward_events(app: AppHandle, store: Store, runtime: &SessionRuntime) {
                     if matches!(notice, Notice::Ended { .. }) {
                         store.clear_rejoin();
                     }
+                    if let Notice::NotAllowed { host } = &notice {
+                        notify_if_hidden(&app, host);
+                    }
                     let _ = app.emit("session-notice", notice);
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
@@ -84,6 +87,27 @@ fn forward_events(app: AppHandle, store: Store, runtime: &SessionRuntime) {
             }
         }
     });
+}
+
+/// A change made in the music app was undone. The user is most likely in
+/// that app, not looking at Attune: tell them through Windows.
+fn notify_if_hidden(app: &AppHandle, host: &str) {
+    use tauri_plugin_notification::NotificationExt;
+    let visible = app.get_webview_window("main").is_some_and(|window| {
+        window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false)
+    });
+    if visible {
+        return;
+    }
+    let shown = app
+        .notification()
+        .builder()
+        .title(format!("Only {host} can change what's playing"))
+        .body("Attune put the session back. Step out in Attune to play something else.")
+        .show();
+    if let Err(error) = shown {
+        debug!(%error, "Could not show a notification");
+    }
 }
 
 async fn start(app: AppHandle, state: &AppState, entry: Entry) -> Result<SessionInfo, AppError> {
@@ -287,6 +311,12 @@ pub async fn queue_move(
     to_index: usize,
 ) -> Result<(), AppError> {
     edit(&state, QueueEdit::Move { entry_id, to_index }).await
+}
+
+/// Repeat the current song (`"one"`), or stop repeating it (`"off"`).
+#[tauri::command]
+pub async fn set_repeat(state: State<'_, AppState>, mode: RepeatMode) -> Result<(), AppError> {
+    edit(&state, QueueEdit::Repeat(mode)).await
 }
 
 /// Remove a song from the session queue.

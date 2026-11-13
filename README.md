@@ -274,7 +274,11 @@ cargo test -p attune --lib discord::live -- --ignored --nocapture
 ## v1 limitations
 
 - No persistence; sessions end on server restart.
-- Shuffle and repeat are not synchronized (adapters disable them while following).
+- Shuffle and repeat: the music apps' own modes stay off during a session. Shuffling
+  reorders the queue, which is shared like any queue edit (TIDAL, Spotify, YouTube
+  Music; Apple Music's shuffle is undone for now). Repeat is the session's: one song
+  (no "repeat all" yet), toggled from the icon by the current song or the music
+  app's repeat button.
 - Timing is approximate (network and track-loading delay); there is no clock sync.
 - Concurrent queue edits are not merged: the later one is undone.
 - The desktop session runtime and widget UI are not implemented yet.

@@ -17,6 +17,15 @@
   const cover = currentCover(() => status);
   const playback = livePosition(() => status);
 
+  let repeating = $derived(status.repeat === "one");
+  async function toggleRepeat() {
+    try {
+      await api.setRepeat(repeating ? "off" : "one");
+    } catch (error) {
+      app.toast(errorText(error), "error");
+    }
+  }
+
   let skipping = $state(false);
   async function skip() {
     if (!current) return;
@@ -47,6 +56,19 @@
       <p class="title">Nothing queued</p>
     {/if}
   </div>
+  {#if current}
+    <button
+      class="icon-btn repeat"
+      class:on={repeating}
+      aria-pressed={repeating}
+      disabled={!app.canControl}
+      title={app.lockedReason ?? (repeating ? "Repeating this song. Click to stop." : "Repeat this song")}
+      onclick={toggleRepeat}
+    >
+      <Icon name="repeat" size={15} label="Repeat" />
+      {#if repeating}<span class="one" aria-hidden="true">1</span>{/if}
+    </button>
+  {/if}
 </section>
 
 {#if current}
@@ -76,7 +98,13 @@
     <Icon name="alert" size={13} />
     <span class="who">{warning.missingFor.join(", ")} can't play this song</span>
     {#if !app.autoRemove}
-      <button class="skip" onclick={skip} aria-busy={skipping} disabled={skipping}>
+      <button
+        class="skip"
+        onclick={skip}
+        aria-busy={skipping}
+        disabled={skipping || !app.canControl}
+        title={app.lockedReason ?? undefined}
+      >
         <Icon name="skip" size={12} /> Skip
       </button>
     {/if}
@@ -122,6 +150,28 @@
     min-width: 0;
     flex: 1;
     display: grid;
+  }
+
+  .repeat {
+    position: relative;
+    flex: none;
+    color: var(--text-3);
+  }
+  .repeat.on {
+    color: var(--accent);
+  }
+  .repeat:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  /* "1": the one song repeats. */
+  .repeat .one {
+    position: absolute;
+    right: 3px;
+    bottom: 2px;
+    font-size: 8.5px;
+    font-weight: 700;
+    line-height: 1;
   }
   .meta p {
     grid-area: 1 / 1;

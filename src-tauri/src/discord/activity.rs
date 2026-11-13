@@ -247,6 +247,7 @@ mod tests {
             warnings: Vec::new(),
             host_client_id: Some("me".to_owned()),
             others_can_control: true,
+            repeat: Default::default(),
         }
     }
 

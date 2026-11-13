@@ -1212,6 +1212,7 @@ mod tests {
                     position_ms: 0,
                     position_captured_at_ms: 0,
                 },
+                repeat: Default::default(),
             },
         }
     }

@@ -2,7 +2,7 @@ mod common;
 
 use attune_protocol::{
     ClientMessage, CreateSession, ErrorCode, JoinSession, OperationRequest, PROTOCOL_VERSION,
-    ParticipantStatus, RejectCode, ServerMessage, SessionControl, SessionMusicState,
+    ParticipantStatus, RejectCode, RepeatMode, ServerMessage, SessionControl, SessionMusicState,
     SessionOperation as Op,
     coordinator::{Outbound, Recipient, SessionCoordinator},
     state,
@@ -1280,4 +1280,74 @@ fn when_the_host_leaves_the_longest_present_hosts_and_the_session_opens() {
     let mut session = locked_with_b();
     let out = session.remove("a", T0);
     assert_eq!(control(&out).host_client_id, "b");
+}
+
+#[test]
+fn repeat_is_session_state_and_restarting_at_the_end_is_allowed_when_locked() {
+    let mut session = locked_with_b();
+    let out = session.handle(
+        "a",
+        op(
+            "a1",
+            0,
+            Op::PlaybackSetRepeat {
+                mode: RepeatMode::One,
+            },
+        ),
+        T0,
+    );
+    assert!(matches!(
+        only_to(&out[..1], "a"),
+        ServerMessage::OperationAck { applied: true, .. }
+    ));
+    assert_eq!(session.state().repeat, RepeatMode::One);
+    // The same again changes nothing.
+    let out = session.handle(
+        "a",
+        op(
+            "a2",
+            1,
+            Op::PlaybackSetRepeat {
+                mode: RepeatMode::One,
+            },
+        ),
+        T0,
+    );
+    assert!(matches!(
+        only_to(&out, "a"),
+        ServerMessage::OperationAck { applied: false, .. }
+    ));
+
+    let restart = || {
+        op(
+            "b1",
+            1,
+            Op::PlaybackSeek {
+                entry_id: "s1".to_owned(),
+                position_ms: 0,
+            },
+        )
+    };
+    // Mid-song, jumping to the start is an ordinary seek: refused.
+    let out = session.handle("b", restart(), T0 + 60_000);
+    assert_eq!(rejection_code(&out, "b"), Some(RejectCode::NotAllowed));
+    // At the end, it's the repeated song starting over: accepted.
+    let out = session.handle("b", restart(), T0 + common::DURATION_MS - 500);
+    assert!(matches!(
+        only_to(&out[..1], "b"),
+        ServerMessage::OperationAck { applied: true, .. }
+    ));
+    // Changing repeat is the host's call too.
+    let out = session.handle(
+        "b",
+        op(
+            "b2",
+            2,
+            Op::PlaybackSetRepeat {
+                mode: RepeatMode::Off,
+            },
+        ),
+        T0,
+    );
+    assert_eq!(rejection_code(&out, "b"), Some(RejectCode::NotAllowed));
 }

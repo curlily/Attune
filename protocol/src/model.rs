@@ -55,6 +55,13 @@ pub struct SessionMusicState {
     /// because both adapters and operations refer to it directly.
     pub current_entry_id: Option<String>,
     pub playback: SessionPlayback,
+    /// Absent (off) in states from before repeat existed.
+    #[serde(default, skip_serializing_if = "is_off")]
+    pub repeat: RepeatMode,
+}
+
+fn is_off(mode: &RepeatMode) -> bool {
+    *mode == RepeatMode::Off
 }
 
 /// Authoritative session state as issued by the server.
@@ -115,6 +122,21 @@ pub enum SessionOperation {
     PlaybackSeek { entry_id: String, position_ms: u64 },
     #[serde(rename = "playback.setPlaying")]
     PlaybackSetPlaying { is_playing: bool },
+    /// Repeat the current song (or not). Providers keep their own repeat
+    /// off; clients restart the song when it ends.
+    #[serde(rename = "playback.setRepeat")]
+    PlaybackSetRepeat { mode: RepeatMode },
+}
+
+/// What happens when the current song ends.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RepeatMode {
+    /// Move on to the next song.
+    #[default]
+    Off,
+    /// Play the same song again.
+    One,
 }
 
 impl SessionOperation {
@@ -123,7 +145,9 @@ impl SessionOperation {
     pub fn changes_queue(&self) -> bool {
         !matches!(
             self,
-            Self::PlaybackSeek { .. } | Self::PlaybackSetPlaying { .. }
+            Self::PlaybackSeek { .. }
+                | Self::PlaybackSetPlaying { .. }
+                | Self::PlaybackSetRepeat { .. }
         )
     }
 }

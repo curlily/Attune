@@ -2,7 +2,9 @@
 
 use serde::Serialize;
 
-use crate::protocol::{Participant, ParticipantStatus, SessionPlayback, TrackDescriptor};
+use crate::protocol::{
+    Participant, ParticipantStatus, RepeatMode, SessionPlayback, TrackDescriptor,
+};
 
 /// How this client relates to the session right now.
 ///
@@ -115,6 +117,8 @@ pub struct RuntimeStatus {
     pub host_client_id: Option<String>,
     /// Whether people other than the host may change what's playing.
     pub others_can_control: bool,
+    /// What happens when the current song ends.
+    pub repeat: RepeatMode,
 }
 
 /// One-off messages for the UI.
@@ -128,7 +132,7 @@ pub enum Notice {
     /// A queue edit made here conflicted with someone else's and was undone.
     QueueEditUndone,
     /// A change made here was undone: only the host may change what's
-    /// playing right now.
+    /// playing right now. Stepping out lets this user change their own.
     NotAllowed {
         host: String,
     },

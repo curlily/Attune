@@ -618,6 +618,20 @@ test("Autoplay and repeat are switched off for a session, kept off, and put back
     assert.deepEqual(operations(events), []);
 }));
 
+test("A repeat press during a session is reported, and the app's own repeat goes off again", () => withAdapter(async ({ bridge, page, events }) => {
+    const queue = () => page.store.getState().queue;
+    await bridge.prepareForSession();
+    await loadSession(bridge);
+    await settle();
+    await settle();
+    events.length = 0;
+
+    page.store.dispatch({ type: "SET_REPEAT", payload: "ONE" });
+    await settle();
+    assert.deepEqual(operations(events), [{ type: "playback.setRepeat", mode: "one" }]);
+    assert.equal(queue().repeatMode, "NONE");
+}));
+
 test("An advertisement is reported as an interruption, and changes wait for it", () => withAdapter(async ({ bridge, page, events }) => {
     await loadSession(bridge);
     await settle();

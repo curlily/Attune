@@ -250,6 +250,7 @@ fn empty_state(now_ms: u64) -> SessionMusicState {
             position_ms: 0,
             position_captured_at_ms: now_ms,
         },
+        repeat: Default::default(),
     }
 }
 
@@ -400,6 +401,8 @@ pub fn apply(
             }
             next.playback.is_playing = *is_playing;
         }
+
+        SessionOperation::PlaybackSetRepeat { mode } => next.repeat = *mode,
     }
 
     if let Some(duration) = current_duration(&next) {
@@ -447,6 +450,7 @@ pub fn is_noop(state: &SessionMusicState, operation: &SessionOperation, now_ms: 
                 next.queue == state.queue && next.current_entry_id == state.current_entry_id
             })
         }
+        SessionOperation::PlaybackSetRepeat { mode } => state.repeat == *mode,
         SessionOperation::QueueInsert { .. }
         | SessionOperation::QueueRemove { .. }
         | SessionOperation::QueueMove { .. } => false,

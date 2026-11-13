@@ -303,6 +303,11 @@ function createMusicKit() {
         async userSeeks(positionMs) {
             await music.seekToTime(positionMs / 1000);
         },
+        /** The user presses repeat (MusicKit: 1 one, 2 all). */
+        userRepeats(mode = 2) {
+            music.repeatMode = mode;
+            emit("repeatModeDidChange", { mode });
+        },
         /** The current song plays to its end. */
         songEnds() {
             setState(STATE.ENDED);
@@ -554,6 +559,18 @@ test("The user's queue edits are published as small operations", () => withAdapt
     page.userRemoves(page.music.queue.position + 2);
     await settle();
     assert.deepEqual(operations(events), [{ type: "queue.remove", entryId: "session-b" }]);
+}));
+
+test("A repeat press during a session is reported, and MusicKit's own repeat goes off again", () => withAdapter(async ({ bridge, page, events }) => {
+    await bridge.prepareForSession();
+    await loadSession(bridge, ["a", "b"]);
+    await settle();
+    events.length = 0;
+
+    page.userRepeats();
+    await settle();
+    assert.deepEqual(operations(events), [{ type: "playback.setRepeat", mode: "one" }]);
+    assert.equal(page.music.repeatMode, 0);
 }));
 
 test("With a session's settings a song end is an advance, and they are put back", () => withAdapter(async ({ bridge, page, events }) => {
