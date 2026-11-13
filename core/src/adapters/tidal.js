@@ -890,7 +890,7 @@
         return {
             queue,
             currentEntryId: queue[0]?.entryId ?? null,
-            playback: getPlayback(reduxState),
+            playback: playbackOf(reduxState),
         };
     }
 
@@ -1699,16 +1699,50 @@
     // back to the start; ignore such jumps shortly after a track change.
     const TRACK_START_GRACE_MS = 10_000;
     const TRACK_START_POSITION_MS = 1_500;
+    // A sync point this much older than the track's start is the previous track's.
+    const STALE_SYNC_MARGIN_MS = 50;
     let activeTrackReference = null;
     let activeTrackChangedAt = 0;
+    // When the active track was seen to start, or null if it was already
+    // there when the adapter first looked (its start is unknown).
+    let activeTrackStartedAt = null;
+    let activeTrackSeen = false;
+
+    function trackReferenceOf(reduxState) {
+        const product = reduxState?.playbackControls?.mediaProduct;
+        return product ? String(product.referenceId ?? product.productId) : null;
+    }
 
     function noteActiveTrack(reduxState) {
-        const product = reduxState?.playbackControls?.mediaProduct;
-        const reference = product ? String(product.referenceId ?? product.productId) : null;
+        const reference = trackReferenceOf(reduxState);
         if (reference !== activeTrackReference) {
             activeTrackReference = reference;
             activeTrackChangedAt = Date.now();
+            activeTrackStartedAt = activeTrackSeen ? activeTrackChangedAt : null;
         }
+        activeTrackSeen = true;
+    }
+
+    /**
+     * The playback of `reduxState`, with a sync point from before the active
+     * track started read as that track's start.
+     *
+     * Verified live (2026-11-13): skipping in TIDAL shows the new track for
+     * about 220 ms with the previous track's sync point (75.6 s, from the
+     * click), before TIDAL resets it to 0. The 180 ms debounce fell inside
+     * that, so the skip was published as an advance to 75 s into the new
+     * song: Attune's progress bar went on from where the old song was
+     * skipped (or stuck at the end), and the others were sent there too.
+     * TIDAL's reset afterwards was ignored as a track-start reset.
+     */
+    function playbackOf(reduxState) {
+        const playback = getPlayback(reduxState);
+        if (activeTrackStartedAt != null &&
+            trackReferenceOf(reduxState) === activeTrackReference &&
+            playback.positionCapturedAtMs < activeTrackStartedAt - STALE_SYNC_MARGIN_MS) {
+            return { ...playback, positionMs: 0, positionCapturedAtMs: activeTrackStartedAt };
+        }
+        return playback;
     }
 
     function positionWasSought(before, after) {

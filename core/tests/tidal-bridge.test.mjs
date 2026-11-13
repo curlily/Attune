@@ -319,6 +319,22 @@ function createStore() {
                 state.playbackControls.mediaProduct = payload.elements.length
                     ? { productId: payload.elements[0].mediaItemId }
                     : null;
+            } else if (type === "test/USER_NEXT") {
+                // The user pressed next. Verified live: the new track shows
+                // for about 220 ms with the previous track's sync point,
+                // written at the click about 740 ms before, then TIDAL
+                // resets it to 0.
+                const controls = state.playbackControls;
+                const clickedAt = Date.now() - 740;
+                controls.latestCurrentTime = livePosition(controls) - 0.74;
+                controls.latestCurrentTimeSyncTimestamp = clickedAt;
+                state.playQueue.currentIndex += 1;
+                const next = state.playQueue.elements[state.playQueue.currentIndex];
+                controls.mediaProduct = { productId: next.mediaItemId, referenceId: next.uid };
+                setTimeout(() => update(s => {
+                    s.playbackControls.latestCurrentTime = 0;
+                    s.playbackControls.latestCurrentTimeSyncTimestamp = Date.now();
+                }), 220);
             } else if (type === "test/SET_PLAYBACK") {
                 Object.assign(state.playbackControls, payload);
             } else if (type === "playbackControls/SEEK") {
@@ -633,6 +649,23 @@ test("TIDAL resetting the position when a track starts is not a seek", async () 
     set({ latestCurrentTime: 90, latestCurrentTimeSyncTimestamp: Date.now() });
     await sleep(STORE_EVENT_SETTLE_MS);
     assert.deepEqual(operations(events).map(event => event.data.type), ["playback.seek"]);
+});
+
+test("Skipping in TIDAL advances to the new song's start, not the old song's position", async () => {
+    const { bridge, store, events } = await loadAdapter();
+    // Well into the current song.
+    store.dispatch({ type: "test/SET_PLAYBACK", payload: { latestCurrentTime: 75, latestCurrentTimeSyncTimestamp: Date.now() } });
+    await sleep(STORE_EVENT_SETTLE_MS);
+    events.length = 0;
+
+    store.dispatch({ type: "test/USER_NEXT" });
+    await sleep(STORE_EVENT_SETTLE_MS + 300);
+    const published = operations(events).map(event => event.data);
+    const advance = published.find(op => op.type === "playback.advance");
+    assert.ok(advance, `no advance: ${JSON.stringify(published)}`);
+    assert.ok(advance.positionMs < 1_500, `advanced to ${advance.positionMs} ms`);
+    assert.ok(!published.some(op => op.type === "playback.seek"), JSON.stringify(published));
+    assert.ok(bridge.getState().playback.positionMs < 1_500);
 });
 
 test("TIDAL keeps a paused session paused, at its position, once the loaded track starts", async () => {
@@ -958,4 +991,18 @@ test("TIDAL searches through its open API in parallel, not one at a time", async
     assert.deepEqual([...store.searches], [], "the app's one-at-a-time search wasn't used");
     assert.ok(most >= 3, `the upcoming songs were searched at the same time (at most ${most} at once)`);
     assert.ok(queries.includes("Ghost Song Nobody"));
+});
+
+test("A song started from the session begins where the session says, whatever TIDAL's old sync point", async () => {
+    const { bridge, store } = await loadAdapter();
+    // TIDAL's sync point is from the last play, pause or seek: a minute ago.
+    store.dispatch({ type: "test/SET_PLAYBACK", payload: { latestCurrentTime: 10, latestCurrentTimeSyncTimestamp: Date.now() - 60_000 } });
+    await sleep(STORE_EVENT_SETTLE_MS);
+    const [, next] = entryIds(bridge.getState());
+
+    await bridge.applyOperation({ type: "playback.advance", targetEntryId: next, positionMs: 0, isPlaying: true });
+    const state = bridge.getState();
+    assert.equal(state.currentEntryId, next);
+    const position = state.playback.positionMs + (Date.now() - state.playback.positionCapturedAtMs);
+    assert.ok(position < 5_000, `the new song is ${position} ms in`);
 });

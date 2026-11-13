@@ -178,6 +178,7 @@ The adapter was injected into the running app and driven directly, not through
 - `playbackControls/TIME_UPDATE <seconds>` only sets the store's position (nothing
   in the player reacts to it).
 - When a track actually starts, TIDAL resets the position to 0 (sometimes about 3 s after the request). This is not a seek: the adapter ignores it for 10 s after a track change.
+- **Skipping keeps the old song's sync point for a moment.** Pressing next writes the sync point at the click (75.6 s into the old song), then shows the new track about 740 ms later still carrying it, and resets to 0 only about 220 ms after that (2026-11-13, recorded by polling `getState()` every 100 ms). The 180 ms debounce fell inside that window, so the skip was published as an advance to 75 s into the new song: Attune's progress bar carried on from where the old song was skipped (stuck at the end when that was past the new song's length), and the others were sent there. A song's natural end didn't show it (position 0, synced 0.1 s before). Fixed: a sync point from before the active track was seen to start is read as 0 at its start (`playbackOf`; a track already playing when the adapter attached is left alone). Test: "Skipping in TIDAL advances to the new song's start …".
 
 **Timers while TIDAL is in the background**
 - While TIDAL's window is hidden and nothing plays, Chromium runs the page's timers
