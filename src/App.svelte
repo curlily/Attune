@@ -104,7 +104,7 @@
   <div class="shell" in:fade={{ duration: 200 }}>
     <!-- No window frame: the header is where the window is dragged. -->
     <header data-tauri-drag-region>
-      <Logo border={false} />
+      <Logo background={false} />
       <h1 data-tauri-drag-region>{title}</h1>
       {#if app.screen === "jam" && app.code && !app.showSettings}
         <button
