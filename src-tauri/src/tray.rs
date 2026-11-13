@@ -161,28 +161,65 @@ pub fn set_status<R: Runtime>(app: &AppHandle<R>, sync: Option<SyncState>) {
     }
 }
 
-fn icon(status: TrayStatus) -> Image<'static> {
-    Image::new_owned(draw_icon(status.dot()), ICON_SIZE, ICON_SIZE)
+/// Redraw the icon for the taskbar's current colour (after a theme change).
+pub fn refresh_icon<R: Runtime>(app: &AppHandle<R>) {
+    let status = app
+        .try_state::<TrayMenu<R>>()
+        .and_then(|menu| *menu.status.lock().unwrap_or_else(|p| p.into_inner()))
+        .unwrap_or(TrayStatus::Idle);
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_icon(Some(icon(status)));
+    }
 }
 
-/// The small-size version of the app icon (three bars, heavier strokes),
-/// which stays readable when Windows shrinks it to 16 px for the tray. Drawn
-/// from the same design as `icon.ico`'s 16 px image (see src/lib/Logo.svelte).
-const ICON_PNG: &[u8] = include_bytes!("../icons/tray.png");
+fn icon(status: TrayStatus) -> Image<'static> {
+    Image::new_owned(
+        draw_icon(status.dot(), light_taskbar()),
+        ICON_SIZE,
+        ICON_SIZE,
+    )
+}
 
-/// The app icon with an optional status dot in its lower right corner, as
+/// Whether Windows draws the taskbar light ("Choose your Windows mode").
+#[cfg(windows)]
+fn light_taskbar() -> bool {
+    windows_registry::CURRENT_USER
+        .open(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        .and_then(|key| key.get_u32("SystemUsesLightTheme"))
+        .is_ok_and(|light| light != 0)
+}
+
+#[cfg(not(windows))]
+fn light_taskbar() -> bool {
+    false
+}
+
+/// The face from the app icon without its tile, in the small-size version
+/// (three bars, heavier strokes) that stays readable when Windows shrinks
+/// it to 16 px. Like the system's own tray icons it is a flat glyph: white,
+/// recoloured dark for a light taskbar. Rendered from src/lib/Logo.svelte.
+const ICON_PNG: &[u8] = include_bytes!("../icons/tray.png");
+/// The face's colour on a light taskbar (the app icon's tile colour).
+const DARK: [u8; 3] = [0x1a, 0x1b, 0x23];
+
+/// The tray face with an optional status dot in its lower right corner, as
 /// ICON_SIZE × ICON_SIZE RGBA.
-pub fn draw_icon(dot: Option<[u8; 3]>) -> Vec<u8> {
+pub fn draw_icon(dot: Option<[u8; 3]>, light_taskbar: bool) -> Vec<u8> {
     let base = Image::from_bytes(ICON_PNG).expect("the bundled tray icon is a valid PNG");
     debug_assert_eq!((base.width(), base.height()), (ICON_SIZE, ICON_SIZE));
     let mut rgba = base.rgba().to_vec();
+    if light_taskbar {
+        for pixel in rgba.chunks_exact_mut(4) {
+            pixel[..3].copy_from_slice(&DARK);
+        }
+    }
     let Some(dot) = dot else {
         return rgba;
     };
 
     let s = ICON_SIZE as f32;
     // Tucked into the corner, clear of the right eye.
-    let (dot_center, dot_radius, ring) = (s * 0.845, s * 0.15, s * 0.05);
+    let (dot_center, dot_radius, ring) = (s * 0.875, s * 0.125, s * 0.04);
     for y in 0..ICON_SIZE {
         for x in 0..ICON_SIZE {
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
@@ -212,18 +249,25 @@ mod tests {
     }
 
     #[test]
-    fn the_icon_is_the_app_icon_without_a_status() {
-        let rgba = draw_icon(None);
+    fn the_icon_is_the_bare_face_without_a_status() {
+        let rgba = draw_icon(None, false);
         assert_eq!(rgba.len(), (ICON_SIZE * ICON_SIZE * 4) as usize);
-        assert_eq!(pixel(&rgba, 32, 0, 0)[3], 0, "transparent corner");
-        assert_eq!(pixel(&rgba, 32, 16, 4)[3], 255, "opaque body");
+        assert_eq!(pixel(&rgba, 32, 0, 0)[3], 0, "no tile behind the face");
+        assert_eq!(pixel(&rgba, 32, 1, 16), [255, 255, 255, 255], "left ear");
+    }
+
+    #[test]
+    fn a_light_taskbar_gets_a_dark_face() {
+        let rgba = draw_icon(None, true);
+        assert_eq!(pixel(&rgba, 32, 1, 16), [0x1a, 0x1b, 0x23, 255]);
+        assert_eq!(pixel(&rgba, 32, 0, 0)[3], 0);
     }
 
     #[test]
     fn the_dot_shows_the_status_colour() {
         let green = TrayStatus::Synced.dot();
-        let rgba = draw_icon(green);
-        assert_eq!(pixel(&rgba, 32, 25, 25), [0x53, 0xc9, 0x8f, 255]);
+        let rgba = draw_icon(green, false);
+        assert_eq!(pixel(&rgba, 32, 27, 27), [0x53, 0xc9, 0x8f, 255]);
         assert_eq!(TrayStatus::from_sync(None), TrayStatus::Idle);
         assert_eq!(
             TrayStatus::from_sync(Some(SyncState::WaitingForNextSong)),
@@ -247,8 +291,10 @@ mod preview {
             ("stepped", super::TrayStatus::SteppedOut),
             ("error", super::TrayStatus::Error),
         ] {
-            let rgba = super::draw_icon(status.dot());
-            std::fs::write(format!("{dir}/{name}.rgba"), rgba).expect("write");
+            for (theme, light) in [("dark", false), ("light", true)] {
+                let rgba = super::draw_icon(status.dot(), light);
+                std::fs::write(format!("{dir}/{name}-{theme}.rgba"), rgba).expect("write");
+            }
         }
     }
 }

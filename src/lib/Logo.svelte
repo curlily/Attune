@@ -9,7 +9,10 @@
   //
   // This is the master for those files. Render it at the size needed with a
   // transparent background; for the large icons render 1024 px and run
-  // `npx tauri icon <png>`.
+  // `npx tauri icon <png>`. The app icon keeps the tile (it must show on
+  // any background: taskbar, Alt+Tab, Start, Explorer); the tray, like the
+  // system's own tray icons, uses the bare face (tray.png: white, small
+  // detail, 1 px margin at 32 px), recoloured for a light taskbar.
 
   const HEAD =
     "M279 882C279 560 330 433 450 433C560 433 680 545 760 638Q966 564 1172 638C1252 545 1372 433 1482 433C1602 433 1653 560 1653 882";

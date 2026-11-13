@@ -78,7 +78,7 @@ pub fn set_pinned<R: Runtime>(app: &AppHandle<R>, pinned: bool) {
 }
 
 /// Window events: close hides to the tray; focus changes are noted for the
-/// tray toggle.
+/// tray toggle; theme changes recolour the tray icon.
 pub fn on_event<R: Runtime>(window: &tauri::Window<R>, event: &WindowEvent) {
     if window.label() != MAIN {
         return;
@@ -91,7 +91,14 @@ pub fn on_event<R: Runtime>(window: &tauri::Window<R>, event: &WindowEvent) {
         }
         WindowEvent::Focused(focused) => {
             *lock(&state.focus_lost_at) = (!focused).then(Instant::now);
+            // Cheap, and catches a taskbar colour change that came without
+            // a theme change (Windows' "custom" mode).
+            if *focused {
+                crate::tray::refresh_icon(window.app_handle());
+            }
         }
+        // The tray face follows the taskbar: white on dark, dark on light.
+        WindowEvent::ThemeChanged(_) => crate::tray::refresh_icon(window.app_handle()),
         _ => {}
     }
 }
