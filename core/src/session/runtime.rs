@@ -29,7 +29,7 @@
 //! moved ahead by the time they take to reach the server.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     future::Future,
     pin::Pin,
     sync::Arc,
@@ -431,6 +431,13 @@ struct Worker<B> {
     /// The provider was interrupted (e.g. by an advertisement) and this
     /// runtime stepped out because of it; it rejoins when that is over.
     interrupted: bool,
+    /// Covers this computer's music app shows for session entries, by
+    /// entry ID. Preferred over the cover the session carries (from the
+    /// provider that queued the song), which this provider's listener may
+    /// not be able to load. Kept while stepped out.
+    local_covers: HashMap<String, String>,
+    /// The session queue's entry IDs when `local_covers` was last read.
+    covers_read_for: Vec<String>,
 }
 
 impl<B: ProviderBridge> Worker<B> {
@@ -481,6 +488,8 @@ impl<B: ProviderBridge> Worker<B> {
             participants: Vec::new(),
             provider_settings: Value::Null,
             interrupted: false,
+            local_covers: HashMap::new(),
+            covers_read_for: Vec::new(),
         };
         worker.publish();
         worker
@@ -528,6 +537,8 @@ impl<B: ProviderBridge> Worker<B> {
         let Some(mut commands) = self.commands.take() else {
             return;
         };
+        self.refresh_local_covers(true).await;
+        self.publish();
         let leave_reply = loop {
             let flow = tokio::select! {
                 command = commands.recv() => match command {
@@ -670,7 +681,13 @@ impl<B: ProviderBridge> Worker<B> {
             .iter()
             .map(|entry| QueueItem {
                 entry_id: entry.entry_id.clone(),
-                track: entry.track.clone(),
+                track: {
+                    let mut track = entry.track.clone();
+                    if let Some(cover) = self.local_covers.get(&entry.entry_id) {
+                        track.cover_url = Some(cover.clone());
+                    }
+                    track
+                },
                 added_by: entry.added_by.clone(),
                 playable_here: !self.unavailable.contains(&entry.entry_id),
             })
@@ -688,6 +705,36 @@ impl<B: ProviderBridge> Worker<B> {
             participants: self.participants.clone(),
             warnings,
         });
+    }
+
+    /// Read the covers this computer's music app has for the session's
+    /// entries, if the session queue changed since the last read (or
+    /// `force`, after the provider added songs by itself). Every adapter
+    /// describes its queue songs with its own art (TIDAL album covers,
+    /// Spotify images, YouTube Music thumbnails).
+    async fn refresh_local_covers(&mut self, force: bool) {
+        let ids: Vec<String> = queue_ids(&self.mirror)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        if !force && ids == self.covers_read_for {
+            return;
+        }
+        self.covers_read_for = ids;
+        let in_queue: HashSet<&str> = self.covers_read_for.iter().map(String::as_str).collect();
+        self.local_covers
+            .retain(|id, _| in_queue.contains(id.as_str()));
+        let Ok(local) = self.bridge.get_state().await else {
+            return;
+        };
+        for entry in local.queue {
+            if !in_queue.contains(entry.entry_id.as_str()) {
+                continue; // the app's own songs, e.g. while stepped out
+            }
+            if let Some(cover) = entry.track.cover_url.filter(|url| url.starts_with("https://")) {
+                self.local_covers.insert(entry.entry_id, cover);
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -963,6 +1010,7 @@ impl<B: ProviderBridge> Worker<B> {
             self.ensure_current_playable().await;
         }
         self.report_unavailable().await;
+        self.refresh_local_covers(false).await;
         self.publish();
     }
 
@@ -1194,6 +1242,7 @@ impl<B: ProviderBridge> Worker<B> {
         }
         // Otherwise the next resync loads everything.
         self.report_unavailable().await;
+        self.refresh_local_covers(true).await;
         self.publish();
     }
 

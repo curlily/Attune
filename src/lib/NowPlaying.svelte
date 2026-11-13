@@ -3,6 +3,7 @@
   import type { RuntimeStatus } from "./api";
   import { app } from "./app.svelte";
   import { currentCover, livePosition } from "./current.svelte";
+  import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
   import Marquee from "./Marquee.svelte";
   import { api, errorText } from "./api";
@@ -32,13 +33,7 @@
 
 <section class="now">
   <div class="art">
-    {#if cover.url}
-      {#key cover.url}
-        <img src={cover.url} alt="" transition:fade={{ duration: 300 }} />
-      {/key}
-    {:else}
-      <Icon name="music" size={22} />
-    {/if}
+    <Cover url={cover.url} iconSize={22} animate />
   </div>
   <div class="meta">
     {#if current}
@@ -115,7 +110,7 @@
     background: var(--surface-2);
     color: var(--text-3);
   }
-  .art img {
+  .art :global(img) {
     position: absolute;
     inset: 0;
     width: 100%;

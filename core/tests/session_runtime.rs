@@ -81,6 +81,8 @@ struct FakeProvider {
     hold_prefetch: AtomicBool,
     /// Entry IDs looked up in the background, per call.
     prefetched: Mutex<Vec<Vec<String>>>,
+    /// The art this provider shows for songs it loads: `https://<host>/<id>`.
+    cover_host: Mutex<Option<String>>,
 }
 
 impl FakeProvider {
@@ -95,7 +97,17 @@ impl FakeProvider {
             session_settings: Mutex::default(),
             hold_prefetch: AtomicBool::new(false),
             prefetched: Mutex::default(),
+            cover_host: Mutex::default(),
         })
+    }
+
+    /// Describe songs with art of this provider's own from now on.
+    fn covers_from(&self, host: &str) {
+        *self.cover_host.lock().unwrap() = Some(host.to_owned());
+        let mut state = self.state.lock().unwrap();
+        for entry in &mut state.queue {
+            entry.track.cover_url = Some(format!("https://{host}/{}", entry.entry_id));
+        }
     }
 
     fn missing(&self, id: &str) {
@@ -172,10 +184,15 @@ impl FakeProvider {
                 message: format!("{} unavailable", current.track.title),
             });
         }
-        let (kept, skipped): (Vec<_>, Vec<_>) = target
+        let (mut kept, skipped): (Vec<_>, Vec<_>) = target
             .queue
             .into_iter()
             .partition(|e| !missing.contains(&e.track.title));
+        if let Some(host) = self.cover_host.lock().unwrap().as_deref() {
+            for entry in &mut kept {
+                entry.track.cover_url = Some(format!("https://{host}/{}", entry.entry_id));
+            }
+        }
         *self.state.lock().unwrap() = SessionMusicState {
             current_entry_id: kept.first().map(|e| e.entry_id.clone()),
             queue: kept,
@@ -963,6 +980,74 @@ async fn skipping_to_a_song_still_being_looked_up_loads_it() {
     s.b_provider.hold_prefetch.store(false, Ordering::SeqCst);
     eventually("B has the rest of the list after n15", || {
         s.b_provider.ids() == id_refs[14..]
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn covers_come_from_this_computers_app_and_the_session_otherwise() {
+    let server = TestServer::start().await;
+    let a_provider = FakeProvider::new(&["s1", "s2", "s3"]);
+    a_provider.covers_from("a.example");
+    let a = SessionRuntime::create(a_provider.clone(), config(&server, "a"))
+        .await
+        .expect("create");
+    let b_provider = FakeProvider::new(&["x1"]);
+    b_provider.covers_from("b.example");
+    b_provider.missing("s3");
+    let b = SessionRuntime::join(b_provider.clone(), config(&server, "b"), a.credentials().clone())
+        .await
+        .expect("join");
+
+    let covers = |runtime: &SessionRuntime| -> Vec<Option<String>> {
+        runtime
+            .status()
+            .queue
+            .into_iter()
+            .map(|item| item.track.cover_url)
+            .collect()
+    };
+    let cover = |host: &str, id: &str| Some(format!("https://{host}/{id}"));
+    eventually("B shows its own covers", || {
+        covers(&b)
+            == [
+                cover("b.example", "s1"),
+                cover("b.example", "s2"),
+                // B's app doesn't have it: the session's (A's) cover.
+                cover("a.example", "s3"),
+            ]
+    })
+    .await;
+    assert_eq!(
+        covers(&a),
+        [cover("a.example", "s1"), cover("a.example", "s2"), cover("a.example", "s3")]
+    );
+    // The session itself keeps the cover of the provider that queued it.
+    let session_id = a.credentials().code.clone();
+    assert_eq!(
+        server.session_state(&session_id).queue[0].track.cover_url,
+        cover("a.example", "s1")
+    );
+
+    // A song B adds: B sees its own art, A the session's (B's) until its
+    // app has the song, then its own.
+    let mut added = entry("s4");
+    added.track.cover_url = cover("b.example", "s4");
+    b_provider.local(Op::QueueInsert { entry: added, index: 2 }); // B lacks s3
+    let cover_of = |runtime: &SessionRuntime, id: &str| {
+        runtime
+            .status()
+            .queue
+            .into_iter()
+            .find(|item| item.entry_id == id)
+            .and_then(|item| item.track.cover_url)
+    };
+    eventually("A has s4 with its own cover", || {
+        cover_of(&a, "s4") == cover("a.example", "s4")
+    })
+    .await;
+    eventually("B shows its own cover for s4", || {
+        cover_of(&b, "s4") == cover("b.example", "s4")
     })
     .await;
 }

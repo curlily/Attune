@@ -3,6 +3,7 @@
   import { slide } from "svelte/transition";
   import { api, errorText, type QueueItem, type RuntimeStatus } from "./api";
   import { app } from "./app.svelte";
+  import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
   import Marquee from "./Marquee.svelte";
   import Section from "./Section.svelte";
@@ -156,11 +157,7 @@
         </button>
         <button class="play" title="Play now" onclick={() => playNow(item)}>
         <span class="cover" aria-hidden="true">
-          {#if item.track.coverUrl}
-            <img src={item.track.coverUrl} alt="" loading="lazy" draggable="false" />
-          {:else}
-            <Icon name="music" size={14} />
-          {/if}
+          <Cover url={item.track.coverUrl} lazy />
           <span class="play-mark"><Icon name="play" size={14} /></span>
         </span>
         <span class="song">
@@ -304,7 +301,7 @@
     background: var(--surface-2);
     color: var(--text-3);
   }
-  .cover img {
+  .cover :global(img) {
     position: absolute;
     inset: 0;
     width: 100%;
