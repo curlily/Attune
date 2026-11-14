@@ -2,6 +2,7 @@ mod commands;
 mod discord;
 mod error;
 mod links;
+mod log;
 mod settings;
 mod state;
 mod theme;
@@ -23,15 +24,43 @@ const HIDDEN_ARG: &str = "--hidden";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                // chromiumoxide 0.9 warns on every CDP message it cannot
-                // parse from newer Chromium builds; those are harmless.
-                "warn,attune_core=debug,chromiumoxide::handler=error".into()
-            }),
-        )
-        .init();
+    // chromiumoxide 0.9 warns on every CDP message it cannot parse from
+    // newer Chromium builds; those are harmless, and filtered out there.
+    log::init();
+
+    let commands: fn(tauri::ipc::Invoke) -> bool = tauri::generate_handler![
+        commands::settings::get_settings,
+        commands::settings::update_settings,
+        updates::check_for_update,
+        updates::install_update,
+        updates::skip_update,
+        commands::playback::get_providers,
+        commands::playback::connect_provider,
+        commands::playback::open_provider_sign_in,
+        commands::playback::disconnect_provider,
+        commands::playback::get_playstate,
+        commands::playback::get_session_state,
+        commands::session::create_session,
+        commands::session::join_session,
+        commands::session::get_rejoin_offer,
+        commands::session::rejoin_session,
+        commands::session::dismiss_rejoin,
+        commands::session::leave_session,
+        commands::session::step_out,
+        commands::session::resync,
+        commands::session::queue_move,
+        commands::session::queue_remove,
+        commands::session::set_repeat,
+        commands::session::queue_play_now,
+        commands::session::get_session_status,
+        commands::session::get_join_code,
+        window::set_window_pinned,
+        window::hide_window,
+        links::take_join_link,
+        links::get_autostart,
+        links::set_autostart,
+        log::save_log,
+    ];
 
     tauri::Builder::default()
         // First, so a second launch (e.g. from a attune:// link) is handed to
@@ -84,38 +113,12 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            commands::settings::get_settings,
-            commands::settings::update_settings,
-            updates::check_for_update,
-            updates::install_update,
-            updates::skip_update,
-            commands::playback::get_providers,
-            commands::playback::connect_provider,
-            commands::playback::open_provider_sign_in,
-            commands::playback::disconnect_provider,
-            commands::playback::get_playstate,
-            commands::playback::get_session_state,
-            commands::session::create_session,
-            commands::session::join_session,
-            commands::session::get_rejoin_offer,
-            commands::session::rejoin_session,
-            commands::session::dismiss_rejoin,
-            commands::session::leave_session,
-            commands::session::step_out,
-            commands::session::resync,
-            commands::session::queue_move,
-            commands::session::queue_remove,
-            commands::session::set_repeat,
-            commands::session::queue_play_now,
-            commands::session::get_session_status,
-            commands::session::get_join_code,
-            window::set_window_pinned,
-            window::hide_window,
-            links::take_join_link,
-            links::get_autostart,
-            links::set_autostart,
-        ])
+        .invoke_handler(move |invoke| {
+            if let tauri::ipc::InvokeBody::Json(args) = invoke.message.payload() {
+                log::command(invoke.message.command(), args);
+            }
+            commands(invoke)
+        })
         .build(tauri::generate_context!())
         .expect("error while building the tauri application")
         .run(|app, event| {

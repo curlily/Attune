@@ -357,6 +357,7 @@ async fn serve(wanted: &mut watch::Receiver<Wanted>) -> io::Result<()> {
     loop {
         let Some(want) = wanted.borrow().shown() else {
             nonce += 1;
+            debug!("Discord: cleared the activity");
             ipc::send_activity(&mut writer, None, nonce).await?;
             return Ok(());
         };
@@ -364,6 +365,14 @@ async fn serve(wanted: &mut watch::Receiver<Wanted>) -> io::Result<()> {
         if due && Instant::now() >= next_update {
             nonce += 1;
             let payload = serde_json::to_value(&want)?;
+            debug!(
+                app = %want.name,
+                details = %want.details,
+                state = ?want.state,
+                timestamps = ?want.timestamps,
+                listen_along = !want.buttons.is_empty(),
+                "Discord: set the activity"
+            );
             ipc::send_activity(&mut writer, Some(&payload), nonce).await?;
             sent = Some(want);
             next_update = Instant::now() + MIN_UPDATE_GAP;

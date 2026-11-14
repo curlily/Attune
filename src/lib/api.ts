@@ -215,6 +215,8 @@ export const api = {
   installUpdate: () => invoke<void>("install_update"),
   skipUpdate: (version: string) => invoke<void>("skip_update", { version }),
   setAutostart: (enabled: boolean) => invoke<boolean>("set_autostart", { enabled }),
+  /** Save this run's log to Downloads and show it; returns the file's path. */
+  saveLog: () => invoke<string>("save_log"),
 };
 
 export const events = {

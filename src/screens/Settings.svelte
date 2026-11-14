@@ -97,6 +97,18 @@
     }
   }
 
+  /** After "Save log": where it went, or what went wrong. */
+  let logResult = $state<string | null>(null);
+  async function saveLog() {
+    logResult = null;
+    try {
+      const path = await api.saveLog();
+      logResult = `Saved as ${path.split(/[\\/]/).pop()}`;
+    } catch (failure) {
+      logResult = errorText(failure);
+    }
+  }
+
   async function disconnect() {
     try {
       await api.disconnectProvider();
@@ -275,6 +287,18 @@
   {#if updateResult}
     <p class="hint" transition:slide={{ duration: 160 }}>{updateResult}</p>
   {/if}
+
+  <div class="divider"></div>
+
+  <p class="section-title">Bug reports</p>
+  <div class="app-row">
+    <span class="hint log-hint">What happened since Attune started, to send with a bug report</span>
+    <span class="spacer"></span>
+    <button class="btn small" onclick={saveLog}>Save log</button>
+  </div>
+  {#if logResult}
+    <p class="hint" transition:slide={{ duration: 160 }}>{logResult}</p>
+  {/if}
 </div>
 
 <style>
@@ -438,6 +462,9 @@
   }
   .spacer {
     flex: 1;
+  }
+  .log-hint {
+    margin: 0;
   }
   .small {
     height: 28px;

@@ -39,10 +39,14 @@ fn message_chain(error: &dyn std::error::Error) -> String {
     message
 }
 
-/// Commands reject with the full cause chain as a plain string.
+/// Commands reject with the full cause chain as a plain string. Only the
+/// page gets errors this way, so this is also where the log notes what you
+/// were shown.
 impl Serialize for AppError {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&message_chain(self))
+        let message = message_chain(self);
+        tracing::warn!(target: "attune_lib::ui", error = %message, "You were shown an error");
+        s.serialize_str(&message)
     }
 }
 
