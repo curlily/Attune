@@ -9,6 +9,9 @@
   let name = $state(app.settings?.displayName ?? "");
   let serverUrl = $state(app.settings?.serverUrl ?? "");
   let error = $state<string | null>(null);
+  let serverError = $state<string | null>(null);
+  // Server address, updates and bug reports: folded away until asked for.
+  let advancedOpen = $state(false);
   // The address is kept out of sight (screen sharing) until asked for.
   let revealServer = $state(false);
   let serverInput = $state<HTMLInputElement>();
@@ -63,25 +66,38 @@
 
   let saved = $state(false);
   let savedTimer: ReturnType<typeof setTimeout> | undefined;
+  let serverSaved = $state(false);
+  let serverSavedTimer: ReturnType<typeof setTimeout> | undefined;
 
-  let changed = $derived(
-    name.trim() !== (app.settings?.displayName ?? "") ||
-      serverUrl.trim() !== (app.settings?.serverUrl ?? ""),
-  );
+  let changed = $derived(name.trim() !== (app.settings?.displayName ?? ""));
+  let serverChanged = $derived(serverUrl.trim() !== (app.settings?.serverUrl ?? ""));
   let inJam = $derived(app.screen === "jam");
 
   async function save(event: SubmitEvent) {
     event.preventDefault();
     error = null;
     try {
-      app.settings = await api.updateSettings({ displayName: name, serverUrl });
+      app.settings = await api.updateSettings({ displayName: name });
       name = app.settings.displayName ?? "";
-      serverUrl = app.settings.serverUrl;
       saved = true;
       clearTimeout(savedTimer);
       savedTimer = setTimeout(() => (saved = false), 2000);
     } catch (failure) {
       error = errorText(failure);
+    }
+  }
+
+  async function saveServer(event: SubmitEvent) {
+    event.preventDefault();
+    serverError = null;
+    try {
+      app.settings = await api.updateSettings({ serverUrl });
+      serverUrl = app.settings.serverUrl;
+      serverSaved = true;
+      clearTimeout(serverSavedTimer);
+      serverSavedTimer = setTimeout(() => (serverSaved = false), 2000);
+    } catch (failure) {
+      serverError = errorText(failure);
     }
   }
 
@@ -133,33 +149,6 @@
     {#if inJam}
       <p class="hint">Others see a new name the next time you join a session.</p>
     {/if}
-
-    <label class="label" for="server">Server address</label>
-    {#if revealServer}
-      <input
-        id="server"
-        class="field mono"
-        bind:this={serverInput}
-        bind:value={serverUrl}
-        autocomplete="off"
-        spellcheck="false"
-      />
-    {:else}
-      <button
-        id="server"
-        type="button"
-        class="field reveal"
-        onclick={async () => {
-          revealServer = true;
-          await Promise.resolve();
-          serverInput?.focus();
-        }}
-      >
-        <span class="dots" aria-hidden="true">••••••••••••••••</span>
-        <span>Click to reveal</span>
-      </button>
-    {/if}
-    <p class="hint">Change this only if you run your own Attune server.</p>
 
     {#if error}<p class="error-text" transition:slide={{ duration: 160 }}>{error}</p>{/if}
 
@@ -271,33 +260,78 @@
 
   <div class="divider"></div>
 
-  <p class="section-title">Updates</p>
-  <div class="app-row">
-    <span>Attune {updates.version ?? ""}</span>
-    <span class="spacer"></span>
-    <button
-      class="btn small"
-      aria-busy={updates.checking}
-      disabled={updates.checking || updates.installing}
-      onclick={checkUpdates}
-    >
-      {updates.checking ? "Checking…" : "Check for updates"}
-    </button>
-  </div>
-  {#if updateResult}
-    <p class="hint" transition:slide={{ duration: 160 }}>{updateResult}</p>
-  {/if}
+  <button class="advanced-head" aria-expanded={advancedOpen} onclick={() => (advancedOpen = !advancedOpen)}>
+    <span class="section-title">Advanced settings</span>
+    <span class="chevron" class:collapsed={!advancedOpen}><Icon name="chevron" size={14} /></span>
+  </button>
 
-  <div class="divider"></div>
+  {#if advancedOpen}
+    <div class="advanced" transition:slide={{ duration: 180 }}>
+      <form onsubmit={saveServer}>
+        <label class="label" for="server">Server address</label>
+        {#if revealServer}
+          <input
+            id="server"
+            class="field mono"
+            bind:this={serverInput}
+            bind:value={serverUrl}
+            autocomplete="off"
+            spellcheck="false"
+          />
+        {:else}
+          <button
+            id="server"
+            type="button"
+            class="field reveal"
+            onclick={async () => {
+              revealServer = true;
+              await Promise.resolve();
+              serverInput?.focus();
+            }}
+          >
+            <span class="dots" aria-hidden="true">••••••••••••••••</span>
+            <span>Click to reveal</span>
+          </button>
+        {/if}
+        <p class="hint">Change this only if you run your own Attune server.</p>
+        {#if serverError}
+          <p class="error-text" transition:slide={{ duration: 160 }}>{serverError}</p>
+        {/if}
+        <button
+          class="btn wide"
+          class:primary={serverChanged}
+          type="submit"
+          disabled={!serverChanged && !serverSaved}
+        >
+          {#if serverSaved}<Icon name="check" size={14} /> Saved{:else}Save{/if}
+        </button>
+      </form>
 
-  <p class="section-title">Bug reports</p>
-  <div class="app-row">
-    <span class="hint log-hint">What happened since Attune started, to send with a bug report</span>
-    <span class="spacer"></span>
-    <button class="btn small" onclick={saveLog}>Save log</button>
-  </div>
-  {#if logResult}
-    <p class="hint" transition:slide={{ duration: 160 }}>{logResult}</p>
+      <p class="section-title">Updates</p>
+      <div class="app-row">
+        <span>Attune {updates.version ?? ""}</span>
+        <span class="spacer"></span>
+        <button
+          class="btn small"
+          aria-busy={updates.checking}
+          disabled={updates.checking || updates.installing}
+          onclick={checkUpdates}
+        >
+          {updates.checking ? "Checking…" : "Check for updates"}
+        </button>
+      </div>
+      {#if updateResult}
+        <p class="hint" transition:slide={{ duration: 160 }}>{updateResult}</p>
+      {/if}
+
+      <p class="section-title">Bug reports</p>
+      <div class="app-row">
+        <button class="btn small" onclick={saveLog}>Save log</button>
+      </div>
+      {#if logResult}
+        <p class="hint" transition:slide={{ duration: 160 }}>{logResult}</p>
+      {/if}
+    </div>
   {/if}
 </div>
 
@@ -463,8 +497,40 @@
   .spacer {
     flex: 1;
   }
-  .log-hint {
+  .small {
+    flex: none;
+    white-space: nowrap;
+  }
+
+  .advanced-head {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+    padding: 2px 0;
+    border: 0;
+    background: none;
+    color: var(--text-3);
+    text-align: left;
+    transition: color var(--fast);
+  }
+  .advanced-head:hover {
+    color: var(--text-2);
+  }
+  .advanced-head .section-title {
+    flex: 1;
     margin: 0;
+    color: inherit;
+  }
+  .chevron {
+    display: grid;
+    transition: transform var(--base) var(--ease-out);
+  }
+  .chevron.collapsed {
+    transform: rotate(-90deg);
+  }
+  .advanced .section-title {
+    margin-top: 20px;
   }
   .small {
     height: 28px;
