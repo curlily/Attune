@@ -11,7 +11,7 @@ mod window;
 
 use std::time::Duration;
 
-use tauri::{Emitter, Manager, RunEvent};
+use tauri::{Manager, RunEvent};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_deep_link::DeepLinkExt;
 
@@ -52,19 +52,12 @@ pub fn run() {
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let state = AppState::new(data_dir);
-            let discord_presence = state.settings().discord_presence;
+            let (show, listen_along) = {
+                let settings = state.settings();
+                (settings.discord_presence, settings.discord_listen_along)
+            };
             app.manage(state);
-            let handle = app.handle().clone();
-            app.manage(discord::DiscordPresence::start(
-                discord_presence,
-                move |event| match event {
-                    discord::DiscordEvent::Join { secret } => links::join_invite(&handle, secret),
-                    discord::DiscordEvent::JoinRequest(request) => {
-                        window::show(&handle);
-                        let _ = handle.emit("discord-join-request", request);
-                    }
-                },
-            ));
+            app.manage(discord::DiscordPresence::start(show, listen_along));
             app.manage(window::WindowState::default());
             app.manage(links::PendingJoin::default());
             app.manage(updates::PendingUpdate::default());
@@ -120,8 +113,6 @@ pub fn run() {
             window::set_window_pinned,
             window::hide_window,
             links::take_join_link,
-            commands::session::join_invite,
-            commands::session::answer_join_request,
             links::get_autostart,
             links::set_autostart,
         ])

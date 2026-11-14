@@ -17,7 +17,6 @@ fn create_with(initial: SessionMusicState) -> (SessionCoordinator, Vec<Outbound>
     SessionCoordinator::create(
         SESSION.to_owned(),
         SECRET_A.to_owned(),
-        None,
         CreateSession {
             hello: hello("a"),
             initial_state: initial,
@@ -107,7 +106,6 @@ fn create_returns_invite_and_snapshot_at_sequence_zero() {
                     session_id,
                     rejoin_secret,
                     snapshot,
-                    ..
                 },
         } => {
             assert_eq!(client, "a");
@@ -134,7 +132,6 @@ fn create_rejects_bad_version_identity_and_state() {
         SessionCoordinator::create(
             SESSION.to_owned(),
             SECRET_A.to_owned(),
-            None,
             CreateSession {
                 hello,
                 initial_state,
@@ -181,7 +178,6 @@ fn display_name_is_trimmed_and_empty_provider_dropped() {
     let (session, _) = SessionCoordinator::create(
         SESSION.to_owned(),
         SECRET_A.to_owned(),
-        None,
         CreateSession {
             hello: h,
             initial_state: state(&[], false, 0, 0),
@@ -341,7 +337,6 @@ fn session_full_rejects_new_members_but_not_rejoins() {
     let (mut session, _) = SessionCoordinator::create(
         SESSION.to_owned(),
         SECRET_A.to_owned(),
-        None,
         CreateSession {
             hello: hello("a"),
             initial_state: state(&[], false, 0, 0),
@@ -1143,7 +1138,6 @@ fn locked_with_b() -> SessionCoordinator {
     let (mut session, out) = SessionCoordinator::create(
         SESSION.to_owned(),
         SECRET_A.to_owned(),
-        None,
         CreateSession {
             hello: hello("a"),
             initial_state: state(&["s1", "s2", "s3"], true, 0, T0),

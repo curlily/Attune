@@ -17,9 +17,9 @@ use std::{
 
 use attune_protocol::{
     ClientMessage, CreateSession, ErrorCode, JOIN_CODE_ALPHABET, JOIN_CODE_LEN, JoinSession,
-    ServerMessage, SessionInvite,
+    ServerMessage,
     coordinator::{Outbound, Recipient, SessionCoordinator},
-    is_invite_secret, normalize_join_code,
+    normalize_join_code,
 };
 use tokio::{
     sync::{mpsc, oneshot},
@@ -50,8 +50,7 @@ fn rejection(code: ErrorCode, message: &str) -> Rejection {
     })
 }
 
-/// A rejoin or invite secret: 244 random bits from two v4 UUIDs, as 64 hex
-/// digits (the shape `is_invite_secret` checks).
+/// A rejoin secret: 244 random bits from two v4 UUIDs, as hex.
 fn new_secret() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
@@ -115,8 +114,6 @@ pub(crate) struct Binding {
 #[derive(Clone)]
 struct SessionEntry {
     log_id: String,
-    /// Joins in place of the code (Discord). Never logged.
-    invite_secret: String,
     commands: mpsc::Sender<SessionCommand>,
 }
 
@@ -177,17 +174,10 @@ impl Hub {
         };
         let log_id = log_id();
         let client_id = request.hello.client_id.clone();
-        let invite = SessionInvite {
-            secret: new_secret(),
-            party_id: Uuid::new_v4().simple().to_string(),
-            max_participants: u32::try_from(self.config.max_participants).unwrap_or(u32::MAX),
-        };
-        let invite_secret = invite.secret.clone();
 
         let (coordinator, outbound) = SessionCoordinator::create(
             code.clone(),
             new_secret(),
-            Some(invite),
             request,
             self.config.max_participants,
             now_ms(),
@@ -199,7 +189,6 @@ impl Hub {
             code,
             SessionEntry {
                 log_id: log_id.clone(),
-                invite_secret,
                 commands: commands.clone(),
             },
         );
@@ -224,8 +213,7 @@ impl Hub {
         })
     }
 
-    /// Join by code or invite secret. Failed attempts count against `ip`'s
-    /// limit.
+    /// Join by code. Failed attempts count against `ip`'s limit.
     pub async fn join(
         &self,
         mut request: JoinSession,
@@ -245,22 +233,13 @@ impl Hub {
                 "unknown join code or invalid rejoin secret",
             )
         };
-        let found = match normalize_join_code(&request.session_id) {
-            Some(code) => self
-                .sessions()
-                .get(&code)
-                .cloned()
-                .map(|entry| (code, entry)),
-            None if is_invite_secret(&request.session_id) => self
-                .sessions()
-                .iter()
-                .find(|(_, entry)| entry.invite_secret == request.session_id)
-                .map(|(code, entry)| (code.clone(), entry.clone())),
-            None => None,
-        };
-        let (code, entry) = found.ok_or_else(invalid)?;
-        // The session checks the code; from here on it's a normal join.
-        request.session_id = code;
+        let entry = normalize_join_code(&request.session_id)
+            .and_then(|code| {
+                let entry = self.sessions().get(&code).cloned();
+                request.session_id = code;
+                entry
+            })
+            .ok_or_else(invalid)?;
         let client_id = request.hello.client_id.clone();
 
         let (reply, response) = oneshot::channel();

@@ -402,38 +402,6 @@ async fn codes_are_case_insensitive_and_wrong_ones_are_refused() {
 }
 
 #[tokio::test]
-async fn invite_secrets_join_the_same_session_without_the_code() {
-    let server = Server::start(ServerConfig::default()).await;
-    let (_a, a_start) = SessionClient::create(server.client("a"), music(&["s1"]))
-        .await
-        .expect("create");
-    let invite = a_start
-        .credentials
-        .invite
-        .clone()
-        .expect("the server offers an invite");
-    assert!(attune_core::protocol::is_invite_secret(&invite.secret));
-    assert_eq!(invite.max_participants, 16);
-    // Nothing about the invite gives the code away.
-    let code = a_start.credentials.code.clone();
-    assert!(!invite.secret.contains(&code) && !invite.party_id.contains(&code));
-
-    let by_invite = JoinCredentials::from_invite(&invite.secret).expect("secret");
-    let (_b, b_start) = SessionClient::join(server.client("b"), by_invite)
-        .await
-        .expect("join by invite");
-    // In the session, it has the real code (for reconnects) and the same invite.
-    assert_eq!(b_start.credentials.code, code);
-    assert_eq!(b_start.credentials.invite, Some(invite));
-
-    let made_up = JoinCredentials::from_invite(&"0".repeat(64)).expect("secret");
-    let error = SessionClient::join(server.client("c"), made_up)
-        .await
-        .expect_err("unknown invite");
-    assert_eq!(remote_code(error), ErrorCode::InvalidCredentials);
-}
-
-#[tokio::test]
 async fn guessing_codes_is_rate_limited_per_address() {
     let config = ServerConfig {
         join_attempts_per_minute: 3,

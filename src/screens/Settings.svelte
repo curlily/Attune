@@ -50,6 +50,17 @@
     }
   }
 
+  async function toggleListenAlong() {
+    if (!app.settings) return;
+    try {
+      app.settings = await api.updateSettings({
+        discordListenAlong: !app.settings.discordListenAlong,
+      });
+    } catch (failure) {
+      error = errorText(failure);
+    }
+  }
+
   let saved = $state(false);
   let savedTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -197,10 +208,25 @@
   >
     <span class="switch-text">
       <span class="switch-label">Show on Discord</span>
-      <span class="switch-hint">The session's song on your profile, with invites to join</span>
+      <span class="switch-hint">"Listening to" the session's song on your profile</span>
     </span>
     <span class="switch" class:on={app.settings?.discordPresence === true}><span></span></span>
   </button>
+
+  {#if app.settings?.discordPresence}
+    <button
+      class="switch-row"
+      role="switch"
+      aria-checked={app.settings.discordListenAlong === true}
+      onclick={toggleListenAlong}
+    >
+      <span class="switch-text">
+        <span class="switch-label">Listen along button</span>
+        <span class="switch-hint">Lets anyone who sees your status join, with the session's code</span>
+      </span>
+      <span class="switch" class:on={app.settings.discordListenAlong === true}><span></span></span>
+    </button>
+  {/if}
 
   <div class="divider"></div>
 

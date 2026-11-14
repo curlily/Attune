@@ -44,26 +44,24 @@ enum Entry {
     Rejoin(RejoinInfo),
 }
 
-/// Forward runtime status and notices to the frontend (and Discord) until
-/// it stops.
+/// Forward runtime status and notices to the frontend until it stops.
 fn forward_events(app: AppHandle, store: Store, runtime: &SessionRuntime) {
     let mut status = runtime.watch_status();
-    let invite = runtime.credentials().invite.clone();
     let status_app = app.clone();
     tauri::async_runtime::spawn(async move {
         let presence = status_app.state::<DiscordPresence>();
         let initial = status.borrow_and_update().clone();
         tray::set_status(&status_app, Some(initial.sync));
-        presence.show_status(Some(&initial), invite.as_ref());
+        presence.show_status(Some(&initial));
         let _ = status_app.emit("session-status-changed", initial);
         while status.changed().await.is_ok() {
             let current = status.borrow_and_update().clone();
             tray::set_status(&status_app, Some(current.sync));
-            presence.show_status(Some(&current), invite.as_ref());
+            presence.show_status(Some(&current));
             let _ = status_app.emit("session-status-changed", current);
         }
         tray::set_status(&status_app, None);
-        presence.show_status(None, None);
+        presence.show_status(None);
         debug!("Session status forwarding stopped");
     });
 
@@ -139,7 +137,6 @@ async fn start(app: AppHandle, state: &AppState, entry: Entry) -> Result<Session
             let credentials = JoinCredentials {
                 code: saved.code,
                 rejoin_secret: Some(saved.rejoin_secret),
-                invite: None,
             };
             SessionRuntime::join(controller, config, credentials)
                 .await
@@ -198,23 +195,6 @@ pub async fn join_session(
 ) -> Result<SessionInfo, AppError> {
     let credentials = JoinCredentials::from_code(&code)?;
     start(app, &state, Entry::Join(credentials)).await
-}
-
-/// Join the session a Discord invite leads to (after Join in Discord).
-#[tauri::command]
-pub async fn join_invite(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    secret: String,
-) -> Result<SessionInfo, AppError> {
-    let credentials = JoinCredentials::from_invite(&secret)?;
-    start(app, &state, Entry::Join(credentials)).await
-}
-
-/// Accept or decline a friend's request (from Discord) to join.
-#[tauri::command]
-pub fn answer_join_request(presence: State<'_, DiscordPresence>, user_id: String, accept: bool) {
-    presence.answer(user_id, accept);
 }
 
 /// The code of a session Attune was in when it last closed, if any.

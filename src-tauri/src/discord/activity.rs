@@ -1,33 +1,23 @@
-//! What Discord shows while you're in a session: "Playing <song>", with its
-//! artists, cover and timing; with the session's invite, also a party
-//! ("2 of 16") and a join secret, which give friends Discord's Ask to Join
-//! button and let you invite from a DM.
-//!
-//! "Playing", not "Listening": verified live (2026-11-14), Discord offers
-//! invites in a DM's + menu only for a Playing activity. With Listening the
-//! DM still said "Attune supports game invites", but + had no entry.
+//! What Discord shows while you're in a session: a Listening activity with
+//! the current song, its artists and cover, and a progress bar.
 //!
 //! Built from the session's status alone, so it's the same function every
-//! time and testable without Discord. Nothing here names the session: its
-//! ID is the join code, and presence is visible to anyone sharing a server.
-//! The invite's secret and party ID are random and reveal nothing about it.
+//! time and testable without Discord. The session's ID is its join code and
+//! presence is visible to anyone sharing a server, so the code only appears
+//! in a **Listen along** button, which the user turns on separately (see
+//! [`Activity::with_listen_along`]).
 
-use attune_core::{
-    protocol::SessionInvite,
-    session::{RuntimeStatus, SyncState},
-};
+use attune_core::session::{RuntimeStatus, SyncState};
 use serde::Serialize;
 
-/// Discord's "Playing …": the only type it offers invites for.
-const PLAYING: u8 = 0;
-/// Where someone can join from: Attune runs on Windows desktops.
-const PLATFORMS: &[&str] = &["desktop"];
+/// Discord's "Listening to …".
+const LISTENING: u8 = 2;
 /// Show `details` (the song title) in the status line, not the app's name.
 const SHOW_DETAILS: u8 = 2;
 /// Discord accepts 2 to 128 characters in its text fields.
 const MAX_TEXT: usize = 128;
-/// A private party: friends get "Ask to Join", which you accept or decline.
-const PRIVATE: u8 = 0;
+/// The download page, which offers to open Attune on the code in `?join=`.
+const LISTEN_ALONG_URL: &str = "https://curlily.github.io/Attune/?join=";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Activity {
@@ -41,35 +31,9 @@ pub struct Activity {
     pub timestamps: Option<Timestamps>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assets: Option<Assets>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub party: Option<Party>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub secrets: Option<Secrets>,
-    /// Which invite buttons Discord shows.
-    pub supported_platforms: &'static [&'static str],
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Party {
-    pub id: String,
-    /// Members now, and at most.
-    pub size: [u32; 2],
-    pub privacy: u8,
-}
-
-/// Handed by Discord to the Attune of whoever joins. Discord refuses
-/// secrets alongside buttons, so the activity has none.
-#[derive(Clone, PartialEq, Eq, Serialize)]
-pub struct Secrets {
-    pub join: String,
-}
-
-impl std::fmt::Debug for Secrets {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Secrets")
-            .field("join", &"<redacted>")
-            .finish()
-    }
+    /// Shown to others, never to yourself. Discord allows two.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub buttons: Vec<Button>,
 }
 
 /// Unix milliseconds. With both, Discord draws a progress bar.
@@ -87,7 +51,24 @@ pub struct Assets {
     pub large_text: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Button {
+    pub label: String,
+    pub url: String,
+}
+
 impl Activity {
+    /// The same activity with a **Listen along** button that opens the
+    /// download page on `code`: it starts Attune and joins if Attune is
+    /// installed, and offers the download if not.
+    pub fn with_listen_along(mut self, code: &str) -> Activity {
+        self.buttons = vec![Button {
+            label: "Listen along".to_owned(),
+            url: format!("{LISTEN_ALONG_URL}{code}"),
+        }];
+        self
+    }
+
     /// The same activity, give or take the clock: a status update moments
     /// later computes timestamps a few milliseconds apart, which isn't worth
     /// one of Discord's few updates per minute.
@@ -111,20 +92,14 @@ impl Activity {
             && self.details == other.details
             && self.state == other.state
             && self.assets == other.assets
-            && self.party == other.party
-            && self.secrets == other.secrets
+            && self.buttons == other.buttons
     }
 }
 
 /// The activity for `status` at `now_ms` (Unix ms, this computer's clock),
 /// or `None` when you aren't hearing the session's music: stepped out, not
 /// able to play the current song, after an error, or once it has ended.
-/// With `invite`, friends can ask to join.
-pub fn from_status(
-    status: &RuntimeStatus,
-    invite: Option<&SessionInvite>,
-    now_ms: u64,
-) -> Option<Activity> {
+pub fn from_status(status: &RuntimeStatus, now_ms: u64) -> Option<Activity> {
     if !matches!(
         status.sync,
         SyncState::Synced | SyncState::Resyncing | SyncState::Reconnecting
@@ -162,29 +137,14 @@ pub fn from_status(
             large_text: track.album.as_deref().and_then(text),
         });
 
-    let party = invite.map(|invite| {
-        let max = invite.max_participants.max(1);
-        let members = u32::try_from(status.participants.len()).unwrap_or(max);
-        Party {
-            id: invite.party_id.clone(),
-            size: [members.clamp(1, max), max],
-            privacy: PRIVATE,
-        }
-    });
-    let secrets = invite.map(|invite| Secrets {
-        join: invite.secret.clone(),
-    });
-
     Some(Activity {
-        kind: PLAYING,
+        kind: LISTENING,
         status_display_type: SHOW_DETAILS,
         details,
         state,
         timestamps,
         assets,
-        party,
-        secrets,
-        supported_platforms: PLATFORMS,
+        buttons: Vec::new(),
     })
 }
 
@@ -213,19 +173,6 @@ mod tests {
     };
 
     const NOW: u64 = 1_800_000_000_000;
-
-    /// Without an invite.
-    fn from_status_(status: &RuntimeStatus, now_ms: u64) -> Option<Activity> {
-        from_status(status, None, now_ms)
-    }
-
-    fn invite() -> SessionInvite {
-        SessionInvite {
-            secret: "5".repeat(64),
-            party_id: "a1b2c3".to_owned(),
-            max_participants: 16,
-        }
-    }
 
     fn status(sync: SyncState, is_playing: bool) -> RuntimeStatus {
         RuntimeStatus {
@@ -263,9 +210,8 @@ mod tests {
 
     #[test]
     fn playing_shows_the_song_with_a_progress_bar() {
-        let activity = from_status_(&status(SyncState::Synced, true), NOW).unwrap();
-        assert_eq!(activity.kind, PLAYING);
-        assert_eq!(activity.supported_platforms, ["desktop"]);
+        let activity = from_status(&status(SyncState::Synced, true), NOW).unwrap();
+        assert_eq!(activity.kind, LISTENING);
         assert_eq!(activity.details, "Midnight Static");
         assert_eq!(activity.state.as_deref(), Some("Paper Satellites, Kei"));
         let timestamps = activity.timestamps.unwrap();
@@ -278,7 +224,7 @@ mod tests {
 
     #[test]
     fn paused_has_no_timer() {
-        let activity = from_status_(&status(SyncState::Synced, false), NOW).unwrap();
+        let activity = from_status(&status(SyncState::Synced, false), NOW).unwrap();
         assert_eq!(activity.timestamps, None);
         assert_eq!(
             activity.state.as_deref(),
@@ -294,18 +240,38 @@ mod tests {
             SyncState::Error,
             SyncState::Ended,
         ] {
-            assert_eq!(from_status_(&status(sync, true), NOW), None, "{sync:?}");
+            assert_eq!(from_status(&status(sync, true), NOW), None, "{sync:?}");
         }
         let mut empty = status(SyncState::Synced, true);
         empty.queue.clear();
-        assert_eq!(from_status_(&empty, NOW), None);
+        assert_eq!(from_status(&empty, NOW), None);
     }
 
     #[test]
     fn never_mentions_the_join_code() {
-        let activity = from_status_(&status(SyncState::Synced, true), NOW).unwrap();
+        let activity = from_status(&status(SyncState::Synced, true), NOW).unwrap();
         let json = serde_json::to_string(&activity).unwrap();
         assert!(!json.contains("KWPZ"), "{json}");
+    }
+
+    #[test]
+    fn listen_along_links_the_download_page_to_the_code() {
+        let plain = from_status(&status(SyncState::Synced, true), NOW).unwrap();
+        let along = plain.clone().with_listen_along("KWPZ");
+        assert_eq!(along.buttons.len(), 1);
+        assert_eq!(along.buttons[0].label, "Listen along");
+        assert_eq!(
+            along.buttons[0].url,
+            "https://curlily.github.io/Attune/?join=KWPZ"
+        );
+        assert!(!plain.same_as(&along));
+        let json = serde_json::to_value(&along).unwrap();
+        assert_eq!(json["buttons"][0]["label"], "Listen along");
+        // Without it, no `buttons` at all.
+        assert!(serde_json::to_value(&plain)
+            .unwrap()
+            .get("buttons")
+            .is_none());
     }
 
     #[test]
@@ -322,58 +288,27 @@ mod tests {
     fn only_https_covers() {
         let mut plain = status(SyncState::Synced, true);
         plain.queue[0].track.cover_url = Some("http://example.com/a.jpg".to_owned());
-        assert_eq!(from_status_(&plain, NOW).unwrap().assets, None);
+        assert_eq!(from_status(&plain, NOW).unwrap().assets, None);
     }
 
     #[test]
     fn small_clock_differences_are_the_same_activity() {
-        let a = from_status_(&status(SyncState::Synced, true), NOW).unwrap();
+        let a = from_status(&status(SyncState::Synced, true), NOW).unwrap();
         // While playing, the start doesn't move with the clock...
         assert_eq!(
             a,
-            from_status_(&status(SyncState::Synced, true), NOW + 400).unwrap()
+            from_status(&status(SyncState::Synced, true), NOW + 400).unwrap()
         );
         // ...but a fresh position report lands a few ms off.
         let mut report = status(SyncState::Synced, true);
         report.playback.position_ms += 300;
         report.playback.position_captured_at_ms += 250;
-        let b = from_status_(&report, NOW).unwrap();
+        let b = from_status(&report, NOW).unwrap();
         assert_ne!(a, b);
         assert!(a.same_as(&b));
         // A seek is a real change.
         let mut sought = status(SyncState::Synced, true);
         sought.playback.position_ms = 120_000;
-        assert!(!a.same_as(&from_status_(&sought, NOW).unwrap()));
-    }
-
-    #[test]
-    fn an_invite_adds_a_private_party_and_the_join_secret() {
-        let mut with_people = status(SyncState::Synced, true);
-        with_people.participants = vec![participant("a"), participant("b")];
-        let activity = from_status(&with_people, Some(&invite()), NOW).unwrap();
-        assert_eq!(
-            activity.party,
-            Some(Party {
-                id: "a1b2c3".to_owned(),
-                size: [2, 16],
-                privacy: PRIVATE,
-            })
-        );
-        assert_eq!(activity.secrets.as_ref().unwrap().join, "5".repeat(64));
-        assert!(!format!("{activity:?}").contains(&"5".repeat(64)));
-        // Without an invite (an older server): no party, no Join.
-        let plain = from_status_(&with_people, NOW).unwrap();
-        assert_eq!((plain.party, plain.secrets), (None, None));
-    }
-
-    fn participant(id: &str) -> attune_core::protocol::Participant {
-        attune_core::protocol::Participant {
-            client_id: id.to_owned(),
-            display_name: id.to_owned(),
-            provider: None,
-            status: attune_core::protocol::ParticipantStatus::Synced,
-            connected: true,
-            unavailable_entry_ids: Vec::new(),
-        }
+        assert!(!a.same_as(&from_status(&sought, NOW).unwrap()));
     }
 }

@@ -10,7 +10,6 @@
   import Logo from "./lib/Logo.svelte";
   import Toasts from "./lib/Toasts.svelte";
   import UpdateOffer from "./lib/UpdateOffer.svelte";
-  import JoinRequests from "./lib/JoinRequests.svelte";
   import { updates } from "./lib/updates.svelte";
   import FirstRun from "./screens/FirstRun.svelte";
   import Connect from "./screens/Connect.svelte";
@@ -184,32 +183,13 @@
 {/if}
 </div>
 
-<!-- Cards that wait for an answer, stacked under the header. -->
-<div class="cards">
-  <JoinRequests />
-  <UpdateOffer />
-</div>
+<UpdateOffer />
 <Toasts />
 
 <style>
   .window {
     position: relative;
     height: 100%;
-  }
-
-  .cards {
-    position: fixed;
-    top: 52px;
-    left: 10px;
-    right: 10px;
-    z-index: 9;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    pointer-events: none;
-  }
-  .cards > :global(*) {
-    pointer-events: auto;
   }
 
   .resize {

@@ -1,10 +1,9 @@
 mod common;
 
 use attune_protocol::{
-    ClientMessage, CreateSession, ErrorCode, INVITE_SECRET_LEN, JoinSession, OperationRequest,
-    PROTOCOL_VERSION, Participant, ParticipantStatus, RejectCode, ReplacePlayback, ServerMessage,
-    SessionControl, SessionInvite, SessionOperation, SessionSnapshot, is_invite_secret,
-    normalize_join_code,
+    ClientMessage, CreateSession, ErrorCode, JoinSession, OperationRequest, PROTOCOL_VERSION,
+    Participant, ParticipantStatus, RejectCode, ReplacePlayback, ServerMessage, SessionControl,
+    SessionOperation, SessionSnapshot,
 };
 use common::{entry, hello, state};
 use serde::{Serialize, de::DeserializeOwned};
@@ -193,11 +192,6 @@ fn every_server_message_round_trips() {
                 session_id: "s1".to_owned(),
                 rejoin_secret: "secret".to_owned(),
                 snapshot: snapshot(),
-                invite: Some(SessionInvite {
-                    secret: "a".repeat(INVITE_SECRET_LEN),
-                    party_id: "p1".to_owned(),
-                    max_participants: 16,
-                }),
             },
             "session.created",
         ),
@@ -205,7 +199,6 @@ fn every_server_message_round_trips() {
             ServerMessage::Joined {
                 snapshot: snapshot(),
                 rejoin_secret: "secret".to_owned(),
-                invite: None,
             },
             "session.joined",
         ),
@@ -364,40 +357,4 @@ fn a_replace_carries_the_new_songs_playback_only_when_given() {
         SessionOperation::QueueReplace { playback: None, .. }
     ));
     assert_eq!(serde_json::to_value(parsed).unwrap(), without);
-}
-
-#[test]
-fn invite_secrets_are_never_join_codes() {
-    let secret = "0123456789abcdef".repeat(4);
-    assert!(is_invite_secret(&secret));
-    assert!(normalize_join_code(&secret).is_none());
-    for not_secret in [
-        "KWPZ",
-        &secret[..63],
-        &secret.to_uppercase(),
-        &format!("{}g", &secret[..63]),
-    ] {
-        assert!(!is_invite_secret(not_secret), "{not_secret}");
-    }
-}
-
-#[test]
-fn invite_debug_hides_the_secret() {
-    let invite = SessionInvite {
-        secret: "b".repeat(INVITE_SECRET_LEN),
-        party_id: "party".to_owned(),
-        max_participants: 16,
-    };
-    assert!(!format!("{invite:?}").contains("bbbb"));
-}
-
-#[test]
-fn replies_without_an_invite_still_parse() {
-    // From a server that predates invites.
-    let json = r#"{"type":"session.joined","snapshot":SNAPSHOT,"rejoinSecret":"s"}"#
-        .replace("SNAPSHOT", &serde_json::to_string(&snapshot()).unwrap());
-    let ServerMessage::Joined { invite, .. } = serde_json::from_str(&json).unwrap() else {
-        panic!("expected session.joined");
-    };
-    assert_eq!(invite, None);
 }

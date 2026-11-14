@@ -48,6 +48,9 @@ pub struct Settings {
     pub skipped_update_version: Option<String>,
     /// Show the session's song on your Discord profile.
     pub discord_presence: bool,
+    /// Add a **Listen along** button to the Discord status, which shares the
+    /// session's join code with anyone who sees it. Off unless turned on.
+    pub discord_listen_along: bool,
     /// Let others in your session change what's playing. Counts only while
     /// you're the session's host.
     pub others_can_control: bool,
@@ -63,6 +66,7 @@ impl Default for Settings {
             client_id: new_client_id(),
             skipped_update_version: None,
             discord_presence: true,
+            discord_listen_along: false,
             others_can_control: true,
         }
     }
@@ -76,6 +80,7 @@ pub struct SettingsUpdate {
     pub server_url: Option<String>,
     pub listening_offset_ms: Option<u32>,
     pub discord_presence: Option<bool>,
+    pub discord_listen_along: Option<bool>,
     pub others_can_control: Option<bool>,
 }
 
@@ -121,6 +126,9 @@ impl Settings {
         self.listening_offset_ms = listening_offset_ms;
         if let Some(enabled) = update.discord_presence {
             self.discord_presence = enabled;
+        }
+        if let Some(enabled) = update.discord_listen_along {
+            self.discord_listen_along = enabled;
         }
         if let Some(allowed) = update.others_can_control {
             self.others_can_control = allowed;

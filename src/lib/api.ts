@@ -32,18 +32,10 @@ export interface Settings {
   skippedUpdateVersion: string | null;
   /** Show the session's song on your Discord profile. */
   discordPresence: boolean;
+  /** A "Listen along" button on the Discord status that shares the join code. */
+  discordListenAlong: boolean;
   /** Let others change what's playing (counts while you host). */
   othersCanControl: boolean;
-}
-
-/** A session to join: by its code, or by an invite passed on by Discord. */
-export type JoinLink = { code: string } | { invite: string };
-
-/** A friend asking, through Discord, to join your session. */
-export interface JoinRequest {
-  userId: string;
-  name: string;
-  avatarUrl: string | null;
 }
 
 export interface UpdateInfo {
@@ -63,6 +55,7 @@ export interface SettingsUpdate {
   serverUrl?: string;
   listeningOffsetMs?: number;
   discordPresence?: boolean;
+  discordListenAlong?: boolean;
   othersCanControl?: boolean;
 }
 
@@ -196,10 +189,6 @@ export const api = {
 
   createSession: () => invoke<SessionInfo>("create_session"),
   joinSession: (code: string) => invoke<SessionInfo>("join_session", { code }),
-  /** Join through a Discord invite (after Join in Discord). */
-  joinInvite: (secret: string) => invoke<SessionInfo>("join_invite", { secret }),
-  answerJoinRequest: (userId: string, accept: boolean) =>
-    invoke<void>("answer_join_request", { userId, accept }),
   getRejoinOffer: () => invoke<string | null>("get_rejoin_offer"),
   rejoinSession: () => invoke<SessionInfo>("rejoin_session"),
   dismissRejoin: () => invoke<void>("dismiss_rejoin"),
@@ -216,8 +205,8 @@ export const api = {
 
   setPinned: (pinned: boolean) => invoke<void>("set_window_pinned", { pinned }),
   hideWindow: () => invoke<void>("hide_window"),
-  /** A join (attune:// link or Discord) not handled yet. */
-  takeJoinLink: () => invoke<JoinLink | null>("take_join_link"),
+  /** A join code from a attune:// link not handled yet. */
+  takeJoinLink: () => invoke<string | null>("take_join_link"),
   getAutostart: () => invoke<boolean>("get_autostart"),
 
   /** A newer release, if there is one. `automatic`: the quiet check on launch. */
@@ -238,10 +227,8 @@ export const events = {
   /** The music app went away on its own (closed, or reopened normally). */
   onProviderLost: (handler: (name: string) => void): Promise<UnlistenFn> =>
     listen<string>("provider-lost", (event) => handler(event.payload)),
-  onJoinLink: (handler: (link: JoinLink) => void): Promise<UnlistenFn> =>
-    listen<JoinLink>("join-link", (event) => handler(event.payload)),
-  onDiscordJoinRequest: (handler: (request: JoinRequest) => void): Promise<UnlistenFn> =>
-    listen<JoinRequest>("discord-join-request", (event) => handler(event.payload)),
+  onJoinLink: (handler: (code: string) => void): Promise<UnlistenFn> =>
+    listen<string>("join-link", (event) => handler(event.payload)),
   onUpdateProgress: (handler: (progress: UpdateProgress) => void): Promise<UnlistenFn> =>
     listen<UpdateProgress>("update-progress", (event) => handler(event.payload)),
   onWindowShown: (handler: () => void): Promise<UnlistenFn> =>

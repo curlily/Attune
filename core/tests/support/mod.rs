@@ -114,7 +114,6 @@ impl Inner {
                 match SessionCoordinator::create(
                     session_id.clone(),
                     secret,
-                    None,
                     request,
                     MAX_PARTICIPANTS,
                     now,

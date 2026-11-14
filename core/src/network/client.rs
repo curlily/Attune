@@ -55,8 +55,8 @@ use crate::{
     protocol::{
         ClientHello, ClientMessage, CreateSession, ErrorCode, JoinSession, OperationRequest,
         PROTOCOL_VERSION, Participant, ParticipantStatus, RejectCode, ServerMessage,
-        SessionControl, SessionInvite, SessionMusicState, SessionOperation, SessionSnapshot,
-        is_invite_secret, normalize_join_code, state,
+        SessionControl, SessionMusicState, SessionOperation, SessionSnapshot, normalize_join_code,
+        state,
     },
 };
 
@@ -234,20 +234,15 @@ impl SessionClientConfig {
 }
 
 /// How to get into a session: its join code, plus this participant's rejoin
-/// secret once it has a seat. The secrets must never be logged; `Debug`
-/// redacts them.
+/// secret once it has a seat. The secret must never be logged; `Debug`
+/// redacts it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct JoinCredentials {
-    /// The four-letter join code, which is also the session ID. Before a
-    /// join by invite it holds the invite secret; the join replaces it with
-    /// the code.
+    /// The four-letter join code, which is also the session ID.
     pub code: String,
     /// Proves on reconnect that this client is the participant it was.
     /// Only valid together with the same client ID.
     pub rejoin_secret: Option<String>,
-    /// For inviting others (Discord), once in the session and if the server
-    /// offers it.
-    pub invite: Option<SessionInvite>,
 }
 
 impl fmt::Debug for JoinCredentials {
@@ -258,7 +253,6 @@ impl fmt::Debug for JoinCredentials {
                 "rejoin_secret",
                 &self.rejoin_secret.as_ref().map(|_| "<redacted>"),
             )
-            .field("invite", &self.invite)
             .finish()
     }
 }
@@ -269,19 +263,6 @@ impl JoinCredentials {
         Ok(Self {
             code: normalize_join_code(code).ok_or(Error::InvalidJoinCode)?,
             rejoin_secret: None,
-            invite: None,
-        })
-    }
-
-    /// An invite secret, as Discord hands it over after "Join".
-    pub fn from_invite(secret: &str) -> Result<Self> {
-        if !is_invite_secret(secret) {
-            return Err(Error::InvalidJoinCode);
-        }
-        Ok(Self {
-            code: secret.to_owned(),
-            rejoin_secret: None,
-            invite: None,
         })
     }
 }
@@ -428,7 +409,6 @@ impl SessionClient {
             session_id,
             rejoin_secret,
             snapshot,
-            invite,
         } = reply
         else {
             return Err(Error::ProtocolViolation {
@@ -451,7 +431,6 @@ impl SessionClient {
         let credentials = JoinCredentials {
             code: session_id,
             rejoin_secret: Some(rejoin_secret),
-            invite,
         };
         info!(client_id = %config.client_id, "Created session");
         Ok(Self::start(config, credentials, socket, snapshot, early))
@@ -468,26 +447,14 @@ impl SessionClient {
         let ServerMessage::Joined {
             snapshot,
             rejoin_secret,
-            invite,
         } = reply
         else {
             return Err(Error::ProtocolViolation {
                 reason: "expected session.joined",
             });
         };
-        // Joined by invite: the session's code comes with the snapshot, and
-        // is what reconnects and the saved seat use from now on.
-        if is_invite_secret(&credentials.code) {
-            if normalize_join_code(&snapshot.session_id).as_ref() != Some(&snapshot.session_id) {
-                return Err(Error::ProtocolViolation {
-                    reason: "session.joined has an invalid session ID",
-                });
-            }
-            credentials.code = snapshot.session_id.clone();
-        }
         validate_snapshot(&snapshot, &credentials.code)?;
         credentials.rejoin_secret = Some(rejoin_secret);
-        credentials.invite = invite;
         info!(
             client_id = %config.client_id,
             sequence = snapshot.revision,
@@ -1154,14 +1121,10 @@ impl Actor {
                     ServerMessage::Joined {
                         snapshot,
                         rejoin_secret,
-                        invite,
                     },
                     early,
                 )) => validate_snapshot(&snapshot, &code).map(|()| {
                     self.credentials.rejoin_secret = Some(rejoin_secret);
-                    if invite.is_some() {
-                        self.credentials.invite = invite;
-                    }
                     (socket, snapshot, early)
                 }),
                 Ok(_) => Err(Error::ProtocolViolation {
@@ -1236,14 +1199,8 @@ mod tests {
         let credentials = JoinCredentials {
             code: "KWPZ".to_owned(),
             rejoin_secret: Some("s3cr3t".to_owned()),
-            invite: Some(SessionInvite {
-                secret: "f".repeat(64),
-                party_id: "party".to_owned(),
-                max_participants: 16,
-            }),
         };
         let debug = format!("{credentials:?}");
-        assert!(!debug.contains(&"f".repeat(64)), "{debug}");
         assert!(debug.contains("KWPZ"));
         assert!(!debug.contains("s3cr3t"));
     }

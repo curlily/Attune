@@ -468,3 +468,42 @@ footer {
     gap: 12px 24px;
   }
 }
+
+/* Listen along (?join=<code>) */
+.join {
+  padding-top: 24px;
+}
+.join-card {
+  padding: 28px 30px 26px;
+  border: 1px solid color-mix(in oklab, var(--accent) 35%, transparent);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(160deg, var(--accent-tint), transparent 70%), var(--surface-1);
+}
+.join-card .cta {
+  margin-top: 20px;
+}
+.join-eyebrow {
+  margin: 0 0 6px;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.join-card h2 {
+  margin: 0;
+  font: 700 clamp(26px, 4vw, 34px) / 1.15 var(--font-display);
+}
+.join-code {
+  display: inline-block;
+  padding: 0 10px;
+  border: 1px solid color-mix(in oklab, var(--accent) 35%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+  font-family: var(--font-mono);
+  letter-spacing: 0.12em;
+}
+.join-status {
+  margin: 10px 0 0;
+  color: var(--text-2);
+}

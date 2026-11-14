@@ -30,6 +30,7 @@ pub async fn update_settings(
         Ok(settings.clone())
     })?;
     presence.set_enabled(settings.discord_presence);
+    presence.set_listen_along(settings.discord_listen_along);
     if let Some(runtime) = state.session.lock().await.as_ref() {
         // Gone already only if the session just ended; nothing to tell.
         let _ = runtime

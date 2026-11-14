@@ -35,6 +35,24 @@
   </header>
 
   <main>
+    <!-- Shown by join.js for a ?join=<code> link (Discord's Listen along). -->
+    <section class="join wrap" id="join" hidden>
+      <div class="join-card">
+        <p class="join-eyebrow">Listen along</p>
+        <h2>Join session <span class="join-code" id="join-code"></span></h2>
+        <p class="join-status" id="join-status" aria-live="polite">Opening Attune…</p>
+        <div class="cta">
+          <a class="btn primary" id="join-open" href="attune://">Open in Attune</a>
+          <a class="btn" data-download href="https://github.com/curlily/Attune/releases/latest">
+            <svg class="win" viewBox="0 0 16 16" aria-hidden="true"><path d="M0 2.3 6.5 1.4v6.2H0zm7.3-1L16 0v7.6H7.3zM0 8.4h6.5v6.2L0 13.7zm7.3 0H16V16l-8.7-1.2z"/></svg>
+            <span>Download for Windows</span>
+          </a>
+        </div>
+        <p class="fine">New to Attune? Download and install it, then come back here and choose
+          <strong>Open in Attune</strong>. You can also type the code into Attune's join box.</p>
+      </div>
+    </section>
+
     <section class="hero wrap">
       <div class="pitch">
         <h1>Listen together, <span class="accent">whatever you stream on.</span></h1>
@@ -42,7 +60,7 @@
           Attune syncs your music, so friends on different services hear the same song at the same moment. Everyone keeps using their own app.
         </p>
         <div class="cta">
-          <a class="btn primary" id="download" href="https://github.com/curlily/Attune/releases/latest">
+          <a class="btn primary" id="download" data-download href="https://github.com/curlily/Attune/releases/latest">
             <svg class="win" viewBox="0 0 16 16" aria-hidden="true"><path d="M0 2.3 6.5 1.4v6.2H0zm7.3-1L16 0v7.6H7.3zM0 8.4h6.5v6.2L0 13.7zm7.3 0H16V16l-8.7-1.2z"/></svg>
             <span>Download for Windows</span>
           </a>
@@ -122,6 +140,7 @@
     <a href="https://github.com/curlily/Attune">Source on GitHub</a>
   </footer>
 
+  <script src="join.js"></script>
   <script src="download.js"></script>
 </body>
 </html>
