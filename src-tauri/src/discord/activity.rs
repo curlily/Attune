@@ -1,16 +1,14 @@
-//! What Discord shows while you're in a session: "Listening to <music app>"
-//! with the current song, its artists and cover, and a progress bar.
+//! What Discord shows: "Listening to <music app>" with the song the music
+//! app is playing, its artists and cover, and a progress bar.
 //!
-//! Built from the session's status alone, so it's the same function every
-//! time and testable without Discord. The session's ID is its join code and
+//! Built from the music app's state alone (in a session it plays the
+//! session's song), so it's the same function every time and testable
+//! without Discord. The session's ID is its join code and
 //! presence is visible to anyone sharing a server, so the code only appears
 //! in a **Listen along** button, which the user turns on separately (see
 //! [`Activity::with_listen_along`]).
 
-use attune_core::{
-    protocol::{SessionMusicState, SessionPlayback, TrackDescriptor},
-    session::{RuntimeStatus, SyncState},
-};
+use attune_core::protocol::SessionMusicState;
 use serde::Serialize;
 
 /// Discord's "Listening to …".
@@ -103,34 +101,12 @@ impl Activity {
     }
 }
 
-/// The activity for `status` at `now_ms` (Unix ms, this computer's clock),
-/// listening to `app` (the music app's name), or `None` when you aren't
-/// hearing the session's music: stepped out, not able to play the current
-/// song, after an error, or once it has ended.
-pub fn from_status(status: &RuntimeStatus, app: &str, now_ms: u64) -> Option<Activity> {
-    if !matches!(
-        status.sync,
-        SyncState::Synced | SyncState::Resyncing | SyncState::Reconnecting
-    ) {
-        return None;
-    }
-    let track = &status.queue.first()?.track;
-    Some(playing(track, &status.playback, app, now_ms))
-}
-
-/// The activity for what the music app itself is playing, in or out of a
-/// session, or `None` when it has nothing loaded.
-pub fn from_music_app(state: &SessionMusicState, app: &str, now_ms: u64) -> Option<Activity> {
+/// The activity for what the music app `app` is playing (`state`) at
+/// `now_ms` (Unix ms, this computer's clock), or `None` when it has nothing
+/// loaded.
+pub fn from_state(state: &SessionMusicState, app: &str, now_ms: u64) -> Option<Activity> {
     let track = &state.queue.first()?.track;
-    Some(playing(track, &state.playback, app, now_ms))
-}
-
-fn playing(
-    track: &TrackDescriptor,
-    playback: &SessionPlayback,
-    app: &str,
-    now_ms: u64,
-) -> Activity {
+    let playback = &state.playback;
     let details = text(&track.title).unwrap_or_else(|| "Unknown song".to_owned());
     let artists = text(&track.artists.join(", "));
 
@@ -168,7 +144,7 @@ fn playing(
             large_text: track.album.as_deref().and_then(text),
         });
 
-    Activity {
+    Some(Activity {
         name: app.to_owned(),
         kind: LISTENING,
         status_display_type: SHOW_DETAILS,
@@ -177,7 +153,7 @@ fn playing(
         timestamps,
         assets,
         buttons: Vec::new(),
-    }
+    })
 }
 
 /// Fit `value` to Discord's 2–128 characters: `None` when empty, padded
@@ -199,21 +175,13 @@ fn text(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use attune_core::{
-        protocol::{SessionPlayback, TrackDescriptor},
-        session::QueueItem,
-    };
+    use attune_core::protocol::{QueueEntry, SessionPlayback, TrackDescriptor};
 
     const NOW: u64 = 1_800_000_000_000;
 
-    fn status(sync: SyncState, is_playing: bool) -> RuntimeStatus {
-        RuntimeStatus {
-            session_id: "KWPZ".to_owned(),
-            client_id: "me".to_owned(),
-            sync,
-            behind_ms: None,
-            sequence: 1,
-            queue: vec![QueueItem {
+    fn state(is_playing: bool) -> SessionMusicState {
+        SessionMusicState {
+            queue: vec![QueueEntry {
                 entry_id: "e1".to_owned(),
                 track: TrackDescriptor {
                     title: "Midnight Static".to_owned(),
@@ -224,25 +192,21 @@ mod tests {
                     cover_url: Some("https://i.scdn.co/image/abc".to_owned()),
                 },
                 added_by: None,
-                playable_here: true,
             }],
+            current_entry_id: Some("e1".to_owned()),
             playback: SessionPlayback {
                 is_playing,
                 position_ms: 60_000,
                 // Captured 2 s ago: the song is now 62 s in.
                 position_captured_at_ms: NOW - 2_000,
             },
-            participants: Vec::new(),
-            warnings: Vec::new(),
-            host_client_id: Some("me".to_owned()),
-            others_can_control: true,
             repeat: Default::default(),
         }
     }
 
     #[test]
     fn playing_shows_the_song_with_a_progress_bar() {
-        let activity = from_status(&status(SyncState::Synced, true), "TIDAL", NOW).unwrap();
+        let activity = from_state(&state(true), "TIDAL", NOW).unwrap();
         assert_eq!(activity.kind, LISTENING);
         assert_eq!(activity.name, "TIDAL");
         assert_eq!(activity.details, "Midnight Static");
@@ -257,7 +221,7 @@ mod tests {
 
     #[test]
     fn paused_has_no_timer() {
-        let activity = from_status(&status(SyncState::Synced, false), "TIDAL", NOW).unwrap();
+        let activity = from_state(&state(false), "TIDAL", NOW).unwrap();
         // Zero length, in the past: Discord shows neither a bar nor a counter.
         let paused_at = NOW - 2_000;
         assert_eq!(
@@ -268,7 +232,7 @@ mod tests {
             })
         );
         // And it stays put while the pause lasts.
-        let later = from_status(&status(SyncState::Synced, false), "TIDAL", NOW + 60_000).unwrap();
+        let later = from_state(&state(false), "TIDAL", NOW + 60_000).unwrap();
         assert_eq!(activity, later);
         assert_eq!(
             activity.state.as_deref(),
@@ -277,57 +241,23 @@ mod tests {
     }
 
     #[test]
-    fn nothing_while_not_hearing_the_session() {
-        for sync in [
-            SyncState::SteppedOut,
-            SyncState::WaitingForNextSong,
-            SyncState::Error,
-            SyncState::Ended,
-        ] {
-            assert_eq!(
-                from_status(&status(sync, true), "TIDAL", NOW),
-                None,
-                "{sync:?}"
-            );
-        }
-        let mut empty = status(SyncState::Synced, true);
+    fn nothing_when_nothing_is_loaded() {
+        let mut empty = state(true);
         empty.queue.clear();
-        assert_eq!(from_status(&empty, "TIDAL", NOW), None);
-    }
-
-    #[test]
-    fn the_music_apps_own_song() {
-        let session = status(SyncState::Synced, true);
-        let state = SessionMusicState {
-            current_entry_id: Some("e1".to_owned()),
-            queue: vec![attune_core::protocol::QueueEntry {
-                entry_id: "e1".to_owned(),
-                track: session.queue[0].track.clone(),
-                added_by: None,
-            }],
-            playback: session.playback.clone(),
-            repeat: Default::default(),
-        };
-        let local = from_music_app(&state, "TIDAL", NOW).unwrap();
-        assert_eq!(local, from_status(&session, "TIDAL", NOW).unwrap());
-        let empty = SessionMusicState {
-            queue: Vec::new(),
-            current_entry_id: None,
-            ..state
-        };
-        assert_eq!(from_music_app(&empty, "TIDAL", NOW), None);
+        empty.current_entry_id = None;
+        assert_eq!(from_state(&empty, "TIDAL", NOW), None);
     }
 
     #[test]
     fn never_mentions_the_join_code() {
-        let activity = from_status(&status(SyncState::Synced, true), "TIDAL", NOW).unwrap();
+        let activity = from_state(&state(true), "TIDAL", NOW).unwrap();
         let json = serde_json::to_string(&activity).unwrap();
         assert!(!json.contains("KWPZ"), "{json}");
     }
 
     #[test]
     fn listen_along_links_the_download_page_to_the_code() {
-        let plain = from_status(&status(SyncState::Synced, true), "TIDAL", NOW).unwrap();
+        let plain = from_state(&state(true), "TIDAL", NOW).unwrap();
         let along = plain.clone().with_listen_along("KWPZ");
         assert_eq!(along.buttons.len(), 1);
         assert_eq!(along.buttons[0].label, "Listen along");
@@ -357,29 +287,26 @@ mod tests {
 
     #[test]
     fn only_https_covers() {
-        let mut plain = status(SyncState::Synced, true);
+        let mut plain = state(true);
         plain.queue[0].track.cover_url = Some("http://example.com/a.jpg".to_owned());
-        assert_eq!(from_status(&plain, "TIDAL", NOW).unwrap().assets, None);
+        assert_eq!(from_state(&plain, "TIDAL", NOW).unwrap().assets, None);
     }
 
     #[test]
     fn small_clock_differences_are_the_same_activity() {
-        let a = from_status(&status(SyncState::Synced, true), "TIDAL", NOW).unwrap();
+        let a = from_state(&state(true), "TIDAL", NOW).unwrap();
         // While playing, the start doesn't move with the clock...
-        assert_eq!(
-            a,
-            from_status(&status(SyncState::Synced, true), "TIDAL", NOW + 400).unwrap()
-        );
+        assert_eq!(a, from_state(&state(true), "TIDAL", NOW + 400).unwrap());
         // ...but a fresh position report lands a few ms off.
-        let mut report = status(SyncState::Synced, true);
+        let mut report = state(true);
         report.playback.position_ms += 300;
         report.playback.position_captured_at_ms += 250;
-        let b = from_status(&report, "TIDAL", NOW).unwrap();
+        let b = from_state(&report, "TIDAL", NOW).unwrap();
         assert_ne!(a, b);
         assert!(a.same_as(&b));
         // A seek is a real change.
-        let mut sought = status(SyncState::Synced, true);
+        let mut sought = state(true);
         sought.playback.position_ms = 120_000;
-        assert!(!a.same_as(&from_status(&sought, "TIDAL", NOW).unwrap()));
+        assert!(!a.same_as(&from_state(&sought, "TIDAL", NOW).unwrap()));
     }
 }

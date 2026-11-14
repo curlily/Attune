@@ -4,10 +4,10 @@
 //! RPC connection (see `ipc`). No Discord account is linked and nothing
 //! is sent anywhere else.
 //!
-//! It shows the session's song while you're hearing it, and otherwise
-//! whatever your music app is playing (outside a session, or stepped out).
-//! With **Listen along** on, the activity also has a button for others that
-//! opens the download page on the session's join code, while you're in one.
+//! It shows whatever your music app is playing, in a session or not (in
+//! one, that's the session's song while you're hearing it). With **Listen
+//! along** on, the activity also has a button for others that opens the
+//! download page on the session's join code, while you're in one.
 //!
 //! One background task owns the connection. The app tells it what should
 //! show (the session status, and whether the settings are on); the task
@@ -20,7 +20,7 @@ mod ipc;
 
 use std::{
     io,
-    sync::Arc,
+    sync::{Arc, Weak},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -34,7 +34,7 @@ use tauri::{AppHandle, Manager};
 use tokio::{
     sync::{
         broadcast::{self, error::RecvError},
-        mpsc, watch,
+        mpsc, watch, Notify,
     },
     time::{sleep, sleep_until, timeout, Instant},
 };
@@ -52,15 +52,16 @@ const RETRY_EVERY: Duration = Duration::from_secs(20);
 const READY_TIMEOUT: Duration = Duration::from_secs(5);
 /// A song change arrives as a few events at once; read the app once after.
 const SETTLE: Duration = Duration::from_millis(300);
+/// Applying a session's change can take the music app a moment longer, and
+/// it doesn't report those changes itself: read it again after this.
+const SESSION_SETTLE: Duration = Duration::from_millis(1500);
 
 #[derive(Debug, Clone, Default)]
 struct Wanted {
     enabled: bool,
     listen_along: bool,
-    /// The session's song, while you're hearing it.
-    session: Option<Activity>,
-    /// What the music app is playing, shown when the session's song isn't.
-    music_app: Option<Activity>,
+    /// What the music app is playing.
+    activity: Option<Activity>,
     /// The join code while you're in a session, for the Listen along button.
     code: Option<String>,
 }
@@ -70,7 +71,7 @@ impl Wanted {
         if !self.enabled {
             return None;
         }
-        let activity = self.session.clone().or_else(|| self.music_app.clone())?;
+        let activity = self.activity.clone()?;
         Some(match &self.code {
             Some(code) if self.listen_along => activity.with_listen_along(code),
             _ => activity,
@@ -81,6 +82,8 @@ impl Wanted {
 /// Handle to the presence task; managed as Tauri state.
 pub struct DiscordPresence {
     wanted: watch::Sender<Wanted>,
+    /// Tells the music app reader that the session changed something.
+    session_changed: Arc<Notify>,
 }
 
 impl DiscordPresence {
@@ -88,38 +91,43 @@ impl DiscordPresence {
         let (wanted, receiver) = watch::channel(Wanted {
             enabled,
             listen_along,
-            session: None,
-            music_app: None,
+            activity: None,
             code: None,
         });
         tauri::async_runtime::spawn(run(receiver));
-        Self { wanted }
+        Self {
+            wanted,
+            session_changed: Arc::new(Notify::new()),
+        }
     }
 
-    /// Follow the session (played on `app`), or with `None` leave it.
-    pub fn show_status(&self, status: Option<&RuntimeStatus>, app: &str) {
-        let next = status.and_then(|status| activity::from_status(status, app, now_ms()));
+    /// The session you're in, for the Listen along button, or `None` once
+    /// you've left it. Each update may have changed what the music app
+    /// plays, which it doesn't report itself, so it's read again.
+    pub fn set_session(&self, status: Option<&RuntimeStatus>) {
+        self.session_changed.notify_one();
         let code = status
             .filter(|status| status.sync != SyncState::Ended)
             .map(|status| status.session_id.clone());
         self.wanted.send_if_modified(|wanted| {
-            let same = wanted.code == code && same(&wanted.session, &next);
-            if !same {
-                wanted.session = next;
-                wanted.code = code;
-            }
-            !same
+            let changed = wanted.code != code;
+            wanted.code = code;
+            changed
         });
     }
 
     /// What the music app `app` is playing, or with `None` nothing (it was
     /// disconnected).
     fn show_music_app(&self, state: Option<&SessionMusicState>, app: &str) {
-        let next = state.and_then(|state| activity::from_music_app(state, app, now_ms()));
+        let next = state.and_then(|state| activity::from_state(state, app, now_ms()));
         self.wanted.send_if_modified(|wanted| {
-            let same = same(&wanted.music_app, &next);
+            let same = match (&wanted.activity, &next) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a.same_as(b),
+                _ => false,
+            };
             if !same {
-                wanted.music_app = next;
+                wanted.activity = next;
             }
             !same
         });
@@ -142,58 +150,90 @@ impl DiscordPresence {
     }
 }
 
-fn same(a: &Option<Activity>, b: &Option<Activity>) -> bool {
-    match (a, b) {
-        (None, None) => true,
-        (Some(a), Some(b)) => a.same_as(b),
-        _ => false,
-    }
-}
-
 /// Keep Discord up to date with what `controller`'s music app plays, until
 /// it's disconnected. Reads the app after each song change, play, pause or
-/// seek it reports; holds it only weakly, so disconnecting isn't held up.
+/// seek it reports, and after each session update (the app keeps quiet
+/// about changes a session makes). Holds it only weakly, so disconnecting
+/// isn't held up.
 pub fn follow_music_app(app: AppHandle, controller: &Arc<BridgeController>) {
     let mut events = controller.subscribe();
     let watched = Arc::downgrade(controller);
     let name = controller.provider_id().display_name();
     tauri::async_runtime::spawn(async move {
         let presence = app.state::<DiscordPresence>();
+        let session_changed = presence.session_changed.clone();
         loop {
-            let Some(controller) = watched.upgrade() else {
+            if !read_music_app(&presence, &watched, name).await {
                 break;
-            };
-            let state = controller.get_session_state().await;
-            drop(controller);
-            match state {
-                Ok(state) => presence.show_music_app(Some(&state), name),
-                Err(error) => debug!(%error, "Could not read the music app for Discord"),
             }
-            if !next_change(&mut events).await {
-                break;
+            match next_change(&mut events, &session_changed).await {
+                Change::App => {}
+                Change::Session => {
+                    sleep(SESSION_SETTLE - SETTLE).await;
+                    if !read_music_app(&presence, &watched, name).await {
+                        break;
+                    }
+                }
+                Change::Gone => break,
             }
         }
         presence.show_music_app(None, name);
     });
 }
 
-/// Wait for the music app to report a change and the rest of it to arrive.
-/// `false` once the app is gone.
-async fn next_change(events: &mut broadcast::Receiver<BridgeEvent>) -> bool {
-    loop {
-        match events.recv().await {
-            Ok(
-                BridgeEvent::Ready | BridgeEvent::PlaystateChange(_) | BridgeEvent::QueueChange(_),
-            ) => break,
-            Ok(BridgeEvent::Closed) | Err(RecvError::Closed) => return false,
-            Ok(_) | Err(RecvError::Lagged(_)) => continue,
-        }
+/// Show what the music app plays; `false` once it's gone.
+async fn read_music_app(
+    presence: &DiscordPresence,
+    watched: &Weak<BridgeController>,
+    name: &str,
+) -> bool {
+    let Some(controller) = watched.upgrade() else {
+        return false;
+    };
+    let state = controller.get_session_state().await;
+    drop(controller);
+    match state {
+        Ok(state) => presence.show_music_app(Some(&state), name),
+        Err(error) => debug!(%error, "Could not read the music app for Discord"),
     }
+    true
+}
+
+enum Change {
+    /// The music app reported a change.
+    App,
+    /// The session changed something, or might have.
+    Session,
+    /// The music app is gone.
+    Gone,
+}
+
+/// Wait for a change and, after [`SETTLE`], the rest of it.
+async fn next_change(
+    events: &mut broadcast::Receiver<BridgeEvent>,
+    session_changed: &Notify,
+) -> Change {
+    let change = loop {
+        tokio::select! {
+            event = events.recv() => match event {
+                Ok(
+                    BridgeEvent::Ready
+                    | BridgeEvent::PlaystateChange(_)
+                    | BridgeEvent::QueueChange(_),
+                ) => break Change::App,
+                Ok(BridgeEvent::Closed) | Err(RecvError::Closed) => return Change::Gone,
+                Ok(_) | Err(RecvError::Lagged(_)) => continue,
+            },
+            () = session_changed.notified() => break Change::Session,
+        }
+    };
     sleep(SETTLE).await;
     loop {
         match events.try_recv() {
-            Ok(BridgeEvent::Closed) | Err(broadcast::error::TryRecvError::Closed) => return false,
-            Err(broadcast::error::TryRecvError::Empty) => return true,
+            Ok(BridgeEvent::Closed) | Err(broadcast::error::TryRecvError::Closed) => {
+                return Change::Gone;
+            }
+            Err(broadcast::error::TryRecvError::Empty) => return change,
             Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
         }
     }

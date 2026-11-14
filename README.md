@@ -225,10 +225,8 @@ Unlike Google, Apple allows signing in there, and the sign-in is remembered.
 
 While a music app is connected and the Discord desktop app is running, your
 Discord profile shows **Listening to** your music app (say, **Listening to
-TIDAL**) and the song, with its artists, cover and a progress bar. In a session
-that's the session's song; outside one, or while you've stepped out or can't
-play the session's song, it's whatever your music app is playing. Turn it off
-in Settings (**Show on Discord**).
+TIDAL**) and the song it's playing, with its artists, cover and a progress
+bar, in a session or not. Turn it off in Settings (**Show on Discord**).
 
 Turn on **Listen along button** (off by default) to give the status a
 **Listen along** button for others while you're in a session. It opens the download page with the

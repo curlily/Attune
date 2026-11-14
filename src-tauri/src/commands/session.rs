@@ -27,7 +27,6 @@ use attune_core::{
     network::{JoinCredentials, SessionClientConfig},
     protocol::{ErrorCode, RepeatMode},
     session::{Notice, QueueEdit, RuntimeStatus, SessionRuntime, SyncState},
-    structs::ProviderId,
 };
 
 /// Returned by create/join. `code` is the join code to share.
@@ -46,25 +45,23 @@ enum Entry {
 }
 
 /// Forward runtime status and notices to the frontend until it stops.
-/// `provider` names the music app on Discord.
-fn forward_events(app: AppHandle, store: Store, runtime: &SessionRuntime, provider: ProviderId) {
+fn forward_events(app: AppHandle, store: Store, runtime: &SessionRuntime) {
     let mut status = runtime.watch_status();
     let status_app = app.clone();
     tauri::async_runtime::spawn(async move {
         let presence = status_app.state::<DiscordPresence>();
         let initial = status.borrow_and_update().clone();
         tray::set_status(&status_app, Some(initial.sync));
-        let music_app = provider.display_name();
-        presence.show_status(Some(&initial), music_app);
+        presence.set_session(Some(&initial));
         let _ = status_app.emit("session-status-changed", initial);
         while status.changed().await.is_ok() {
             let current = status.borrow_and_update().clone();
             tray::set_status(&status_app, Some(current.sync));
-            presence.show_status(Some(&current), music_app);
+            presence.set_session(Some(&current));
             let _ = status_app.emit("session-status-changed", current);
         }
         tray::set_status(&status_app, None);
-        presence.show_status(None, music_app);
+        presence.set_session(None);
         debug!("Session status forwarding stopped");
     });
 
@@ -125,13 +122,12 @@ async fn start(app: AppHandle, state: &AppState, entry: Entry) -> Result<Session
     let settings = state.settings().clone();
     let display_name = settings.display_name.ok_or(AppError::NoDisplayName)?;
     let controller = connected_controller(state).await?;
-    let provider = controller.provider_id();
     let server_url = match &entry {
         Entry::Rejoin(saved) => saved.server_url.clone(),
         _ => settings.server_url,
     };
     let mut config = SessionClientConfig::new(server_url.clone(), settings.client_id, display_name);
-    config.provider = Some(provider.label().to_owned());
+    config.provider = Some(controller.provider_id().label().to_owned());
     config.others_can_control = settings.others_can_control;
 
     let runtime = match entry {
@@ -171,7 +167,7 @@ async fn start(app: AppHandle, state: &AppState, entry: Entry) -> Result<Session
             warn!(%error, "Could not save the session for rejoining");
         }
     }
-    forward_events(app, state.store.clone(), &runtime, provider);
+    forward_events(app, state.store.clone(), &runtime);
     let info = SessionInfo {
         code: credentials.code.clone(),
         status: runtime.status(),
