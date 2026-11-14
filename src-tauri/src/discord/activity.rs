@@ -7,7 +7,10 @@
 //! in a **Listen along** button, which the user turns on separately (see
 //! [`Activity::with_listen_along`]).
 
-use attune_core::session::{RuntimeStatus, SyncState};
+use attune_core::{
+    protocol::{SessionMusicState, SessionPlayback, TrackDescriptor},
+    session::{RuntimeStatus, SyncState},
+};
 use serde::Serialize;
 
 /// Discord's "Listening to …".
@@ -101,8 +104,9 @@ impl Activity {
 }
 
 /// The activity for `status` at `now_ms` (Unix ms, this computer's clock),
-/// listening to `app` (the music app's name), or `None` when you aren't hearing the session's music: stepped out, not
-/// able to play the current song, after an error, or once it has ended.
+/// listening to `app` (the music app's name), or `None` when you aren't
+/// hearing the session's music: stepped out, not able to play the current
+/// song, after an error, or once it has ended.
 pub fn from_status(status: &RuntimeStatus, app: &str, now_ms: u64) -> Option<Activity> {
     if !matches!(
         status.sync,
@@ -111,9 +115,24 @@ pub fn from_status(status: &RuntimeStatus, app: &str, now_ms: u64) -> Option<Act
         return None;
     }
     let track = &status.queue.first()?.track;
+    Some(playing(track, &status.playback, app, now_ms))
+}
+
+/// The activity for what the music app itself is playing, in or out of a
+/// session, or `None` when it has nothing loaded.
+pub fn from_music_app(state: &SessionMusicState, app: &str, now_ms: u64) -> Option<Activity> {
+    let track = &state.queue.first()?.track;
+    Some(playing(track, &state.playback, app, now_ms))
+}
+
+fn playing(
+    track: &TrackDescriptor,
+    playback: &SessionPlayback,
+    app: &str,
+    now_ms: u64,
+) -> Activity {
     let details = text(&track.title).unwrap_or_else(|| "Unknown song".to_owned());
     let artists = text(&track.artists.join(", "));
-    let playback = &status.playback;
 
     let (state, timestamps) = if playback.is_playing {
         let elapsed = now_ms.saturating_sub(playback.position_captured_at_ms);
@@ -149,7 +168,7 @@ pub fn from_status(status: &RuntimeStatus, app: &str, now_ms: u64) -> Option<Act
             large_text: track.album.as_deref().and_then(text),
         });
 
-    Some(Activity {
+    Activity {
         name: app.to_owned(),
         kind: LISTENING,
         status_display_type: SHOW_DETAILS,
@@ -158,7 +177,7 @@ pub fn from_status(status: &RuntimeStatus, app: &str, now_ms: u64) -> Option<Act
         timestamps,
         assets,
         buttons: Vec::new(),
-    })
+    }
 }
 
 /// Fit `value` to Discord's 2–128 characters: `None` when empty, padded
@@ -274,6 +293,29 @@ mod tests {
         let mut empty = status(SyncState::Synced, true);
         empty.queue.clear();
         assert_eq!(from_status(&empty, "TIDAL", NOW), None);
+    }
+
+    #[test]
+    fn the_music_apps_own_song() {
+        let session = status(SyncState::Synced, true);
+        let state = SessionMusicState {
+            current_entry_id: Some("e1".to_owned()),
+            queue: vec![attune_core::protocol::QueueEntry {
+                entry_id: "e1".to_owned(),
+                track: session.queue[0].track.clone(),
+                added_by: None,
+            }],
+            playback: session.playback.clone(),
+            repeat: Default::default(),
+        };
+        let local = from_music_app(&state, "TIDAL", NOW).unwrap();
+        assert_eq!(local, from_status(&session, "TIDAL", NOW).unwrap());
+        let empty = SessionMusicState {
+            queue: Vec::new(),
+            current_entry_id: None,
+            ..state
+        };
+        assert_eq!(from_music_app(&empty, "TIDAL", NOW), None);
     }
 
     #[test]

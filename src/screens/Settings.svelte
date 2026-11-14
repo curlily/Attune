@@ -208,7 +208,7 @@
   >
     <span class="switch-text">
       <span class="switch-label">Show on Discord</span>
-      <span class="switch-hint">"Listening to" the session's song on your profile</span>
+      <span class="switch-hint">"Listening to" the song you're playing, on your profile</span>
     </span>
     <span class="switch" class:on={app.settings?.discordPresence === true}><span></span></span>
   </button>
@@ -222,7 +222,7 @@
     >
       <span class="switch-text">
         <span class="switch-label">Listen along button</span>
-        <span class="switch-hint">Lets anyone who sees your status join, with the session's code</span>
+        <span class="switch-hint">In a session, lets anyone who sees your status join with its code</span>
       </span>
       <span class="switch" class:on={app.settings.discordListenAlong === true}><span></span></span>
     </button>

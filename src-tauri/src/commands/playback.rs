@@ -52,6 +52,7 @@ pub(crate) async fn connect(
     }
     let controller = Arc::new(BridgeController::initialise(provider_config(id)?).await?);
     watch_for_loss(app.clone(), &controller);
+    crate::discord::follow_music_app(app.clone(), &controller);
     *controller_slot = Some(controller);
     drop(controller_slot);
 

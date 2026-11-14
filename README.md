@@ -223,13 +223,15 @@ Unlike Google, Apple allows signing in there, and the sign-in is remembered.
 
 ## Discord
 
-While you're in a session and the Discord desktop app is running, your Discord
-profile shows **Listening to** your music app (say, **Listening to TIDAL**) and
-the session's song, with its artists, cover and a progress bar. It goes away when you step out, can't play the song, or
-leave. Turn it off in Settings (**Show on Discord**).
+While a music app is connected and the Discord desktop app is running, your
+Discord profile shows **Listening to** your music app (say, **Listening to
+TIDAL**) and the song, with its artists, cover and a progress bar. In a session
+that's the session's song; outside one, or while you've stepped out or can't
+play the session's song, it's whatever your music app is playing. Turn it off
+in Settings (**Show on Discord**).
 
 Turn on **Listen along button** (off by default) to give the status a
-**Listen along** button for others. It opens the download page with the
+**Listen along** button for others while you're in a session. It opens the download page with the
 session's code (`?join=KWPZ`), which opens `attune://join/KWPZ` to start Attune
 and join, and offers the download to anyone who doesn't have it yet. Anyone who
 can see your status can then join, so it's off unless you choose it.
