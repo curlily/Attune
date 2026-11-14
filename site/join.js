@@ -2,7 +2,7 @@
 // someone's Discord status. It shows the session's code and opens
 // attune://join/<code>, which starts Attune (or reaches the copy already
 // running) and joins. A browser can't tell whether Attune is installed, so
-// the page stays up with the download next to the button that opens it.
+// the page stays up, with the download further down.
 (() => {
   // Same rules as normalize_join_code in protocol/src/messages.rs.
   const raw = new URLSearchParams(location.search).get("join") ?? "";
@@ -26,15 +26,19 @@
   window.addEventListener("blur", leaving, { once: true });
   document.addEventListener("visibilitychange", () => document.hidden && leaving(), { once: true });
 
-  // Chromium browsers (Chrome, Edge, Opera) quietly ignore a link
-  // nothing handles. Others may show an error page instead of this one, so
-  // there it waits for the button.
+  // Chromium browsers (Chrome, Edge, Opera) quietly ignore a link nothing
+  // handles. Firefox would replace this page with an error, so there the
+  // link opens in a hidden frame: it still asks to open Attune, and an
+  // error stays inside the frame. (Chromium won't open apps from frames.)
   if (navigator.userAgentData) {
     location.href = link;
-    setTimeout(() => {
-      if (!left) status.textContent = "Didn't open? You may not have Attune yet.";
-    }, 2500);
   } else {
-    status.textContent = "Choose Open in Attune to join.";
+    const frame = document.createElement("iframe");
+    frame.hidden = true;
+    frame.src = link;
+    document.body.append(frame);
   }
+  setTimeout(() => {
+    if (!left) status.textContent = "Didn't open? You may not have Attune yet.";
+  }, 2500);
 })();
