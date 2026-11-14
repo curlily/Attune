@@ -129,7 +129,15 @@ pub fn from_status(status: &RuntimeStatus, app: &str, now_ms: u64) -> Option<Act
             Some(artists) => format!("Paused · {artists}"),
             None => "Paused".to_owned(),
         };
-        (text(&paused), None)
+        // With no timestamps Discord counts up from when the activity was
+        // set (a green ♫ 0:00). A song that started and ended at the moment
+        // it was paused shows no timer at all.
+        let paused_at = playback.position_captured_at_ms.min(now_ms);
+        let stopped = Timestamps {
+            start: paused_at,
+            end: Some(paused_at),
+        };
+        (text(&paused), Some(stopped))
     };
 
     let assets = track
@@ -231,7 +239,18 @@ mod tests {
     #[test]
     fn paused_has_no_timer() {
         let activity = from_status(&status(SyncState::Synced, false), "TIDAL", NOW).unwrap();
-        assert_eq!(activity.timestamps, None);
+        // Zero length, in the past: Discord shows neither a bar nor a counter.
+        let paused_at = NOW - 2_000;
+        assert_eq!(
+            activity.timestamps,
+            Some(Timestamps {
+                start: paused_at,
+                end: Some(paused_at)
+            })
+        );
+        // And it stays put while the pause lasts.
+        let later = from_status(&status(SyncState::Synced, false), "TIDAL", NOW + 60_000).unwrap();
+        assert_eq!(activity, later);
         assert_eq!(
             activity.state.as_deref(),
             Some("Paused · Paper Satellites, Kei")
