@@ -151,6 +151,7 @@ export interface SessionInfo {
 export type Notice =
   | { kind: "queueEditUndone" }
   | { kind: "notAllowed"; host: string }
+  | { kind: "interrupted"; reason: string }
   | { kind: "songUnavailable"; title: string }
   | { kind: "resynced" }
   | { kind: "desynchronized"; message: string }

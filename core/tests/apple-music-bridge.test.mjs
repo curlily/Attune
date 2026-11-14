@@ -303,6 +303,15 @@ function createMusicKit() {
         async userSeeks(positionMs) {
             await music.seekToTime(positionMs / 1000);
         },
+        /** The user presses shuffle: what follows the current song is reordered. */
+        userShuffles() {
+            const start = music.queue.position + 1;
+            const upcoming = music.queue.items.slice(start).reverse();
+            music.queue.items.splice(start, upcoming.length, ...upcoming);
+            music.shuffleMode = 1;
+            emit("shuffleModeDidChange", {});
+            emit("queueItemsDidChange", music.queue.items);
+        },
         /** The user presses repeat (MusicKit: 1 one, 2 all). */
         userRepeats(mode = 2) {
             music.repeatMode = mode;
@@ -559,6 +568,22 @@ test("The user's queue edits are published as small operations", () => withAdapt
     page.userRemoves(page.music.queue.position + 2);
     await settle();
     assert.deepEqual(operations(events), [{ type: "queue.remove", entryId: "session-b" }]);
+}));
+
+test("A shuffle during a session is shared as a queue change, and keeps its order with the mode off", () => withAdapter(async ({ bridge, page, events }) => {
+    await bridge.prepareForSession();
+    await loadSession(bridge, ["a", "b", "c"]);
+    await settle();
+    events.length = 0;
+
+    page.userShuffles();
+    await settle();
+    await settle();
+    const ops = operations(events);
+    assert.ok(ops.length > 0 && ops.every(op => op.type.startsWith("queue.")), JSON.stringify(ops));
+    assert.equal(page.music.shuffleMode, 0, "MusicKit's shuffle is off again");
+    const titles = Array.from(page.music.queue.items.slice(page.music.queue.position + 1), item => item.title);
+    assert.deepEqual(titles, ["Song C", "Song B"], "the shuffled order stays");
 }));
 
 test("A repeat press during a session is reported, and MusicKit's own repeat goes off again", () => withAdapter(async ({ bridge, page, events }) => {

@@ -30,6 +30,11 @@
     const REMOTE_CHANGE_SUPPRESSION_MS = 300;
     // Spotify shows a shuffled order a moment after its shuffle flag.
     const SHUFFLE_SETTLE_MS = 600;
+    // Spotify keeps at most 80 songs queued (verified live: a write of 91
+    // showed 80, and the write timed out). The rest wait in `overflow`.
+    const MAX_UPCOMING = 80;
+    // Refill from `overflow` once fewer than this are left in Spotify.
+    const TOP_UP_BELOW = 60;
     // How long Spotify may take to show a change we asked for.
     const CHANGE_TIMEOUT_MS = 5_000;
     // Waits check on Spotify's events (see `watchPlayer`); this is only a
@@ -577,6 +582,8 @@
             entryId: entryIdFor(item.uid),
             track: item.track,
         }));
+        // Songs past Spotify's limit are still the session's queue here.
+        for (const item of overflow) queue.push({ entryId: item.entryId, track: item.track });
         return {
             queue,
             currentEntryId: queue[0].entryId,
@@ -878,7 +885,10 @@
      * Make `wanted` (`[{ entryId, uri }]`) Spotify's upcoming list, then
      * map the entry IDs to the uids Spotify gave the items.
      */
-    async function writeUpcoming(wanted) {
+    async function writeUpcoming(all) {
+        // Past Spotify's limit, keep the rest for `topUpQueue`.
+        overflow = all.slice(MAX_UPCOMING).filter(item => item.track);
+        const wanted = all.slice(0, MAX_UPCOMING);
         const uris = wanted.map(item => item.uri);
         const shown = () => readPlayer().upcoming;
         // When Spotify shows our write: the list starts with our songs (a
@@ -1018,7 +1028,7 @@
         const failures = upcoming.filter(result => result.error);
         const wanted = upcoming
             .filter(result => !result.error)
-            .map(result => ({ entryId: result.entry.entryId, uri: result.uri }));
+            .map(result => ({ entryId: result.entry.entryId, uri: result.uri, track: result.entry.track }));
         // The song may have ended during the lookups; the session's own
         // advance follows then.
         const playing = readPlayer().current;
@@ -1510,6 +1520,7 @@
             try {
                 emitLocalChanges();
                 keepShuffleAndRepeatOff();
+                topUpQueue();
             } catch (error) {
                 sendEvent("Error", `Could not follow Spotify's state: ${error.message}`);
             }
@@ -1519,6 +1530,26 @@
     // ---------------------------------------------------------------------
     // Shuffle and repeat during a session
     // ---------------------------------------------------------------------
+
+    // When a queue change was last shared (to tell whether a shuffle press
+    // reordered anything).
+    let lastQueueChangeAt = 0;
+
+    // Songs of the session beyond Spotify's 80: [{ entryId, uri, track }].
+    let overflow = [];
+
+    /** As songs play, move songs from `overflow` into Spotify's queue. */
+    function topUpQueue() {
+        if (!overflow.length || applying > 0 || !player) return;
+        const view = readPlayer();
+        if (!view.current || queueEndApplies(view) || view.upcoming.length >= TOP_UP_BELOW) return;
+        const wanted = [
+            ...view.upcoming.map(item => ({ entryId: entryIdFor(item.uid), uri: item.uri, track: item.track })),
+            ...overflow,
+        ];
+        asRemoteChange(() => writeUpcoming(wanted))
+            .catch(error => console.warn("[Attune] Could not refill Spotify's queue", error));
+    }
 
     // Set while a session runs: Spotify's own shuffle and repeat stay off.
     let keepNeutral = false;
@@ -1553,13 +1584,28 @@
             return;
         }
         if (state?.shuffle && !shuffleTimer) {
+            const pressedAt = Date.now();
             shuffleTimer = setTimeout(() => {
                 shuffleTimer = null;
                 if (!keepNeutral || !player) return;
                 // Share the shuffled order if it hasn't been yet.
                 emitLocalChanges();
-                const order = (baselineView?.upcoming ?? [])
-                    .map(item => ({ entryId: entryIdFor(item.uid), uri: item.uri }));
+                // Spotify reordered (a playlist it plays): that was shared
+                // as a queue change, just before the flag was seen or since.
+                const reordered = lastQueueChangeAt >= pressedAt - EVENT_DEBOUNCE_MS * 4;
+                if (!reordered) {
+                    // Spotify shuffles a playlist it plays, never queued
+                    // songs, which is what the session's are (verified
+                    // live): shuffle them here instead.
+                    neutralize(() => player.setShuffle(false)).then(() => shuffleUpcoming())
+                        .catch(error => console.warn("[Attune] Could not shuffle", error));
+                    return;
+                }
+                const order = [
+                    ...(baselineView?.upcoming ?? [])
+                        .map(item => ({ entryId: entryIdFor(item.uid), uri: item.uri, track: item.track })),
+                    ...overflow,
+                ];
                 neutralize(async () => {
                     await player.setShuffle(false);
                     await writeUpcoming(order);
@@ -1567,6 +1613,30 @@
             }, SHUFFLE_SETTLE_MS);
         }
     }
+
+    /**
+     * Shuffle what follows the current song, as the app's own shuffle would
+     * have: load it here and share it as an ordinary queue change. For a
+     * shuffle press the app didn't act on (verified live: Spotify's shuffle
+     * leaves queued songs alone, and YouTube Music's leaves a queue that
+     * isn't one of its playlists).
+     */
+    function shuffleUpcoming() {
+        const state = getState();
+        const [current, ...rest] = state.queue;
+        if (!current || rest.length < 2) return Promise.resolve();
+        for (let i = rest.length - 1; i > 0; i -= 1) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [rest[i], rest[j]] = [rest[j], rest[i]];
+        }
+        const replace = {
+            type: "queue.replace",
+            entries: [current, ...rest].map(entry => ({ entryId: entry.entryId, track: entry.track })),
+            currentEntryId: current.entryId,
+        };
+        return applyOperation(replace).then(() => sendOperation(replace));
+    }
+
 
     function subscribe() {
         const events = player.getEvents();
@@ -1626,6 +1696,7 @@
     }
 
     function sendOperation(operation) {
+        if (operation.type.startsWith("queue.")) lastQueueChangeAt = Date.now();
         sendEvent("Operation", operation);
     }
 
@@ -1645,6 +1716,7 @@
         clearTimeout(shuffleTimer);
         shuffleTimer = null;
         keepNeutral = false;
+        overflow = [];
         removeListeners.forEach(remove => remove?.());
         removeListeners = [];
         player = null;

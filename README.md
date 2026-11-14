@@ -209,6 +209,9 @@ Without a subscription YouTube Music plays advertisements. During one, Attune st
 out of the session and rejoins when it is over, so you may come back a little into
 the song the others are hearing.
 
+Without a subscription (or signed out) Apple Music plays only previews. Attune then
+steps out of the session, saying so, and follows again once Apple Music plays full songs.
+
 ## Using Apple Music
 
 Attune uses Apple Music's web player (music.apple.com), opened the same way as
@@ -275,8 +278,9 @@ cargo test -p attune --lib discord::live -- --ignored --nocapture
 
 - No persistence; sessions end on server restart.
 - Shuffle and repeat: the music apps' own modes stay off during a session. Shuffling
-  reorders the queue, which is shared like any queue edit (TIDAL, Spotify, YouTube
-  Music; Apple Music's shuffle is undone for now). Repeat is the session's: one song
+  reorders the queue, which is shared like any queue edit (where the app's shuffle
+  doesn't reorder a session's songs, as in Spotify and YouTube Music, Attune shuffles
+  them). Repeat is the session's: one song
   (no "repeat all" yet), toggled from the icon by the current song or the music
   app's repeat button.
 - Timing is approximate (network and track-loading delay); there is no clock sync.

@@ -131,6 +131,11 @@ pub struct RuntimeStatus {
 pub enum Notice {
     /// A queue edit made here conflicted with someone else's and was undone.
     QueueEditUndone,
+    /// The music app can't follow for a while (`reason`: "advertisement",
+    /// or "preview" for previews only); stepped out until it can.
+    Interrupted {
+        reason: String,
+    },
     /// A change made here was undone: only the host may change what's
     /// playing right now. Stepping out lets this user change their own.
     NotAllowed {

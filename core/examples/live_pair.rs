@@ -1,10 +1,10 @@
-//! Live two-provider session, e.g. Spotify and YouTube Music in one jam.
+//! Live session with several providers, e.g. all four in one jam.
 //!
-//!     cargo run -p attune-core --example live_pair -- daemon ws://127.0.0.1:8787/ws [<host> <guest>]
+//!     cargo run -p attune-core --example live_pair -- daemon ws://127.0.0.1:8787/ws [<host> <guest>...]
 //!
 //! Providers are `spotify`, `youtube`, `apple` and `tidal` (default: spotify youtube).
-//! Attaches to both clients, creates a session on the host through
-//! `SessionRuntime` (the app's code path) and joins it from the guest.
+//! Attaches to every client, creates a session on the host through
+//! `SessionRuntime` (the app's code path) and joins it from each guest.
 //! Every operation either provider publishes and every status change is
 //! logged with a timestamp. Commands from another shell:
 //!
@@ -13,6 +13,12 @@
 //!     cargo run -p attune-core --example live_pair -- eval <provider> <js>
 //!     cargo run -p attune-core --example live_pair -- stepout <provider>
 //!     cargo run -p attune-core --example live_pair -- resync <provider>
+//!     cargo run -p attune-core --example live_pair -- status
+//!     cargo run -p attune-core --example live_pair -- compare
+//!     cargo run -p attune-core --example live_pair -- control <provider> on|off
+//!     cargo run -p attune-core --example live_pair -- repeat <provider> one|off
+//!     cargo run -p attune-core --example live_pair -- remove <provider> <queue index>
+//!     cargo run -p attune-core --example live_pair -- leave <provider>
 //!     cargo run -p attune-core --example live_pair -- quit
 //!
 //! `log` returns (and clears) what happened since the last call.
@@ -25,9 +31,10 @@ use std::{
 use attune_core::{
     bridge_controller::{BridgeController, BridgeEvent},
     network::{JoinCredentials, SessionClientConfig, new_client_id},
+    protocol::RepeatMode,
     protocol::SessionMusicState,
     providers,
-    session::SessionRuntime,
+    session::{QueueEdit, SessionRuntime},
     structs::ProviderConfig,
 };
 use tokio::{
@@ -158,7 +165,7 @@ fn provider(name: &str) -> Outcome<(&'static str, ProviderConfig)> {
     })
 }
 
-async fn run_command(pair: &Pair, line: &str) -> (String, bool) {
+async fn run_command(pair: &mut Pair, line: &str) -> (String, bool) {
     let (command, argument) = line.split_once(' ').unwrap_or((line, ""));
     let result: Result<String, String> = async {
         match command {
@@ -219,6 +226,156 @@ async fn run_command(pair: &Pair, line: &str) -> (String, bool) {
                     .map_err(|e| format!("{e:?}"))?;
                 Ok(format!("{argument} rejoining\n"))
             }
+            "status" => {
+                let mut out = String::new();
+                for member in &pair.members {
+                    let status = member.runtime.status();
+                    let me = status.client_id.clone();
+                    let elapsed = if status.playback.is_playing {
+                        now_ms().saturating_sub(status.playback.position_captured_at_ms)
+                    } else {
+                        0
+                    };
+                    out.push_str(&format!(
+                        "{} sync={:?} host={} othersCanControl={} repeat={:?} playing={} position={}ms\n",
+                        member.name.to_uppercase(),
+                        status.sync,
+                        status.host_client_id.as_deref() == Some(me.as_str()),
+                        status.others_can_control,
+                        status.repeat,
+                        status.playback.is_playing,
+                        status.playback.position_ms + elapsed,
+                    ));
+                    for (index, item) in status.queue.iter().enumerate().take(12) {
+                        out.push_str(&format!(
+                            "  [{index}] {}{}\n",
+                            item.track.title,
+                            if item.playable_here { "" } else { "  (not here)" }
+                        ));
+                    }
+                }
+                Ok(out)
+            }
+            // Does every provider play what the session plays?
+            "compare" => {
+                let mut out = String::new();
+                let reference = pair.members[0].runtime.status();
+                let session_ids: Vec<&str> = reference
+                    .queue
+                    .iter()
+                    .map(|item| item.entry_id.as_str())
+                    .collect();
+                let session_position = reference.playback.position_ms
+                    + if reference.playback.is_playing {
+                        now_ms().saturating_sub(reference.playback.position_captured_at_ms)
+                    } else {
+                        0
+                    };
+                out.push_str(&format!(
+                    "SESSION playing={} position={}ms current={:?} queue={}\n",
+                    reference.playback.is_playing,
+                    session_position,
+                    reference.queue.first().map(|item| item.track.title.as_str()),
+                    session_ids.len(),
+                ));
+                let mut all_ok = true;
+                for member in &pair.members {
+                    let state = member
+                        .bridge
+                        .get_session_state()
+                        .await
+                        .map_err(|e| format!("{e:?}"))?;
+                    let status = member.runtime.status();
+                    let position = state.playback.position_ms
+                        + if state.playback.is_playing {
+                            now_ms().saturating_sub(state.playback.position_captured_at_ms)
+                        } else {
+                            0
+                        };
+                    let ids: Vec<&str> = state.queue.iter().map(|e| e.entry_id.as_str()).collect();
+                    let expected: Vec<&str> = status
+                        .queue
+                        .iter()
+                        .filter(|item| item.playable_here)
+                        .map(|item| item.entry_id.as_str())
+                        .collect();
+                    let mut problems = Vec::new();
+                    if state.current_entry_id.as_deref() != reference.queue.first().map(|i| i.entry_id.as_str()) {
+                        problems.push("current differs".to_owned());
+                    }
+                    if state.playback.is_playing != reference.playback.is_playing {
+                        problems.push(format!("playing={}", state.playback.is_playing));
+                    }
+                    let drift = position as i64 - session_position as i64;
+                    if drift.abs() > 2_500 {
+                        problems.push(format!("position off by {drift}ms"));
+                    }
+                    if ids != expected {
+                        problems.push(format!("queue {} entries, expected {}", ids.len(), expected.len()));
+                    }
+                    if status.sync != reference.sync && status.sync != attune_core::session::SyncState::Synced {
+                        problems.push(format!("sync={:?}", status.sync));
+                    }
+                    all_ok &= problems.is_empty();
+                    out.push_str(&format!(
+                        "{} {} drift={}ms {}\n",
+                        member.name.to_uppercase(),
+                        if problems.is_empty() { "OK" } else { "MISMATCH" },
+                        drift,
+                        problems.join(", "),
+                    ));
+                }
+                out.push_str(if all_ok { "ALL OK\n" } else { "NOT IN STEP\n" });
+                Ok(out)
+            }
+            "control" => {
+                let (target, value) = argument.split_once(' ').ok_or("control <provider> on|off")?;
+                pair.member(target)?
+                    .runtime
+                    .set_others_can_control(value == "on")
+                    .await
+                    .map_err(|e| format!("{e:?}"))?;
+                Ok(format!("{target}: others can control = {}\n", value == "on"))
+            }
+            "repeat" => {
+                let (target, value) = argument.split_once(' ').ok_or("repeat <provider> one|off")?;
+                let mode = if value == "one" { RepeatMode::One } else { RepeatMode::Off };
+                pair.member(target)?
+                    .runtime
+                    .edit_queue(QueueEdit::Repeat(mode))
+                    .await
+                    .map_err(|e| format!("{e:?}"))?;
+                Ok(format!("{target}: repeat {mode:?}\n"))
+            }
+            "remove" => {
+                let (target, index) = argument.split_once(' ').ok_or("remove <provider> <index>")?;
+                let member = pair.member(target)?;
+                let index: usize = index.parse().map_err(|_| "index")?;
+                let entry_id = member
+                    .runtime
+                    .status()
+                    .queue
+                    .get(index)
+                    .map(|item| item.entry_id.clone())
+                    .ok_or("no such entry")?;
+                member
+                    .runtime
+                    .edit_queue(QueueEdit::Remove { entry_id })
+                    .await
+                    .map_err(|e| format!("{e:?}"))?;
+                Ok(format!("{target}: removed [{index}]\n"))
+            }
+            // Leave the session, as the app's Leave does.
+            "leave" => {
+                let index = pair
+                    .members
+                    .iter()
+                    .position(|member| member.name == argument)
+                    .ok_or_else(|| format!("unknown provider {argument:?}"))?;
+                let member = pair.members.remove(index);
+                member.runtime.leave().await.map_err(|e| format!("{e:?}"))?;
+                Ok(format!("{argument} left\n"))
+            }
             "quit" => Ok("bye\n".to_owned()),
             other => Err(format!("unknown command {other:?}")),
         }
@@ -230,19 +387,12 @@ async fn run_command(pair: &Pair, line: &str) -> (String, bool) {
     )
 }
 
-async fn daemon(url: &str, host: &str, guest: &str) -> Outcome<()> {
+async fn daemon(url: &str, host: &str, guests: &[String]) -> Outcome<()> {
     let log: Log = Arc::default();
     let (host_name, host_config) = provider(host)?;
-    let (guest_name, guest_config) = provider(guest)?;
-    eprintln!("[pair] attaching to {host_name} and {guest_name} ...");
-    let (host_bridge, guest_bridge) = tokio::join!(
-        BridgeController::initialise(host_config),
-        BridgeController::initialise(guest_config),
-    );
-    let host_bridge = Arc::new(host_bridge?);
-    let guest_bridge = Arc::new(guest_bridge?);
+    eprintln!("[pair] attaching to {host_name} ...");
+    let host_bridge = Arc::new(BridgeController::initialise(host_config).await?);
     watch_bridge(host_name, &host_bridge, log.clone());
-    watch_bridge(guest_name, &guest_bridge, log.clone());
 
     eprintln!("[pair] creating the session on {host_name} ...");
     let mut config =
@@ -251,43 +401,40 @@ async fn daemon(url: &str, host: &str, guest: &str) -> Outcome<()> {
     let host_runtime = SessionRuntime::create(host_bridge.clone(), config).await?;
     watch_runtime(host_name, &host_runtime, log.clone());
 
-    eprintln!("[pair] joining from {guest_name} ...");
-    let joined_at = now_ms();
-    let mut config = SessionClientConfig::new(
-        url.to_owned(),
-        new_client_id(),
-        format!("Live {guest_name}"),
-    );
-    config.provider = Some(guest_name.to_owned());
-    let guest_runtime = SessionRuntime::join(
-        guest_bridge.clone(),
-        config,
-        host_runtime.credentials().clone(),
-    )
-    .await?;
-    watch_runtime(guest_name, &guest_runtime, log.clone());
+    let credentials = host_runtime.credentials().clone();
+    let mut members = vec![Member {
+        name: host_name,
+        bridge: host_bridge,
+        runtime: host_runtime,
+    }];
+    for guest in guests {
+        let (guest_name, guest_config) = provider(guest)?;
+        eprintln!("[pair] attaching to {guest_name} ...");
+        let guest_bridge = Arc::new(BridgeController::initialise(guest_config).await?);
+        watch_bridge(guest_name, &guest_bridge, log.clone());
+        eprintln!("[pair] joining from {guest_name} ...");
+        let joined_at = now_ms();
+        let mut config = SessionClientConfig::new(
+            url.to_owned(),
+            new_client_id(),
+            format!("Live {guest_name}"),
+        );
+        config.provider = Some(guest_name.to_owned());
+        let guest_runtime =
+            SessionRuntime::join(guest_bridge.clone(), config, credentials.clone()).await?;
+        watch_runtime(guest_name, &guest_runtime, log.clone());
+        eprintln!("[pair] {guest_name} joined in {} ms", now_ms() - joined_at);
+        members.push(Member {
+            name: guest_name,
+            bridge: guest_bridge,
+            runtime: guest_runtime,
+        });
+    }
     eprintln!(
-        "[pair] both in session {} (join took {} ms); control port {CONTROL}",
-        host_runtime.status().session_id,
-        now_ms() - joined_at
+        "[pair] all in session {}; control port {CONTROL}",
+        members[0].runtime.status().session_id
     );
-
-    let pair = Pair {
-        members: vec![
-            Member {
-                name: host_name,
-                bridge: host_bridge,
-                runtime: host_runtime,
-            },
-            Member {
-                name: guest_name,
-                bridge: guest_bridge,
-                runtime: guest_runtime,
-            },
-        ],
-        log,
-    };
-    serve(pair).await
+    serve(Pair { members, log }).await
 }
 
 /// Join an existing session from one provider, e.g. to watch a real jam.
@@ -328,14 +475,14 @@ async fn join(url: &str, guest: &str, code: &str) -> Outcome<()> {
     serve(pair).await
 }
 
-async fn serve(pair: Pair) -> Outcome<()> {
+async fn serve(mut pair: Pair) -> Outcome<()> {
     let listener = TcpListener::bind(CONTROL).await?;
     loop {
         let (stream, _) = listener.accept().await?;
         let (read, mut write) = stream.into_split();
         let mut line = String::new();
         BufReader::new(read).read_line(&mut line).await?;
-        let (response, quit) = run_command(&pair, line.trim()).await;
+        let (response, quit) = run_command(&mut pair, line.trim()).await;
         write.write_all(response.as_bytes()).await?;
         write.shutdown().await?;
         if quit {
@@ -377,13 +524,14 @@ async fn main() -> Outcome<()> {
         return join(url, guest, code).await;
     }
     if args.first().map(String::as_str) == Some("daemon") {
-        let (url, host, guest) = match &args[1..] {
-            [url] => (url.as_str(), "spotify", "youtube"),
-            [url, host, guest] => (url.as_str(), host.as_str(), guest.as_str()),
-            _ => return Err("usage: live_pair daemon <ws-url> [<host> <guest>]".into()),
+        let defaults = ["youtube".to_owned()];
+        let (url, host, guests) = match &args[1..] {
+            [url] => (url.as_str(), "spotify", &defaults[..]),
+            [url, host, guests @ ..] if !guests.is_empty() => (url.as_str(), host.as_str(), guests),
+            _ => return Err("usage: live_pair daemon <ws-url> [<host> <guest>...]".into()),
         };
         tracing();
-        return daemon(url, host, guest).await;
+        return daemon(url, host, guests).await;
     }
     if args.is_empty() {
         return Err(

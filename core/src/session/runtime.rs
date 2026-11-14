@@ -620,6 +620,9 @@ impl<B: ProviderBridge> Worker<B> {
                 event = self.bridge_events.recv() => match event {
                     Ok(BridgeEvent::Operation(operation)) => { self.on_local(operation).await; Flow::Continue }
                     Ok(BridgeEvent::Interruption(interruption)) => {
+                        if interruption.active && !matches!(self.sync, SyncState::SteppedOut | SyncState::Ended) {
+                            self.notify(Notice::Interrupted { reason: interruption.reason.clone() });
+                        }
                         self.on_interruption(interruption.active).await;
                         Flow::Continue
                     }

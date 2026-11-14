@@ -414,6 +414,14 @@ class App {
   #onNotice(notice: Notice) {
     const provider = this.providerName;
     switch (notice.kind) {
+      case "interrupted":
+        this.toast(
+          notice.reason === "preview"
+            ? `${this.providerName} only plays previews without a subscription. You'll follow again once it plays full songs.`
+            : `An ad is playing on ${this.providerName}. You'll rejoin when it's over.`,
+          "info",
+        );
+        break;
       case "notAllowed":
         this.toast(`Only ${notice.host} can change what's playing, so your change was undone.`, "warning", {
           label: "Step out",

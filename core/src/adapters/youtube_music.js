@@ -1435,7 +1435,48 @@
         pollTimer = setInterval(() => {
             if (!eventTimer) runEmit();
         }, POSITION_POLL_MS);
+        document.addEventListener?.("click", onShuffleClick, true);
     }
+
+    /**
+     * The player bar's shuffle button. YouTube Music has no shuffle mode to
+     * watch, and the button does nothing to a queue that isn't one of its
+     * playlists (verified live: a session's queue stayed as it was). So a
+     * press during a session shuffles the session's upcoming songs here,
+     * unless the app did reorder them itself.
+     */
+    function onShuffleClick(event) {
+        if (!sessionSettings || !event.target?.closest?.("ytmusic-player-bar .shuffle")) return;
+        const before = getState().queue.map(entry => entry.entryId).join();
+        setTimeout(() => {
+            if (!sessionSettings || getState().queue.map(entry => entry.entryId).join() !== before) return;
+            shuffleUpcoming().catch(error => console.warn("[Attune] Could not shuffle", error));
+        }, 1_000);
+    }
+
+    /**
+     * Shuffle what follows the current song, as the app's own shuffle would
+     * have: load it here and share it as an ordinary queue change. For a
+     * shuffle press the app didn't act on (verified live: Spotify's shuffle
+     * leaves queued songs alone, and YouTube Music's leaves a queue that
+     * isn't one of its playlists).
+     */
+    function shuffleUpcoming() {
+        const state = getState();
+        const [current, ...rest] = state.queue;
+        if (!current || rest.length < 2) return Promise.resolve();
+        for (let i = rest.length - 1; i > 0; i -= 1) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [rest[i], rest[j]] = [rest[j], rest[i]];
+        }
+        const replace = {
+            type: "queue.replace",
+            entries: [current, ...rest].map(entry => ({ entryId: entry.entryId, track: entry.track })),
+            currentEntryId: current.entryId,
+        };
+        return applyOperation(replace).then(() => sendOperation(replace));
+    }
+
 
     // ---------------------------------------------------------------------
     // Legacy methods retained for the current Rust/UI call sites
@@ -1498,6 +1539,7 @@
         pollTimer = null;
         unsubscribe?.();
         unsubscribe = null;
+        document.removeEventListener?.("click", onShuffleClick, true);
         store = null;
         queueService = null;
         playerApi = null;

@@ -138,6 +138,11 @@ function createSpotify() {
             }
             // The adapter's arrays belong to its own script context.
             calls.push({ setQueue: Array.from(nextTracks, track => track.contextTrack.uri) });
+            if (nextTracks.length > 80) {
+                // Like Spotify: no more than 80 queued.
+                calls.push({ setQueue: "too long" });
+                return { error: 3, reasons: "queue_limit" };
+            }
             later(() => {
                 model.next = Array.from(nextTracks, track => track.contextTrack.uid
                     ? track
@@ -659,6 +664,47 @@ test("During a session, repeat is reported and shuffle's order shared, and both 
         entryIds(bridge.getState()).slice(1),
         ["session-c", "session-b"],
         "the shuffled order stays",
+    );
+});
+
+test("A queue longer than Spotify's 80 keeps the rest and refills as songs play", async () => {
+    const names = Array.from({ length: 95 }, (_, i) => `t${i}`);
+    for (const [i, name] of names.entries()) {
+        CATALOG[`spotify:track:${name}`] ??= { title: `Long ${i}`, artist: "Artist L", isrc: `ISRCLONG${String(i).padStart(4, "0")}` };
+    }
+    const { bridge, spotify } = await loadAdapter();
+    await loadSession(bridge, names);
+    await settle();
+    assert.equal(spotify.model.next.length, 80, "Spotify holds 80");
+    assert.equal(bridge.getState().queue.length, 95, "the adapter still shows the whole session queue");
+
+    // 25 songs play: Spotify is down to 55, under the refill mark.
+    await spotify.act(model => { model.next.splice(0, 25); });
+    await sleep(800);
+    assert.equal(spotify.model.next.length, 69, "refilled with the 14 that were waiting");
+    assert.equal(bridge.getState().queue.length, 70);
+});
+
+test("A shuffle press that leaves queued songs alone shuffles them here and shares the order", async () => {
+    const { bridge, spotify, events } = await loadAdapter();
+    for (const name of ["d", "e"]) {
+        CATALOG[`spotify:track:${name}`] ??= { title: `Song ${name.toUpperCase()}`, artist: "Artist", isrc: `ISRC00000${name.toUpperCase()}X` };
+    }
+    await bridge.prepareForSession();
+    await loadSession(bridge, ["a", "b", "c", "d", "e"]);
+    await sleep(400);
+    events.length = 0;
+
+    // Like live Spotify with queued songs: the flag, and no reorder.
+    await spotify.act(model => { model.shuffle = true; });
+    await sleep(2_000);
+    const replaces = operations(events).filter(op => op.type === "queue.replace");
+    assert.equal(replaces.length, 1, JSON.stringify(operations(events)));
+    assert.equal(spotify.model.shuffle, false, "Spotify's shuffle is off again");
+    assert.deepEqual(
+        Array.from(entryIds(bridge.getState())),
+        Array.from(replaces[0].entries, entry => entry.entryId),
+        "Spotify plays the order that was shared",
     );
 });
 

@@ -253,7 +253,7 @@ The adapter was injected into the running app and driven directly, not through
 5. **Local-change suppression is still partly time-based** (300 ms after a remote
    change, and while holding a loaded track). A real user action inside that window
    is lost.
-6. **Autoplay, shuffle and repeat during a jam.** They're turned off for the length of a jam (see 5.9). A repeat press is reported as `playback.setRepeat` (the runtime toggles the session's repeat) and TIDAL's own repeat is set back to `REPEAT_OFF`. TIDAL's shuffle button (`…_AND_SHUFFLE_ITEMS`) reorders the queue in the same action, so the new order is shared like any queue edit; then only the flag is cleared (`DISABLE_SHUFFLE_MODE`, keeps the order). Mocked only: **check live** that the button's reorder reaches the store before the debounced comparison.
+6. **Autoplay, shuffle and repeat during a jam.** They're turned off for the length of a jam (see 5.9). A repeat press is reported as `playback.setRepeat` (the runtime toggles the session's repeat) and TIDAL's own repeat is set back to `REPEAT_OFF`. TIDAL's shuffle button (`…_AND_SHUFFLE_ITEMS`) reorders the queue in the same action, so the new order is shared like any queue edit; then only the flag is cleared (`DISABLE_SHUFFLE_MODE`, keeps the order). Verified live (2026-11-14): the footer's shuffle button reordered the queue, the new order reached three other clients, and `aria-checked` was back to `false`.
 7. **Casting and the cloud queue:** writes are refused while casting; `cloudV2`
    (server queue) is untested and RESET is not synced to the server there.
 8. **Not done yet:** the `live_session` example and a two-person jam with the reworked
@@ -371,7 +371,9 @@ went both ways without echoes; YouTube Music trailed by 0.1–1.2 s.
 4. **Changes from another device** (Spotify Connect) haven't been tested.
 5. **Starting a jam from a playlist** publishes the window of upcoming playlist tracks Spotify shows (about 15–50). As it moves on and shows more, those are published as inserts. Not tested with a session server.
 6. **The local-change suppression is still partly time-based:** 300 ms after a remote change, though the change itself is now waited for. A user action in that window is lost.
-7. **Shuffle and repeat during a jam.** A repeat press is reported as `playback.setRepeat` and `setRepeat(0)` puts Spotify's back. For shuffle the adapter waits 600 ms (Spotify shows the shuffled order a moment after the flag), shares the order, then calls `setShuffle(false)`; Spotify then puts its old order back, so the shuffled order is written again with `writeUpcoming`. Mocked only: **check live** that `setShuffle(true)` reorders `nextItems` within 600 ms, and that the rewrite after `setShuffle(false)` isn't published as a user change. Autoplay changes are still not detected.
+7. **Shuffle and repeat during a jam.** A repeat press is reported as `playback.setRepeat` and `setRepeat(0)` puts Spotify's back. For shuffle the adapter waits 600 ms (Spotify shows the shuffled order a moment after the flag), shares the order, then calls `setShuffle(false)`; Spotify then puts its old order back, so the shuffled order is written again with `writeUpcoming`. **Verified live (2026-11-14): Spotify's shuffle never reorders queued songs**, only a playlist or album it plays, and a session's songs are queued items. So when a press produced no queue change (none shared within ~600 ms of it), the adapter shuffles the upcoming songs itself, loads them through its own `queue.replace` and shares that replace; the button reads "Enable Shuffle" again. Repeat presses were reported and undone live. Autoplay changes are still not detected.
+8. **80-song queue limit** (verified live 2026-11-14): Spotify keeps at most 80 queued songs. A write of 91 showed 80 and timed out ("Spotify did not show the new queue"), putting the session in Error. The adapter now writes 80 and keeps the rest in `overflow`, reports them as part of its queue (so the runtime doesn't see songs missing), and refills from it once fewer than 60 are left. Live: a 92-song session loaded in step.
+9. **Intermittent** (seen once, 2026-11-14): applying a remote `queue.remove` hung for ~20 s and failed with "Spotify did not show the new queue"; a resync recovered it. Not reproduced in two more tries, including after a pause and resume in Spotify right before.
 8. **Debug port:** Attune's config expects Spotify on 9223. `--remote-debugging-port=<port>` needs the `=`; with a space Spotify ignores it without a word.
 9. **Store version:** still unchecked.
 10. **Not done yet:** a song missing on the Spotify side. Sessions with YouTube Music and with TIDAL were run live (`live_pair`).
@@ -715,11 +717,42 @@ positions are preview positions. Everything below was verified with previews.
    `continuous` is on by default, whether autoplay comes back, whether seeks behave the same
    on full (HLS) streams.
 2. **Signed in** (verified to work in the debugged window), the adapter hasn't run yet.
-3. **Shuffle**: switching it off may reorder the queue; not observed. During a jam a shuffle press is simply undone (MusicKit's `shuffleModeDidChange` now triggers the check), not shared, until it's known whether MusicKit's shuffle reorders `queue.items`. A repeat press (`repeatModeDidChange`) is reported as `playback.setRepeat` and `repeatMode` is set back to 0.
+3. **Shuffle** (verified live 2026-11-14): `shuffleMode = 1` reorders everything after the current song in `queue.items` (the current song stays), and `shuffleMode = 0` **puts the old order back**. During a jam the adapter waits 600 ms, shares the shuffled order, switches the mode off and writes the shuffled order back with `writeUpcoming` (the current song plays on). Mocked; not yet seen in a jam, as the test account only plays previews (see 4). A repeat press (`repeatModeDidChange`) is reported as `playback.setRepeat` and `repeatMode` is set back to 0.
+4. **Previews are an interruption** (2026-11-14): signed out (`isAuthorized: false`) or with `previewOnly`, or when the audio is an `AudioPreview` clip, the adapter reports `Interruption { active, reason: "preview" }` before reporting anything else, so a preview ending (90 s in) can't look like the song ending and move everyone on. The runtime steps out with a notice and rejoins once full songs play (`authorizationStatusDidChange` triggers a check). Verified live: the first report came during `prepareForSession`, before the runtime listened, and was lost; it's now sent again after each remote change while previews last.
 4. **Library songs** (`i.` IDs, uploads) and music videos in the queue weren't tested.
 5. **Storefronts**: lookups use the page's storefront; a song missing there is unavailable.
 6. **Local-change suppression is partly time-based** (300 ms after a remote change).
 7. **Not done yet:** a session with TIDAL or Spotify, and connecting from the running app.
+
+## Four clients in one session (live, 2026-11-14)
+
+TIDAL (host), Spotify, YouTube Music (no subscription) and Apple Music (signed out:
+previews) in one session on a local relay, driven with `live_pair` (`daemon … tidal spotify
+youtube apple`; `status`, `compare`, `control`, `repeat`, `remove`, `leave`) and by clicking
+each app's own buttons through `eval`. Apple Music stepped out (previews) throughout.
+
+| Scenario | Result |
+|---|---|
+| Join: TIDAL creates, the others join (Spotify 2 s, YouTube Music 17 s, Apple Music 19 s) | ✓ (after the Spotify 80-song fix) |
+| Song end (session resumed 5 s before the end) | ✓ all moved on together, within 0.4 s |
+| Play/pause from Spotify, YouTube Music | ✓ |
+| Seek: YouTube Music +30 s button, Spotify's bar, TIDAL's bar | ✓ within 0.2 s (Spotify's bar ignores synthetic clicks; set through its range input) |
+| Next from Spotify, YouTube Music, TIDAL | ✓; YouTube Music's Next landed on a song only TIDAL has: the others waited, rejoined at TIDAL's next |
+| Repeat button in each app toggles the session's repeat | ✓ Off → One → Off → One; every app's own repeat back off |
+| Repeat one at the end of a song | ✓ everyone restarted it, nothing skipped |
+| Shuffle in TIDAL, Spotify, YouTube Music | ✓ after the fixes above: new order everywhere, queues equal, current song uninterrupted |
+| Host locks: listeners' pause, Next, shuffle, repeat | ✓ undone in the listener's app, session unchanged, one notice per 20 s |
+| Locked: host's Next; a song ending (YouTube Music reported first) | ✓ |
+| Unlock: a listener's pause and play | ✓ |
+| Remove from Attune's queue (UI path) | ✓ (once: Spotify's apply hung, see Spotify 9) |
+| Step out, host skips, resync | ✓ back in step |
+| Host leaves a locked session | ✓ Spotify (longest present) hosts, session opens up |
+| Empty session: Spotify presses play | ✓ its 81 songs became the session's, YouTube Music followed |
+
+Also seen: TIDAL (once YouTube Music) report a small seek a moment after a remote pause or
+seek, as their position settles. Within tolerance of the session, so the runtime drops it as
+an echo. YouTube Music ads couldn't be triggered on demand; the ad interruption is unchanged
+and mock-tested.
 
 ## 6. Preventing these problems instead of patching them
 

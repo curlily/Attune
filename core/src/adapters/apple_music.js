@@ -56,6 +56,8 @@
         "queuePositionDidChange", "mediaPlaybackError",
         // So a repeat or shuffle press is noticed (and undone) at once.
         "repeatModeDidChange", "shuffleModeDidChange",
+        // Signing in turns previews into full songs.
+        "authorizationStatusDidChange",
     ];
     const POSITION_TOLERANCE_MS = 1_000;
     // A position jump larger than this is a seek.
@@ -76,6 +78,8 @@
     // MusicKit.PlayerRepeatMode.none and PlayerShuffleMode.off.
     const REPEAT_NONE = 0;
     const SHUFFLE_OFF = 0;
+    // MusicKit shows a shuffled (or unshuffled) order a moment after the mode.
+    const SHUFFLE_SETTLE_MS = 600;
 
     const existingBridge = window[BRIDGE_KEY];
     if (existingBridge?.version === BRIDGE_VERSION && existingBridge.ready) {
@@ -514,6 +518,14 @@
                 applying -= 1;
                 suppressLocalChangesUntil = Date.now() + REMOTE_CHANGE_SUPPRESSION_MS;
                 rebase();
+                // A paused page sends no events: check for previews here
+                // too, once the session's state is in. Previews are reported
+                // again each time: the first report can come before the
+                // session listens (during prepareForSession, verified live).
+                setTimeout(() => {
+                    if (previewsOnly()) interrupted = false;
+                    noteInterruption();
+                }, 0);
             }
         });
         applyChain = run.catch(() => {});
@@ -1149,11 +1161,43 @@
             if (fromUser) sendOperation({ type: "playback.setRepeat", mode: "one" });
             music.repeatMode = REPEAT_NONE;
         }
-        // Not yet shared: whether MusicKit's shuffle reorders the queue it
-        // shows, and puts the old order back when switched off, isn't known
-        // (PROVIDER_ADAPTERS.md). Until it's checked, it's simply undone.
-        if (music.shuffleMode !== SHUFFLE_OFF) music.shuffleMode = SHUFFLE_OFF;
+        // A user's shuffle reorders the queue; that order is shared, then
+        // the mode goes off again (see `keepShuffledOrder`). Anything else
+        // turning it on is simply undone.
+        if (music.shuffleMode !== SHUFFLE_OFF) {
+            if (!fromUser) music.shuffleMode = SHUFFLE_OFF;
+            else if (!shuffleTimer) shuffleTimer = setTimeout(keepShuffledOrder, SHUFFLE_SETTLE_MS);
+        }
         if (music.continuous === false) music.continuous = true;
+    }
+
+    let shuffleTimer = null;
+
+    /**
+     * The user shuffled in Apple Music during a session. Verified live:
+     * shuffle on reorders everything after the current song, and shuffle
+     * off puts the old order back. So share the shuffled order (it's an
+     * ordinary queue change), switch the mode off so MusicKit doesn't
+     * shuffle what the session writes later, and write the shuffled order
+     * again behind the current song.
+     */
+    function keepShuffledOrder() {
+        if (!sessionSettings || music.shuffleMode === SHUFFLE_OFF) {
+            shuffleTimer = null;
+            return;
+        }
+        runEmit();
+        const order = readQueue()
+            .slice(1)
+            .map(entry => ({ entryId: entryIdOf(entry.item), songId: entry.songId }))
+            .filter(entry => entry.entryId);
+        asRemoteChange(async () => {
+            music.shuffleMode = SHUFFLE_OFF;
+            await sleep(SHUFFLE_SETTLE_MS);
+            await writeUpcoming(order);
+        })
+            .catch(error => console.warn("[Attune] Could not keep Apple Music's shuffled order", error))
+            .finally(() => { shuffleTimer = null; });
     }
 
     /** Switch to the session settings; returns the user's, for `restoreAfterSession`. */
@@ -1272,7 +1316,36 @@
         return Math.abs(actual - expected) > SEEK_THRESHOLD_MS;
     }
 
+    // Whether the session was told this client can only play previews.
+    let interrupted = false;
+
+    /**
+     * Without a subscription (or signed out) MusicKit plays only 90-second
+     * previews, at preview positions (verified live). Such a client can't
+     * follow a session: a preview ending would even look like the song
+     * ending, and move everyone on. Report it like an advertisement; the
+     * runtime steps out, and back in once full songs play.
+     */
+    function previewsOnly() {
+        if (music?.isAuthorized === false || music?.previewOnly === true) return true;
+        return /AudioPreview/i.test(audio()?.currentSrc ?? "");
+    }
+
+    function noteInterruption() {
+        const active = previewsOnly();
+        if (active === interrupted) return active;
+        interrupted = active;
+        sendEvent("Interruption", { active, reason: "preview" });
+        if (!active) rebase();
+        return active;
+    }
+
     function emitLocalChanges() {
+        // Before anything is reported: a preview's end is no song end.
+        if (noteInterruption()) {
+            rebase();
+            return;
+        }
         if (sessionSettings) {
             keepSessionSettings({ fromUser: applying === 0 && Date.now() >= suppressLocalChangesUntil });
         }
