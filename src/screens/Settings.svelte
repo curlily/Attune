@@ -197,7 +197,7 @@
   >
     <span class="switch-text">
       <span class="switch-label">Show on Discord</span>
-      <span class="switch-hint">"Listening to" the session's song on your profile</span>
+      <span class="switch-hint">The session's song on your profile, with invites to join</span>
     </span>
     <span class="switch" class:on={app.settings?.discordPresence === true}><span></span></span>
   </button>

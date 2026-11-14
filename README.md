@@ -224,13 +224,14 @@ Unlike Google, Apple allows signing in there, and the sign-in is remembered.
 ## Discord
 
 While you're in a session and the Discord desktop app is running, your Discord
-profile shows **Listening to** the session's song, with its artists, cover, a
-and a progress bar. It goes away when you step
+profile shows **Playing** the session's song, with its artists, cover and timing.
+("Playing" rather than "Listening": Discord offers invites only for Playing.) It
+goes away when you step
 out, can't play the song, or leave. Turn it off in Settings (**Show on Discord**).
 
 Friends can join from Discord too. Your status offers them **Ask to Join**, and
 Attune shows their request with **Accept** / **Decline**. You can also invite
-someone from a DM (the **+** button). Accepting opens Attune for them, starting it
+someone from a DM (the **+** button, then the Attune entry). Accepting opens Attune for them, starting it
 through the `discord-1570918885920604200://` link the installer registers, and
 joins your session. Joining needs Attune installed, and a relay new enough to
 issue invites: each session gets a random invite secret and party ID, so Discord

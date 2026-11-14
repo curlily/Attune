@@ -1,4 +1,4 @@
-//! Discord: "Listening to <song>" on your profile while you're in a
+//! Discord: "Playing <song>" on your profile while you're in a
 //! session, and joining a friend's session from Discord. Everything goes
 //! through the Discord desktop client's local RPC connection (see `ipc`);
 //! no Discord account is linked and nothing is sent anywhere else.
@@ -373,7 +373,7 @@ mod live {
 
         let now = now_ms();
         let activity = Activity {
-            kind: 2,
+            kind: 0,
             status_display_type: 2,
             details: "Attune presence test".to_owned(),
             state: Some("Paper Satellites".to_owned()),
@@ -390,6 +390,7 @@ mod live {
             secrets: Some(activity::Secrets {
                 join: "0".repeat(64),
             }),
+            supported_platforms: &["desktop"],
         };
         let payload = serde_json::to_value(&activity).unwrap();
         ipc::send_activity(&mut writer, Some(&payload), "1")

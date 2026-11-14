@@ -1,7 +1,11 @@
-//! What Discord shows while you're in a session: a Listening activity with
-//! the current song, its artists and cover, and a progress bar; with the
-//! session's invite, also a party ("2 of 16") and a join secret, which give
-//! friends Discord's Ask to Join button and let you invite from a DM.
+//! What Discord shows while you're in a session: "Playing <song>", with its
+//! artists, cover and timing; with the session's invite, also a party
+//! ("2 of 16") and a join secret, which give friends Discord's Ask to Join
+//! button and let you invite from a DM.
+//!
+//! "Playing", not "Listening": verified live (2026-11-14), Discord offers
+//! invites in a DM's + menu only for a Playing activity. With Listening the
+//! DM still said "Attune supports game invites", but + had no entry.
 //!
 //! Built from the session's status alone, so it's the same function every
 //! time and testable without Discord. Nothing here names the session: its
@@ -14,8 +18,10 @@ use attune_core::{
 };
 use serde::Serialize;
 
-/// Discord's "Listening to …".
-const LISTENING: u8 = 2;
+/// Discord's "Playing …": the only type it offers invites for.
+const PLAYING: u8 = 0;
+/// Where someone can join from: Attune runs on Windows desktops.
+const PLATFORMS: &[&str] = &["desktop"];
 /// Show `details` (the song title) in the status line, not the app's name.
 const SHOW_DETAILS: u8 = 2;
 /// Discord accepts 2 to 128 characters in its text fields.
@@ -39,6 +45,8 @@ pub struct Activity {
     pub party: Option<Party>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secrets: Option<Secrets>,
+    /// Which invite buttons Discord shows.
+    pub supported_platforms: &'static [&'static str],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -168,7 +176,7 @@ pub fn from_status(
     });
 
     Some(Activity {
-        kind: LISTENING,
+        kind: PLAYING,
         status_display_type: SHOW_DETAILS,
         details,
         state,
@@ -176,6 +184,7 @@ pub fn from_status(
         assets,
         party,
         secrets,
+        supported_platforms: PLATFORMS,
     })
 }
 
@@ -254,7 +263,8 @@ mod tests {
     #[test]
     fn playing_shows_the_song_with_a_progress_bar() {
         let activity = from_status_(&status(SyncState::Synced, true), NOW).unwrap();
-        assert_eq!(activity.kind, LISTENING);
+        assert_eq!(activity.kind, PLAYING);
+        assert_eq!(activity.supported_platforms, ["desktop"]);
         assert_eq!(activity.details, "Midnight Static");
         assert_eq!(activity.state.as_deref(), Some("Paper Satellites, Kei"));
         let timestamps = activity.timestamps.unwrap();
