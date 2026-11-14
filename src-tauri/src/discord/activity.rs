@@ -108,10 +108,11 @@ impl Activity {
 pub fn from_state(state: &SessionMusicState, app: &str, now_ms: u64) -> Option<Activity> {
     let track = &state.queue.first()?.track;
     let playback = &state.playback;
-    let details = text(&track.title).unwrap_or_else(|| "Unknown song".to_owned());
-    let artists = text(&track.artists.join(", "));
+    let title = text(&track.title).unwrap_or_else(|| "Unknown song".to_owned());
+    // Shown under your name too, so only the artists, paused or not.
+    let state = text(&track.artists.join(", "));
 
-    let (state, timestamps) = if playback.is_playing {
+    let (details, timestamps) = if playback.is_playing {
         let elapsed = now_ms.saturating_sub(playback.position_captured_at_ms);
         let position = playback.position_ms + elapsed;
         let start = now_ms.saturating_sub(position);
@@ -119,12 +120,9 @@ pub fn from_state(state: &SessionMusicState, app: &str, now_ms: u64) -> Option<A
             .duration_ms
             .filter(|&duration| duration > 0 && position <= duration)
             .map(|duration| start + duration);
-        (artists, Some(Timestamps { start, end }))
+        (title, Some(Timestamps { start, end }))
     } else {
-        let paused = match &artists {
-            Some(artists) => format!("Paused · {artists}"),
-            None => "Paused".to_owned(),
-        };
+        let paused = text(&format!("Paused · {title}")).unwrap_or(title);
         // With no timestamps Discord counts up from when the activity was
         // set (a green ♫ 0:00). A song that started and ended at the moment
         // it was paused shows no timer at all.
@@ -133,7 +131,7 @@ pub fn from_state(state: &SessionMusicState, app: &str, now_ms: u64) -> Option<A
             start: paused_at,
             end: Some(paused_at),
         };
-        (text(&paused), Some(stopped))
+        (paused, Some(stopped))
     };
 
     let assets = track
@@ -236,10 +234,10 @@ mod tests {
         // And it stays put while the pause lasts.
         let later = from_state(&state(false), "TIDAL", NOW + 60_000).unwrap();
         assert_eq!(activity, later);
-        assert_eq!(
-            activity.state.as_deref(),
-            Some("Paused · Paper Satellites, Kei")
-        );
+        // "Paused" on the card's title line; the line under your name keeps
+        // just the artists.
+        assert_eq!(activity.details, "Paused · Midnight Static");
+        assert_eq!(activity.state.as_deref(), Some("Paper Satellites, Kei"));
     }
 
     #[test]
