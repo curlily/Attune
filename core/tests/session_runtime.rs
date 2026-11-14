@@ -84,6 +84,11 @@ struct FakeProvider {
     prefetched: Mutex<Vec<Vec<String>>>,
     /// The art this provider shows for songs it loads: `https://<host>/<id>`.
     cover_host: Mutex<Option<String>>,
+    /// Buffering: the position stands still (but it still says playing),
+    /// until a seek or `stalled = false`.
+    stalled: AtomicBool,
+    /// A seek doesn't end the stall either (a connection too slow to keep up).
+    hold_stall: AtomicBool,
 }
 
 impl FakeProvider {
@@ -99,7 +104,37 @@ impl FakeProvider {
             hold_prefetch: AtomicBool::new(false),
             prefetched: Mutex::default(),
             cover_host: Mutex::default(),
+            stalled: AtomicBool::new(false),
+            hold_stall: AtomicBool::new(false),
         })
+    }
+
+    /// The player buffers: its position stops moving on, though it still
+    /// says it is playing (as the adapters do while loading).
+    fn stall(&self) {
+        let mut state = self.state.lock().unwrap();
+        *state = state::at_time(&state, now_ms());
+        self.stalled.store(true, Ordering::SeqCst);
+    }
+
+    /// The connection recovers: the player plays on from where it stalled.
+    fn recover(&self) {
+        self.stalled.store(false, Ordering::SeqCst);
+        self.state.lock().unwrap().playback.position_captured_at_ms = now_ms();
+    }
+
+    /// Where the player is now.
+    fn position(&self) -> u64 {
+        state::position_at(&self.snapshot(), now_ms())
+    }
+
+    fn seeks(&self) -> usize {
+        self.applied
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|kind| *kind == "playback.seek")
+            .count()
     }
 
     /// Describe songs with art of this provider's own from now on.
@@ -209,7 +244,12 @@ impl FakeProvider {
 
 impl ProviderBridge for FakeProvider {
     async fn get_state(&self) -> Result<SessionMusicState> {
-        Ok(self.snapshot())
+        let mut state = self.state.lock().unwrap();
+        if self.stalled.load(Ordering::SeqCst) {
+            // Read live, the position is where it stalled.
+            state.playback.position_captured_at_ms = now_ms();
+        }
+        Ok(state.clone())
     }
 
     async fn apply_snapshot(&self, snapshot: &SessionSnapshot) -> Result<ApplyOutcome> {
@@ -230,6 +270,9 @@ impl ProviderBridge for FakeProvider {
                 message: error.to_string(),
             }
         })?;
+        if matches!(operation, Op::PlaybackSeek { .. }) && !self.hold_stall.load(Ordering::SeqCst) {
+            self.stalled.store(false, Ordering::SeqCst);
+        }
         match operation {
             Op::PlaybackSetPlaying { .. } | Op::PlaybackSeek { .. } => {
                 *self.state.lock().unwrap() = next;
@@ -1182,4 +1225,82 @@ async fn a_repeat_press_in_the_music_app_turns_the_sessions_repeat_on_and_off() 
     eventually("repeat is on", || s.a.status().repeat == RepeatMode::One).await;
     s.b_provider.emit(press());
     eventually("repeat is off", || s.a.status().repeat == RepeatMode::Off).await;
+}
+
+async fn eventually_within(limit: Duration, what: &str, check: impl Fn() -> bool) {
+    let result = timeout(limit, async {
+        while !check() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(result.is_ok(), "timed out waiting until {what}");
+}
+
+fn status_of(runtime: &SessionRuntime, client_id: &str) -> Option<ParticipantStatus> {
+    runtime
+        .status()
+        .participants
+        .into_iter()
+        .find(|p| p.client_id == client_id)
+        .map(|p| p.status)
+}
+
+#[tokio::test]
+async fn a_listener_that_falls_behind_shows_it_and_catches_up_once_it_plays_on() {
+    let s = session(&[]).await;
+    let session_id = s.a.credentials().code.clone();
+    let sequence = s.server.sequence(&session_id);
+    assert_eq!(s.b.status().behind_ms, None);
+
+    // A slow connection: B's player buffers while the session plays on.
+    s.b_provider.stall();
+    let limit = Duration::from_secs(15);
+    eventually_within(limit, "B shows it is behind", || {
+        s.b.status().behind_ms.is_some_and(|ms| ms >= 2_000)
+    })
+    .await;
+    assert_eq!(
+        s.b.status().sync,
+        SyncState::Synced,
+        "B still follows the session"
+    );
+    eventually_within(limit, "A sees B catching up", || {
+        status_of(&s.a, "b") == Some(ParticipantStatus::Resyncing)
+    })
+    .await;
+    // Seeking a player that is still stuck changes nothing.
+    assert_eq!(s.b_provider.seeks(), 0);
+
+    s.b_provider.recover();
+    eventually_within(limit, "B is back in step", || {
+        s.b.status().behind_ms.is_none()
+    })
+    .await;
+    assert_eq!(s.b_provider.seeks(), 1, "caught up with one seek");
+    assert!(
+        s.b_provider.position().abs_diff(s.a_provider.position()) <= 1_500,
+        "B plays where A does: {} vs {}",
+        s.b_provider.position(),
+        s.a_provider.position()
+    );
+    eventually_within(limit, "A sees B in sync", || {
+        status_of(&s.a, "b") == Some(ParticipantStatus::Synced)
+    })
+    .await;
+    // Catching up is B's own business: nothing was published.
+    assert_eq!(s.server.sequence(&session_id), sequence);
+    assert!(s.a_provider.applied.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_paused_session_is_never_behind() {
+    let s = session(&[]).await;
+    s.a_provider
+        .local(Op::PlaybackSetPlaying { is_playing: false });
+    eventually("B paused", || !s.b_provider.playing()).await;
+    s.b_provider.stall();
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(s.b.status().behind_ms, None);
+    assert_eq!(s.b_provider.seeks(), 0);
 }

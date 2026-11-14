@@ -128,6 +128,9 @@ export interface RuntimeStatus {
   sessionId: string;
   clientId: string;
   sync: SyncState;
+  /** While synced: how far the music app is behind (negative: ahead), once
+   *  that lasted a few seconds. null when it plays in step. */
+  behindMs: number | null;
   sequence: number;
   queue: QueueItem[];
   playback: Playback;

@@ -104,6 +104,11 @@ pub struct RuntimeStatus {
     /// This client, so the UI can tell which participant is "you".
     pub client_id: String,
     pub sync: SyncState,
+    /// While `Synced`: how far the music app has fallen behind the session
+    /// (negative: ahead), once that lasted a few seconds (a slow
+    /// connection buffering). The others see this client as catching up
+    /// meanwhile. `None` when it plays in step.
+    pub behind_ms: Option<i64>,
     /// Last session sequence applied here.
     pub sequence: u64,
     /// The session queue, current song first.

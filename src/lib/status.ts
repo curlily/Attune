@@ -12,9 +12,20 @@ export interface Badge {
   busy?: boolean;
 }
 
-export function ownBadge(sync: SyncState): Badge {
+/** Whether this client's own badge is worth showing (being in sync shows
+ *  next to "you" in the listeners). */
+export function showsOwnBadge(status: { sync: SyncState; behindMs: number | null }): boolean {
+  return status.sync !== "synced" || status.behindMs !== null;
+}
+
+export function ownBadge(sync: SyncState, behindMs: number | null = null): Badge {
   switch (sync) {
     case "synced":
+      if (behindMs !== null) {
+        const seconds = Math.max(1, Math.round(Math.abs(behindMs) / 1000));
+        const text = `${seconds} s ${behindMs < 0 ? "ahead" : "behind"}`;
+        return { text, icon: "refresh", tone: "warning", busy: true };
+      }
       return { text: "In sync", icon: "check", tone: "success" };
     case "resyncing":
       return { text: "Catching up", icon: "refresh", tone: "accent", busy: true };

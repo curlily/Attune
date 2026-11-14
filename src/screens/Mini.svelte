@@ -4,11 +4,11 @@
   import { currentCover, livePosition } from "../lib/current.svelte";
   import Icon from "../lib/Icon.svelte";
   import Marquee from "../lib/Marquee.svelte";
-  import { ownBadge, participantBadge } from "../lib/status";
+  import { ownBadge, participantBadge, showsOwnBadge } from "../lib/status";
 
   let status = $derived(app.status);
   let current = $derived(status?.queue[0]);
-  let badge = $derived(status ? ownBadge(status.sync) : null);
+  let badge = $derived(status ? ownBadge(status.sync, status.behindMs) : null);
   const cover = currentCover(() => status);
   const playback = livePosition(() => status);
 </script>
@@ -33,7 +33,7 @@
           {@const state = participantBadge(person)}
           <span class="dot {state.tone}" title="{person.displayName}: {state.text}"></span>
         {/each}
-        {#if badge && status.sync !== "synced"}
+        {#if badge && showsOwnBadge(status)}
           <span class="own {badge.tone}">{badge.text}</span>
         {/if}
       </span>

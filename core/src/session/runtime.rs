@@ -85,6 +85,27 @@ const MAX_CATCH_UP_MS: u64 = 10_000;
 /// changes and added afterwards (`defer_long_tail`). Looking up 80 songs
 /// took 6–15 s (verified live), and every change waited for it.
 const LOAD_NOW: usize = 8;
+/// How often the music app's position is compared with the session's.
+/// Adapters don't take a position read while buffering for a seek (it
+/// threw everyone back, see PROVIDER_ADAPTERS.md), so a player that
+/// buffered on a slow connection stayed seconds behind, shown in sync.
+const DRIFT_CHECK_EVERY: Duration = Duration::from_secs(1);
+/// Further off than this counts as out of step. Above the protocol's
+/// position tolerance, which is what loading a song may leave.
+const DRIFT_TOLERANCE_MS: u64 = 2_000;
+/// Readings in a row that must be off before it shows: a moment of
+/// buffering, or a provider still settling after a seek, isn't worth it.
+const DRIFT_READINGS: u32 = 3;
+/// Catching up is a seek to the session's position, made once the music
+/// app plays on again (seeking a player that is still stuck changes
+/// nothing). At most this often, and this many times per song: on a
+/// connection too slow to keep up, seeking ahead again and again only
+/// makes it buffer more.
+const CATCH_UP_EVERY: Duration = Duration::from_secs(5);
+const MAX_CATCH_UPS_PER_SONG: u32 = 3;
+/// A reading counts as playing on if the position moved at least this
+/// share of the time that passed.
+const PLAYING_ON_SHARE: f64 = 0.8;
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -423,6 +444,22 @@ enum Flow {
     Stop,
 }
 
+/// How the music app's position compares with the session's while synced
+/// (`Worker::check_drift`). Reset whenever the sync state changes.
+#[derive(Default)]
+struct Drift {
+    /// Readings in a row further off than `DRIFT_TOLERANCE_MS`.
+    readings_off: u32,
+    /// What's shown: how far behind (negative: ahead), once it lasted.
+    behind_ms: Option<i64>,
+    /// The last reading: local position and when it was read (local clock).
+    last: Option<(u64, u64)>,
+    /// The song the catch-ups below were for.
+    entry_id: Option<String>,
+    catch_ups: u32,
+    last_catch_up: Option<Instant>,
+}
+
 struct Worker<B> {
     bridge: Arc<B>,
     client: SessionClient,
@@ -475,6 +512,7 @@ struct Worker<B> {
     local_covers: HashMap<String, String>,
     /// The session queue's entry IDs when `local_covers` was last read.
     covers_read_for: Vec<String>,
+    drift: Drift,
 }
 
 impl<B: ProviderBridge> Worker<B> {
@@ -491,6 +529,7 @@ impl<B: ProviderBridge> Worker<B> {
             session_id: session_id.clone(),
             client_id: client.client_id().to_owned(),
             sync,
+            behind_ms: None,
             sequence: snapshot.revision,
             queue: Vec::new(),
             playback: snapshot.state.playback.clone(),
@@ -533,6 +572,7 @@ impl<B: ProviderBridge> Worker<B> {
             interrupted: false,
             local_covers: HashMap::new(),
             covers_read_for: Vec::new(),
+            drift: Drift::default(),
         };
         worker.publish();
         worker
@@ -582,8 +622,11 @@ impl<B: ProviderBridge> Worker<B> {
         };
         self.refresh_local_covers(true).await;
         self.publish();
+        let mut drift_check = tokio::time::interval(DRIFT_CHECK_EVERY);
+        drift_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let leave_reply = loop {
             let flow = tokio::select! {
+                _ = drift_check.tick() => { self.check_drift().await; Flow::Continue }
                 command = commands.recv() => match command {
                     None => break None, // handle dropped: close without leaving
                     Some(Command::Leave(reply)) => break Some(reply),
@@ -677,18 +720,130 @@ impl<B: ProviderBridge> Worker<B> {
         }
         debug!(from = ?self.sync, to = ?next, "Sync state");
         self.sync = next;
+        self.drift = Drift::default();
         if next != SyncState::WaitingForNextSong {
             self.waiting_for = None;
         }
-        if let Some(status) = next.participant_status() {
+        self.report_status().await;
+        self.publish();
+        true
+    }
+
+    /// Tell the others how this client is doing: falling behind shows as
+    /// catching up (protocol 1 has no status of its own for it).
+    async fn report_status(&mut self) {
+        let status = match self.sync {
+            SyncState::Synced if self.drift.behind_ms.is_some() => {
+                Some(ParticipantStatus::Resyncing)
+            }
+            sync => sync.participant_status(),
+        };
+        if let Some(status) = status {
             if self.reported_status != Some(status)
                 && self.client().set_status(status).await.is_ok()
             {
                 self.reported_status = Some(status);
             }
         }
+    }
+
+    /// Compare the music app's position with the session's, show when it
+    /// stays off, and catch up once the app plays on.
+    async fn check_drift(&mut self) {
+        let in_step = self.sync == SyncState::Synced
+            && self.mirror.playback.is_playing
+            && self.mirror.current_entry_id.is_some()
+            // Apps move on to the next song at slightly different moments.
+            && !self.song_is_ending();
+        if !in_step {
+            return self.set_drift(None).await;
+        }
+        let Ok(local) = self.bridge.get_state().await else {
+            return;
+        };
+        if local.current_entry_id != self.mirror.current_entry_id || !local.playback.is_playing {
+            // Something else differs; the provider's events report that.
+            return self.set_drift(None).await;
+        }
+        let local_now = now_ms();
+        let here = state::position_at(&local, local_now);
+        let session = state::position_at(&self.mirror, self.clock().server_time(local_now));
+        let playing_on = self.drift.last.is_some_and(|(position, at)| {
+            let elapsed = local_now.saturating_sub(at) as f64;
+            here.saturating_sub(position) as f64 >= elapsed * PLAYING_ON_SHARE
+        });
+        self.drift.last = Some((here, local_now));
+        if self.drift.entry_id != self.mirror.current_entry_id {
+            self.drift.entry_id = self.mirror.current_entry_id.clone();
+            self.drift.catch_ups = 0;
+        }
+
+        if here.abs_diff(session) <= DRIFT_TOLERANCE_MS {
+            self.drift.readings_off = 0;
+            if self.drift.behind_ms.is_some() {
+                info!(session_id = %self.session_id, "Back in step with the session");
+                self.notify(Notice::Resynced);
+            }
+            return self.set_drift(None).await;
+        }
+        self.drift.readings_off += 1;
+        if self.drift.readings_off < DRIFT_READINGS {
+            return;
+        }
+        let behind = session as i64 - here as i64;
+        if self.drift.behind_ms.is_none() {
+            info!(session_id = %self.session_id, behind_ms = behind, "The music app fell out of step");
+        }
+        self.set_drift(Some(behind)).await;
+
+        let may_catch_up = playing_on
+            && self.drift.catch_ups < MAX_CATCH_UPS_PER_SONG
+            && self
+                .drift
+                .last_catch_up
+                .is_none_or(|at| at.elapsed() >= CATCH_UP_EVERY);
+        if !may_catch_up {
+            return;
+        }
+        let Some(entry_id) = self.mirror.current_entry_id.clone() else {
+            return;
+        };
+        self.drift.catch_ups += 1;
+        self.drift.last_catch_up = Some(Instant::now());
+        self.drift.last = None; // the position jumps
+        let position_ms = state::position_at(&self.mirror, self.server_now());
+        debug!(
+            behind_ms = behind,
+            position_ms, "Catching up with the session"
+        );
+        if let Err(error) = self
+            .bridge
+            .apply_operation(&SessionOperation::PlaybackSeek {
+                entry_id,
+                position_ms,
+            })
+            .await
+        {
+            debug!(%error, "Could not catch up with the session");
+        }
+    }
+
+    /// Show (and report) how far behind the music app is, if it changed.
+    async fn set_drift(&mut self, behind_ms: Option<i64>) {
+        if behind_ms.is_none() {
+            self.drift.readings_off = 0;
+        }
+        // Rounded to the second: the UI shows seconds, and every reading
+        // differs by a few milliseconds.
+        let shown = |ms: Option<i64>| ms.map(|ms| (ms as f64 / 1000.0).round() as i64);
+        if shown(self.drift.behind_ms) == shown(behind_ms)
+            && self.drift.behind_ms.is_some() == behind_ms.is_some()
+        {
+            return;
+        }
+        self.drift.behind_ms = behind_ms;
+        self.report_status().await;
         self.publish();
-        true
     }
 
     async fn report_unavailable(&mut self) {
@@ -750,6 +905,7 @@ impl<B: ProviderBridge> Worker<B> {
             session_id: self.session_id.clone(),
             client_id: self.client.client_id().to_owned(),
             sync: self.sync,
+            behind_ms: self.drift.behind_ms,
             sequence: self.applied,
             queue,
             playback,

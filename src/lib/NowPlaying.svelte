@@ -7,12 +7,12 @@
   import Icon from "./Icon.svelte";
   import Marquee from "./Marquee.svelte";
   import { api, errorText } from "./api";
-  import { formatTime, ownBadge } from "./status";
+  import { formatTime, ownBadge, showsOwnBadge } from "./status";
 
   let { status }: { status: RuntimeStatus } = $props();
 
   let current = $derived(status.queue[0]);
-  let badge = $derived(ownBadge(status.sync));
+  let badge = $derived(ownBadge(status.sync, status.behindMs));
   let warning = $derived(status.warnings.find((w) => w.songsAhead === 0));
   const cover = currentCover(() => status);
   const playback = livePosition(() => status);
@@ -83,7 +83,7 @@
 
 <!-- Being in sync shows next to "you" in the listeners; this space is for
      anything else. -->
-{#if status.sync !== "synced"}
+{#if showsOwnBadge(status)}
   <div class="badge {badge.tone}">
     {#if badge.busy}<span class="spinner"></span>{:else}<Icon name={badge.icon} size={14} />{/if}
     <span>{badge.text}</span>

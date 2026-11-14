@@ -232,6 +232,7 @@ mod tests {
             session_id: "KWPZ".to_owned(),
             client_id: "me".to_owned(),
             sync,
+            behind_ms: None,
             sequence: 1,
             queue: vec![QueueItem {
                 entry_id: "e1".to_owned(),
