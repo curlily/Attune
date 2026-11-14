@@ -13,8 +13,9 @@ use serde::Serialize;
 
 /// Discord's "Listening to …".
 const LISTENING: u8 = 2;
-/// Show `details` (the song title) in the status line, not the app's name.
-const SHOW_DETAILS: u8 = 2;
+/// Show `state` (the artists) in the status line under your name, not the
+/// app's name or the song title.
+const SHOW_STATE: u8 = 1;
 /// Discord accepts 2 to 128 characters in its text fields.
 const MAX_TEXT: usize = 128;
 /// The download page, which offers to open Attune on the code in `?join=`.
@@ -141,13 +142,13 @@ pub fn from_state(state: &SessionMusicState, app: &str, now_ms: u64) -> Option<A
         .filter(|url| url.starts_with("https://") && url.len() <= 256)
         .map(|url| Assets {
             large_image: url.to_owned(),
-            large_text: track.album.as_deref().and_then(text),
+            large_text: None,
         });
 
     Some(Activity {
         name: app.to_owned(),
         kind: LISTENING,
-        status_display_type: SHOW_DETAILS,
+        status_display_type: SHOW_STATE,
         details,
         state,
         timestamps,
@@ -216,7 +217,8 @@ mod tests {
         assert_eq!(timestamps.end, Some(NOW - 62_000 + 240_000));
         let assets = activity.assets.unwrap();
         assert_eq!(assets.large_image, "https://i.scdn.co/image/abc");
-        assert_eq!(assets.large_text.as_deref(), Some("Night Drive"));
+        // Discord shows `large_text` as a line of its own: no album.
+        assert_eq!(assets.large_text, None);
     }
 
     #[test]
