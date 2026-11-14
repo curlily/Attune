@@ -3,10 +3,9 @@
 //!
 //! It records what happened in enough detail to replay it: what you did in
 //! Attune, what the music app reported, every change the session made or
-//! received, sync states, reconnects, Discord updates, and every error you
-//! were shown. Once it outgrows [`MAX_BYTES`] the oldest lines go first. It
-//! holds no secrets: rejoin secrets are never logged and the server address
-//! is left out of the header.
+//! received, sync states, reconnects, and every error you were shown. Once
+//! it outgrows [`MAX_BYTES`] the oldest lines go first. It holds no secrets:
+//! rejoin secrets are never logged and the server address is left out.
 
 use std::{
     collections::VecDeque,

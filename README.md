@@ -249,8 +249,8 @@ cargo test -p attune --lib discord::live -- --ignored --nocapture
 Settings → **Save log** writes what happened since Attune started to
 `Downloads\Attune log <date> <time>.txt` and shows it in Explorer: what you
 did in Attune, what the music app reported, every change the session made or
-received, sync states, reconnects, Discord updates and every error you were
-shown, with local times. It's kept in memory (the oldest lines go past 16 MB)
+received, sync states, reconnects and every error you were shown, with local
+times. It's kept in memory (the oldest lines go past 16 MB)
 and saved only when you ask (`src-tauri/src/log.rs`). It has song titles,
 names and the join code, but no rejoin secrets or server address.
 
