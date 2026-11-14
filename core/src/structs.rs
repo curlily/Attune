@@ -20,6 +20,16 @@ impl ProviderId {
             Self::AppleMusic => "apple-music",
         }
     }
+
+    /// The service's own name, as people know it.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Spotify => "Spotify",
+            Self::Tidal => "TIDAL",
+            Self::YoutubeMusic => "YouTube Music",
+            Self::AppleMusic => "Apple Music",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -1,5 +1,5 @@
-//! What Discord shows while you're in a session: a Listening activity with
-//! the current song, its artists and cover, and a progress bar.
+//! What Discord shows while you're in a session: "Listening to <music app>"
+//! with the current song, its artists and cover, and a progress bar.
 //!
 //! Built from the session's status alone, so it's the same function every
 //! time and testable without Discord. The session's ID is its join code and
@@ -21,6 +21,9 @@ const LISTEN_ALONG_URL: &str = "https://curlily.github.io/Attune/?join=";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Activity {
+    /// The music app, for "Listening to TIDAL" in place of the Discord
+    /// application's own name.
+    pub name: String,
     #[serde(rename = "type")]
     pub kind: u8,
     pub status_display_type: u8,
@@ -88,6 +91,7 @@ impl Activity {
             _ => false,
         };
         timestamps
+            && self.name == other.name
             && self.kind == other.kind
             && self.details == other.details
             && self.state == other.state
@@ -97,9 +101,9 @@ impl Activity {
 }
 
 /// The activity for `status` at `now_ms` (Unix ms, this computer's clock),
-/// or `None` when you aren't hearing the session's music: stepped out, not
+/// listening to `app` (the music app's name), or `None` when you aren't hearing the session's music: stepped out, not
 /// able to play the current song, after an error, or once it has ended.
-pub fn from_status(status: &RuntimeStatus, now_ms: u64) -> Option<Activity> {
+pub fn from_status(status: &RuntimeStatus, app: &str, now_ms: u64) -> Option<Activity> {
     if !matches!(
         status.sync,
         SyncState::Synced | SyncState::Resyncing | SyncState::Reconnecting
@@ -138,6 +142,7 @@ pub fn from_status(status: &RuntimeStatus, now_ms: u64) -> Option<Activity> {
         });
 
     Some(Activity {
+        name: app.to_owned(),
         kind: LISTENING,
         status_display_type: SHOW_DETAILS,
         details,
@@ -210,8 +215,9 @@ mod tests {
 
     #[test]
     fn playing_shows_the_song_with_a_progress_bar() {
-        let activity = from_status(&status(SyncState::Synced, true), NOW).unwrap();
+        let activity = from_status(&status(SyncState::Synced, true), "TIDAL", NOW).unwrap();
         assert_eq!(activity.kind, LISTENING);
+        assert_eq!(activity.name, "TIDAL");
         assert_eq!(activity.details, "Midnight Static");
         assert_eq!(activity.state.as_deref(), Some("Paper Satellites, Kei"));
         let timestamps = activity.timestamps.unwrap();
@@ -224,7 +230,7 @@ mod tests {
 
     #[test]
     fn paused_has_no_timer() {
-        let activity = from_status(&status(SyncState::Synced, false), NOW).unwrap();
+        let activity = from_status(&status(SyncState::Synced, false), "TIDAL", NOW).unwrap();
         assert_eq!(activity.timestamps, None);
         assert_eq!(
             activity.state.as_deref(),
@@ -240,23 +246,27 @@ mod tests {
             SyncState::Error,
             SyncState::Ended,
         ] {
-            assert_eq!(from_status(&status(sync, true), NOW), None, "{sync:?}");
+            assert_eq!(
+                from_status(&status(sync, true), "TIDAL", NOW),
+                None,
+                "{sync:?}"
+            );
         }
         let mut empty = status(SyncState::Synced, true);
         empty.queue.clear();
-        assert_eq!(from_status(&empty, NOW), None);
+        assert_eq!(from_status(&empty, "TIDAL", NOW), None);
     }
 
     #[test]
     fn never_mentions_the_join_code() {
-        let activity = from_status(&status(SyncState::Synced, true), NOW).unwrap();
+        let activity = from_status(&status(SyncState::Synced, true), "TIDAL", NOW).unwrap();
         let json = serde_json::to_string(&activity).unwrap();
         assert!(!json.contains("KWPZ"), "{json}");
     }
 
     #[test]
     fn listen_along_links_the_download_page_to_the_code() {
-        let plain = from_status(&status(SyncState::Synced, true), NOW).unwrap();
+        let plain = from_status(&status(SyncState::Synced, true), "TIDAL", NOW).unwrap();
         let along = plain.clone().with_listen_along("KWPZ");
         assert_eq!(along.buttons.len(), 1);
         assert_eq!(along.buttons[0].label, "Listen along");
@@ -288,27 +298,27 @@ mod tests {
     fn only_https_covers() {
         let mut plain = status(SyncState::Synced, true);
         plain.queue[0].track.cover_url = Some("http://example.com/a.jpg".to_owned());
-        assert_eq!(from_status(&plain, NOW).unwrap().assets, None);
+        assert_eq!(from_status(&plain, "TIDAL", NOW).unwrap().assets, None);
     }
 
     #[test]
     fn small_clock_differences_are_the_same_activity() {
-        let a = from_status(&status(SyncState::Synced, true), NOW).unwrap();
+        let a = from_status(&status(SyncState::Synced, true), "TIDAL", NOW).unwrap();
         // While playing, the start doesn't move with the clock...
         assert_eq!(
             a,
-            from_status(&status(SyncState::Synced, true), NOW + 400).unwrap()
+            from_status(&status(SyncState::Synced, true), "TIDAL", NOW + 400).unwrap()
         );
         // ...but a fresh position report lands a few ms off.
         let mut report = status(SyncState::Synced, true);
         report.playback.position_ms += 300;
         report.playback.position_captured_at_ms += 250;
-        let b = from_status(&report, NOW).unwrap();
+        let b = from_status(&report, "TIDAL", NOW).unwrap();
         assert_ne!(a, b);
         assert!(a.same_as(&b));
         // A seek is a real change.
         let mut sought = status(SyncState::Synced, true);
         sought.playback.position_ms = 120_000;
-        assert!(!a.same_as(&from_status(&sought, NOW).unwrap()));
+        assert!(!a.same_as(&from_status(&sought, "TIDAL", NOW).unwrap()));
     }
 }

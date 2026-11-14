@@ -1,4 +1,5 @@
-//! Discord Rich Presence: "Listening to <song>" on your Discord profile
+//! Discord Rich Presence: "Listening to TIDAL" (or whichever music app) and
+//! the song on your Discord profile
 //! while you're in a session, through the Discord desktop client's local
 //! RPC connection (see `ipc`). No Discord account is linked and nothing
 //! is sent anywhere else.
@@ -75,9 +76,10 @@ impl DiscordPresence {
         Self { wanted }
     }
 
-    /// Show the session's song, or with `None` (no session) nothing.
-    pub fn show_status(&self, status: Option<&RuntimeStatus>) {
-        let next = status.and_then(|status| activity::from_status(status, now_ms()));
+    /// Show the session's song, played on `app`, or with `None` (no
+    /// session) nothing.
+    pub fn show_status(&self, status: Option<&RuntimeStatus>, app: &str) {
+        let next = status.and_then(|status| activity::from_status(status, app, now_ms()));
         let code = status.map(|status| status.session_id.clone());
         self.wanted.send_if_modified(|wanted| {
             let same = wanted.code == code
@@ -255,6 +257,7 @@ mod live {
 
         let now = now_ms();
         let activity = Activity {
+            name: "TIDAL".to_owned(),
             kind: 2,
             status_display_type: 2,
             details: "Attune presence test".to_owned(),

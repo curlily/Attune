@@ -224,8 +224,8 @@ Unlike Google, Apple allows signing in there, and the sign-in is remembered.
 ## Discord
 
 While you're in a session and the Discord desktop app is running, your Discord
-profile shows **Listening to** the session's song, with its artists, cover
-and a progress bar. It goes away when you step out, can't play the song, or
+profile shows **Listening to** your music app (say, **Listening to TIDAL**) and
+the session's song, with its artists, cover and a progress bar. It goes away when you step out, can't play the song, or
 leave. Turn it off in Settings (**Show on Discord**).
 
 Turn on **Listen along button** (off by default) to give the status a
