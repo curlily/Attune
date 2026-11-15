@@ -293,16 +293,8 @@
         return error;
     }
 
-    function normalize(value) {
-        return String(value ?? "")
-            .normalize("NFKC")
-            .toLowerCase()
-            .replace(/[’‘]/g, "'")
-            .replace(/["']/g, "")
-            .replace(/[^\p{L}\p{N}]+/gu, " ")
-            .trim()
-            .replace(/\s+/g, " ");
-    }
+    // Finding songs is shared by all adapters (matcher.js).
+    const matcher = globalThis.__ATTUNE_MATCHER__;
 
     function artistNames(item) {
         const artists = item?.artists ?? item?.artist ?? [];
@@ -349,77 +341,6 @@
         const descriptor = toTrackDescriptor(item, key);
         trackCache.set(key, descriptor);
         return descriptor;
-    }
-
-    // Services disagree on where featured artists go: "Shoong!" on one is
-    // "Shoong! (feat. LISA of BLACKPINK)" on another (verified live, same
-    // rule as the Spotify adapter).
-    function normalizeTitle(value) {
-        return normalize(stripSameRecordingTags(value));
-    }
-
-    /**
-     * A title without the tags that still name the same recording: a
-     * featured artist (services disagree on where it goes) and a remaster.
-     * Verified live: Spotify's "Hotel California - 2013 Remaster", "Enter
-     * Sandman - Remastered 2021" and "Whole Lotta Love - 1990 Remaster" are
-     * "Hotel California", "Enter Sandman" and "Whole Lotta Love (Remaster)"
-     * on YouTube Music. Remixes, live and other versions are different
-     * recordings and keep their tags.
-     */
-    function stripSameRecordingTags(value) {
-        return String(value ?? "")
-            .replace(/\s*[([][^)\]]*\b(feat|ft|featuring|with)\b[^)\]]*[)\]]/gi, " ")
-            .replace(/\s*[([][^)\]]*\bremaster(ed)?\b[^)\]]*[)\]]/gi, " ")
-            .replace(/\s[-–]\s*[^-–]*\bremaster(ed)?\b[^-–]*$/i, " ")
-            // "Rock You Like a Hurricane - 2015 - Remaster": the year is left.
-            .replace(/\s[-–]\s*\d{4}\s*$/, " ")
-            .replace(/\s[-–]\s*(feat|ft|featuring)\b.*$/i, " ")
-            .replace(/\s+/g, " ")
-            .trim();
-    }
-
-    /**
-     * Whether two normalized artist names are the same act. A name that
-     * starts with the other one, as whole words, counts: YouTube Music
-     * credits "Purple Rain" to "Prince & The Revolution", Spotify to
-     * "Prince" (verified live). Very short names must match exactly.
-     */
-    function sameArtist(a, b) {
-        if (a === b) return true;
-        const [short, long] = a.length < b.length ? [a, b] : [b, a];
-        return short.length >= 4 && long.startsWith(`${short} `);
-    }
-
-    function artistOverlap(trackA, trackB) {
-        const artistsA = (trackA.artists ?? []).map(normalize).filter(Boolean);
-        return (trackB.artists ?? []).map(normalize).filter(Boolean)
-            .some(name => artistsA.some(other => sameArtist(name, other)));
-    }
-
-    function scoreCandidate(source, candidate) {
-        if (normalizeTitle(source.title) !== normalizeTitle(candidate.track.title)) return -1;
-        if (!artistOverlap(source, candidate.track)) return -1;
-
-        let score = 10; // Exact title and at least one matching artist.
-        if (source.isrc && candidate.track.isrc) {
-            // Conflicting ISRCs identify different recordings. Do not select
-            // one merely because its title and artist happen to match.
-            if (normalize(source.isrc) !== normalize(candidate.track.isrc)) {
-                return -1;
-            }
-            score += 100;
-        }
-        if (source.album && candidate.track.album &&
-            normalize(source.album) === normalize(candidate.track.album)) {
-            score += 3;
-        }
-        if (Number.isFinite(source.durationMs) && Number.isFinite(candidate.track.durationMs)) {
-            const difference = Math.abs(source.durationMs - candidate.track.durationMs);
-            if (difference <= 2_000) score += 2;
-            else if (difference > 8_000) score -= 2;
-        }
-        return score;
     }
 
     // Result IDs of a completed search, or null while it is missing/loading.
@@ -478,9 +399,7 @@
     // ISRC -> Promise<candidates[]>
     const isrcCandidates = new Map();
 
-    function normalizeIsrc(value) {
-        return typeof value === "string" ? value.replace(/[^A-Za-z0-9]/g, "").toUpperCase() : "";
-    }
+    const normalizeIsrc = matcher.normalizeIsrc;
 
     // ISO 8601 durations as the open API gives them ("PT3M41S").
     function isoDurationMs(value) {
@@ -548,32 +467,14 @@
     /**
      * The TIDAL track for `track` by its ISRC, or null. An exact ISRC is the
      * same recording even when the titles differ between services; among
-     * several (single, album) the closest title, artist, album and length win.
+     * several releases (single, album) the matcher picks one.
      */
     async function resolveByIsrc(track) {
         const isrc = normalizeIsrc(track.isrc);
         if (!isrc || !openApi) return null;
         prefetchIsrcs([isrc]);
         const candidates = (await isrcCandidates.get(isrc)).filter(candidate => candidate.streamable);
-        if (!candidates.length) return null;
-
-        const score = candidate => {
-            const sameTitle = normalizeTitle(track.title) === normalizeTitle(candidate.track.title);
-            const sameArtist = artistOverlap(track, candidate.track);
-            // An ISRC hit with neither the title nor an artist in common is
-            // more likely a data error than the same song.
-            if (!sameTitle && !sameArtist) return -1;
-            let value = (sameTitle ? 10 : 0) + (sameArtist ? 5 : 0);
-            if (track.album && candidate.track.album &&
-                normalize(track.album) === normalize(candidate.track.album)) value += 3;
-            if (Number.isFinite(track.durationMs) && Number.isFinite(candidate.track.durationMs) &&
-                Math.abs(track.durationMs - candidate.track.durationMs) <= 2_000) value += 2;
-            return value;
-        };
-        return candidates
-            .map(candidate => ({ ...candidate, score: score(candidate) }))
-            .filter(candidate => candidate.score >= 0)
-            .sort((a, b) => b.score - a.score)[0] ?? null;
+        return matcher.pickByIsrc(track, candidates);
     }
 
     /**
@@ -592,70 +493,32 @@
     }
 
     async function resolveTrack(track) {
-        const existingProviderId = track.providerTrackId ?? track.provider_track_id;
-        if (track.provider === "Tidal" && existingProviderId) {
-            return String(existingProviderId);
-        }
+        const known = matcher.knownId(track, "Tidal");
+        if (known) return known;
 
-        const cacheKey = [
-            normalize(track.title),
-            (track.artists ?? []).map(normalize).join("|"),
-            normalize(track.isrc),
-            normalize(track.album),
-            track.durationMs ?? "",
-        ].join("::");
-
-        if (resolvedTrackCache.has(cacheKey)) {
-            return resolvedTrackCache.get(cacheKey);
-        }
+        const key = matcher.cacheKey(track);
+        if (resolvedTrackCache.has(key)) return resolvedTrackCache.get(key);
 
         // The exact recording by ISRC first; text search if that finds
         // nothing TIDAL can play.
         const byIsrc = await resolveByIsrc(track);
         if (byIsrc && (await ensureMediaItems([byIsrc.productId])).length === 0) {
-            resolvedTrackCache.set(cacheKey, byIsrc.productId);
+            resolvedTrackCache.set(key, byIsrc.productId);
             return byIsrc.productId;
         }
 
-        let ranked = [];
-        for (const query of searchQueries(track)) {
-            const candidates = await searchCandidates(query);
-            ranked = candidates
-                .map(candidate => ({ ...candidate, score: scoreCandidate(track, candidate) }))
-                .filter(candidate => candidate.score >= 0)
-                .sort((a, b) => b.score - a.score);
-            if (ranked.length) break;
-        }
-
-        if (!ranked.length) {
+        // Equal scores keep TIDAL's order: the same recording is on the
+        // single and the album (same ISRC, title, artists, length), and
+        // rejecting ties as ambiguous was why "Shoong!" was never found
+        // (verified live).
+        const best = await matcher.searchText(track, searchCandidates, { idOf: candidate => candidate.productId });
+        if (!best) {
             throw new TrackLookupError(`No matching TIDAL recording found for "${track.title}"`);
         }
-        // Equal scores used to be rejected as ambiguous, which is why
-        // "Shoong!" was never found (verified live): TIDAL lists the same
-        // recording on the single and the album (same ISRC, title, artists,
-        // length). Like the Spotify adapter, take TIDAL's best-ranked one
-        // (the sort is stable).
-
-        const productId = ranked[0].productId;
-        resolvedTrackCache.set(cacheKey, productId);
+        resolvedTrackCache.set(key, best.productId);
         // The open API's descriptor has no cover; the store's is read later.
-        if (ranked[0].fromStore) trackCache.set(productId, ranked[0].track);
-        return productId;
-    }
-
-    /**
-     * Queries to try in turn: the title without "(feat. …)" and the main
-     * artist first, then the full title with every artist. Featured artists
-     * named twice threw YouTube Music's search off (verified live with "Get
-     * Lucky (feat. Pharrell Williams and Nile Rodgers)").
-     */
-    function searchQueries(track) {
-        const artists = (track.artists ?? []).filter(Boolean);
-        const bareTitle = stripSameRecordingTags(track.title) || String(track.title ?? "");
-        return [...new Set([
-            `${bareTitle} ${artists.slice(0, 1).join(" ")}`.trim(),
-            `${track.title} ${artists.join(" ")}`.trim(),
-        ])];
+        if (best.fromStore) trackCache.set(best.productId, best.track);
+        return best.productId;
     }
 
     /** Ranked, playable candidates for a text query. */

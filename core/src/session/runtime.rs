@@ -52,9 +52,9 @@ use crate::{
         SessionEvent, SubmitOutcome,
     },
     protocol::{
-        PROTOCOL_VERSION, Participant, ParticipantStatus, QueueEntry, RejectCode, RepeatMode,
-        ReplacePlayback, SessionControl, SessionMusicState, SessionOperation, SessionSnapshot,
-        state,
+        FoundTrack, MAX_FOUND_TRACKS_PER_MESSAGE, PROTOCOL_VERSION, Participant, ParticipantStatus,
+        QueueEntry, RejectCode, RepeatMode, ReplacePlayback, SessionControl, SessionMusicState,
+        SessionOperation, SessionSnapshot, state,
     },
     session::{
         bridge::ProviderBridge,
@@ -164,6 +164,11 @@ fn shift_position(
         _ => {}
     }
     operation
+}
+
+/// Whether `entry_id` is in the session queue.
+fn in_queue_owned(state: &SessionMusicState, entry_id: &str) -> bool {
+    state.queue.iter().any(|entry| entry.entry_id == entry_id)
 }
 
 fn queue_ids(state: &SessionMusicState) -> Vec<&str> {
@@ -338,6 +343,8 @@ impl SessionRuntime {
         );
         worker.provider_settings = settings;
         worker.allow_others = allow_others;
+        // What others found already, so loading the list can use it.
+        worker.note_found(start.found);
         worker.apply_snapshot(snapshot).await;
         Ok(Self::spawn(worker, start.credentials))
     }
@@ -489,6 +496,14 @@ struct Worker<B> {
     prefetched_tx: mpsc::UnboundedSender<(u64, Result<ApplyOutcome>)>,
     prefetched_rx: mpsc::UnboundedReceiver<(u64, Result<ApplyOutcome>)>,
     reported_unavailable: Option<Vec<String>>,
+    /// This provider's service as its adapter names it (`Tidal`, …),
+    /// learned from the IDs it puts on its own songs.
+    service: Option<String>,
+    /// Songs listeners' services found, by entry: service -> ID, and an
+    /// ISRC if the song came without one.
+    found: HashMap<String, (BTreeMap<String, String>, Option<String>)>,
+    /// Entries whose song this provider's ID was reported for.
+    reported_found: HashSet<String>,
     reported_status: Option<ParticipantStatus>,
     participants: Vec<Participant>,
     /// Who hosts and whether others may change what's playing, as the
@@ -563,6 +578,9 @@ impl<B: ProviderBridge> Worker<B> {
             prefetched_tx,
             prefetched_rx,
             reported_unavailable: None,
+            service: None,
+            found: HashMap::new(),
+            reported_found: HashSet::new(),
             reported_status: sync.participant_status(),
             participants: Vec::new(),
             control: None,
@@ -856,6 +874,141 @@ impl<B: ProviderBridge> Worker<B> {
             && self.client().set_unavailable(report.clone()).await.is_ok()
         {
             self.reported_unavailable = Some(report);
+        }
+        self.found.retain(|id, _| in_queue_owned(&self.mirror, id));
+        self.reported_found
+            .retain(|id| in_queue_owned(&self.mirror, id));
+        self.report_found().await;
+    }
+
+    // -----------------------------------------------------------------------
+    // Songs found by listeners
+    // -----------------------------------------------------------------------
+    //
+    // Each client tells the others which ID its service has for each song it
+    // found (`tracks.found`). A song handed to this provider then carries an
+    // ID for this service if anyone on it found the song already, and the
+    // adapter plays exactly that without a search: a listener joining later,
+    // a reload, the rest of a long list. ISRCs travel the same way, for
+    // services that look songs up by ISRC.
+
+    /// Entries that left the queue are dropped with the next report.
+    fn note_found(&mut self, tracks: Vec<FoundTrack>) {
+        for track in tracks {
+            let (ids, isrc) = self.found.entry(track.entry_id).or_default();
+            ids.entry(track.provider).or_insert(track.provider_track_id);
+            if isrc.is_none() {
+                *isrc = track.isrc;
+            }
+        }
+    }
+
+    /// Learn this provider's service name from its own songs.
+    async fn learn_service(&mut self) {
+        if self.service.is_some() {
+            return;
+        }
+        if let Ok(local) = self.bridge.get_state().await {
+            self.service = local
+                .queue
+                .iter()
+                .find_map(|entry| entry.track.provider.clone());
+        }
+    }
+
+    /// Songs for this provider with what listeners found: this service's
+    /// ID, and an ISRC the song lacked. The mirror keeps the session's own.
+    fn with_found(&self, entries: &mut [QueueEntry]) {
+        for entry in entries {
+            let Some((ids, isrc)) = self.found.get(&entry.entry_id) else {
+                continue;
+            };
+            if let Some(service) = &self.service {
+                if entry.track.provider.as_ref() != Some(service) {
+                    if let Some(id) = ids.get(service) {
+                        entry.track.provider = Some(service.clone());
+                        entry.track.provider_track_id = Some(id.clone());
+                    }
+                }
+            }
+            if entry.track.isrc.is_none() {
+                entry.track.isrc.clone_from(isrc);
+            }
+        }
+    }
+
+    fn with_found_in(&self, mut operation: SessionOperation) -> SessionOperation {
+        match &mut operation {
+            SessionOperation::QueueReplace { entries, .. } => self.with_found(entries),
+            SessionOperation::QueueInsert { entry, .. } => {
+                self.with_found(std::slice::from_mut(entry));
+            }
+            _ => {}
+        }
+        operation
+    }
+
+    /// Tell the others the IDs this provider found for songs queued from
+    /// another service (and an ISRC the song lacked), once per entry.
+    async fn report_found(&mut self) {
+        if self.sync != SyncState::Synced {
+            return;
+        }
+        let Ok(local) = self.bridge.get_state().await else {
+            return;
+        };
+        if self.service.is_none() {
+            self.service = local.queue.iter().find_map(|e| e.track.provider.clone());
+        }
+        let Some(service) = self.service.clone() else {
+            return;
+        };
+        let mut tracks = Vec::new();
+        for entry in &local.queue {
+            let (Some(provider), Some(id)) =
+                (&entry.track.provider, &entry.track.provider_track_id)
+            else {
+                continue;
+            };
+            if *provider != service || self.reported_found.contains(&entry.entry_id) {
+                continue;
+            }
+            let Some(session) = self
+                .mirror
+                .queue
+                .iter()
+                .find(|e| e.entry_id == entry.entry_id)
+            else {
+                continue;
+            };
+            let known = self
+                .found
+                .get(&entry.entry_id)
+                .is_some_and(|(ids, _)| ids.contains_key(&service));
+            // Queued from this service (the ID came with it), or found by
+            // someone on it already.
+            if session.track.provider.as_ref() == Some(&service) || known {
+                self.reported_found.insert(entry.entry_id.clone());
+                continue;
+            }
+            let isrc = if session.track.isrc.is_none() {
+                entry.track.isrc.clone()
+            } else {
+                None
+            };
+            tracks.push(FoundTrack {
+                entry_id: entry.entry_id.clone(),
+                provider: service.clone(),
+                provider_track_id: id.clone(),
+                isrc,
+            });
+        }
+        for batch in tracks.chunks(MAX_FOUND_TRACKS_PER_MESSAGE) {
+            if self.client().report_found(batch.to_vec()).await.is_err() {
+                return; // tried again after the next change
+            }
+            self.reported_found
+                .extend(batch.iter().map(|track| track.entry_id.clone()));
         }
     }
 
@@ -1223,6 +1376,8 @@ impl<B: ProviderBridge> Worker<B> {
             let local_now = now_ms();
             current.state = state::at_time(&snapshot.state, self.clock().server_time(local_now));
             current.state.playback.position_captured_at_ms = local_now;
+            self.learn_service().await;
+            self.with_found(&mut current.state.queue);
             current.state.queue = self.defer_long_tail(current.state.queue, 0).await;
             match self.bridge.apply_snapshot(&current).await {
                 Ok(outcome) => {
@@ -1291,6 +1446,7 @@ impl<B: ProviderBridge> Worker<B> {
                 self.participants = participants;
                 self.publish();
             }
+            SessionEvent::FoundTracks(tracks) => self.note_found(tracks),
             SessionEvent::Control(control) => {
                 self.control = Some(control);
                 // Just became host, perhaps: the session follows our rule.
@@ -1304,9 +1460,10 @@ impl<B: ProviderBridge> Worker<B> {
                     self.set_sync(SyncState::Reconnecting).await;
                 }
             }
-            SessionEvent::Rejoined { snapshot } => {
+            SessionEvent::Rejoined { snapshot, found } => {
                 // The server forgot nothing, but resend everything we report.
                 self.reported_unavailable = None;
+                self.note_found(found);
                 if self.stepped_out_before_reconnect {
                     self.mirror = snapshot.state;
                     self.applied = snapshot.revision;
@@ -1452,6 +1609,7 @@ impl<B: ProviderBridge> Worker<B> {
             in_transit,
             self.target_duration(&operation),
         );
+        let operation = self.with_found_in(operation);
         match self.bridge.apply_operation(&operation).await {
             Ok(outcome) => self.unavailable.extend(outcome.unavailable_entry_ids),
             Err(Error::TrackUnavailable { entry_ids, .. }) => {
@@ -1593,7 +1751,7 @@ impl<B: ProviderBridge> Worker<B> {
         self.deferred.clear();
         if self.sync == SyncState::Synced {
             // Same current song: the provider only adds to its queue.
-            let operation = self.provider_queue_replace(None);
+            let operation = self.with_found_in(self.provider_queue_replace(None));
             match self.bridge.apply_operation(&operation).await {
                 Ok(outcome) => self.unavailable.extend(outcome.unavailable_entry_ids),
                 Err(Error::TrackUnavailable { entry_ids, .. }) => {

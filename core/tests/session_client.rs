@@ -479,7 +479,7 @@ async fn reconnect_rejoins_with_the_same_identity_and_resumes() {
         matches!(e, SessionEvent::Rejoined { .. })
     })
     .await;
-    let SessionEvent::Rejoined { snapshot } = rejoined else {
+    let SessionEvent::Rejoined { snapshot, .. } = rejoined else {
         unreachable!()
     };
     assert_eq!(snapshot.session_id, session_id);

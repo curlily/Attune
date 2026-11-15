@@ -53,10 +53,10 @@ use uuid::Uuid;
 use crate::{
     Error, Result,
     protocol::{
-        ClientHello, ClientMessage, CreateSession, ErrorCode, JoinSession, OperationRequest,
-        PROTOCOL_VERSION, Participant, ParticipantStatus, RejectCode, ServerMessage,
-        SessionControl, SessionMusicState, SessionOperation, SessionSnapshot, normalize_join_code,
-        state,
+        ClientHello, ClientMessage, CreateSession, ErrorCode, FEATURE_FOUND_TRACKS, FoundTrack,
+        JoinSession, OperationRequest, PROTOCOL_VERSION, Participant, ParticipantStatus,
+        RejectCode, ServerMessage, SessionControl, SessionMusicState, SessionOperation,
+        SessionSnapshot, normalize_join_code, state,
     },
 };
 
@@ -229,6 +229,7 @@ impl SessionClientConfig {
             client_id: self.client_id.clone(),
             display_name: self.display_name.clone(),
             provider: self.provider.clone(),
+            features: vec![FEATURE_FOUND_TRACKS.to_owned()],
         }
     }
 }
@@ -319,7 +320,11 @@ pub enum SessionEvent {
     /// Back in the session. Apply this snapshot before following again.
     Rejoined {
         snapshot: SessionSnapshot,
+        /// Songs listeners found so far.
+        found: Vec<FoundTrack>,
     },
+    /// Songs other listeners' services found (see `report_found`).
+    FoundTracks(Vec<FoundTrack>),
     /// A connection-level error reported by the server.
     ServerError {
         code: ErrorCode,
@@ -339,6 +344,8 @@ pub struct SessionStart {
     pub snapshot: SessionSnapshot,
     /// Subscribed before the client started reading, so no event is missed.
     pub events: broadcast::Receiver<SessionEvent>,
+    /// Songs listeners found so far (see `SessionEvent::FoundTracks`).
+    pub found: Vec<FoundTrack>,
 }
 
 enum Command {
@@ -409,6 +416,7 @@ impl SessionClient {
             session_id,
             rejoin_secret,
             snapshot,
+            features,
         } = reply
         else {
             return Err(Error::ProtocolViolation {
@@ -433,7 +441,16 @@ impl SessionClient {
             rejoin_secret: Some(rejoin_secret),
         };
         info!(client_id = %config.client_id, "Created session");
-        Ok(Self::start(config, credentials, socket, snapshot, early))
+        let found_tracks = features.iter().any(|f| f == FEATURE_FOUND_TRACKS);
+        Ok(Self::start(
+            config,
+            credentials,
+            socket,
+            snapshot,
+            early,
+            found_tracks,
+            Vec::new(),
+        ))
     }
 
     /// Join an existing session by its code. With a rejoin secret (from an
@@ -447,6 +464,8 @@ impl SessionClient {
         let ServerMessage::Joined {
             snapshot,
             rejoin_secret,
+            features,
+            found,
         } = reply
         else {
             return Err(Error::ProtocolViolation {
@@ -460,7 +479,16 @@ impl SessionClient {
             sequence = snapshot.revision,
             "Joined session"
         );
-        Ok(Self::start(config, credentials, socket, snapshot, early))
+        let found_tracks = features.iter().any(|f| f == FEATURE_FOUND_TRACKS);
+        Ok(Self::start(
+            config,
+            credentials,
+            socket,
+            snapshot,
+            early,
+            found_tracks,
+            found,
+        ))
     }
 
     fn start(
@@ -469,6 +497,8 @@ impl SessionClient {
         socket: Socket,
         snapshot: SessionSnapshot,
         early: Vec<ServerMessage>,
+        found_tracks: bool,
+        found: Vec<FoundTrack>,
     ) -> (Self, SessionStart) {
         let (commands_tx, commands_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (events_tx, events_rx) = broadcast::channel(EVENT_CAPACITY);
@@ -486,6 +516,7 @@ impl SessionClient {
             pending_snapshots: HashMap::new(),
             clock_samples: ClockSamples::default(),
             clock: clock_tx,
+            found_tracks,
         };
         let task = tokio::spawn(actor.run(socket, early));
 
@@ -502,6 +533,7 @@ impl SessionClient {
             credentials,
             snapshot,
             events: events_rx,
+            found,
         };
         (client, start)
     }
@@ -556,6 +588,15 @@ impl SessionClient {
     /// refuses it from anyone else.
     pub async fn set_control(&self, others_can_control: bool) -> Result<()> {
         let message = ClientMessage::SetControl { others_can_control };
+        self.request(|reply| Command::Notify { message, reply })
+            .await
+    }
+
+    /// Tell the others which songs this client's service found, with their
+    /// IDs there. Only additions. Dropped quietly when the server doesn't
+    /// understand it (an older server).
+    pub async fn report_found(&self, tracks: Vec<FoundTrack>) -> Result<()> {
+        let message = ClientMessage::ReportFound { tracks };
         self.request(|reply| Command::Notify { message, reply })
             .await
     }
@@ -765,6 +806,8 @@ struct Actor {
     pending_snapshots: HashMap<String, oneshot::Sender<Result<SessionSnapshot>>>,
     clock_samples: ClockSamples,
     clock: watch::Sender<Option<ClockEstimate>>,
+    /// The server understands `tracks.found` (it said so when we joined).
+    found_tracks: bool,
 }
 
 impl Actor {
@@ -909,6 +952,11 @@ impl Actor {
                 }
                 self.pending_snapshots.insert(request_id, reply);
             }
+            Command::Notify { message, reply }
+                if !self.found_tracks && matches!(message, ClientMessage::ReportFound { .. }) =>
+            {
+                drop(reply.send(Ok(())));
+            }
             Command::Notify { message, reply } => match send(socket, &message, max).await {
                 Ok(()) => drop(reply.send(Ok(()))),
                 Err(error @ Error::MessageTooLarge { .. }) => drop(reply.send(Err(error))),
@@ -1033,6 +1081,8 @@ impl Actor {
 
             ServerMessage::Left => return Some(Exit::Stop(CloseReason::Left)),
 
+            ServerMessage::FoundTracks { tracks } => self.emit(SessionEvent::FoundTracks(tracks)),
+
             ServerMessage::TimePong {
                 client_time_ms,
                 server_time_ms,
@@ -1121,11 +1171,15 @@ impl Actor {
                     ServerMessage::Joined {
                         snapshot,
                         rejoin_secret,
+                        features,
+                        found,
                     },
                     early,
                 )) => validate_snapshot(&snapshot, &code).map(|()| {
                     self.credentials.rejoin_secret = Some(rejoin_secret);
-                    (socket, snapshot, early)
+                    // The server may have been updated meanwhile.
+                    self.found_tracks = features.iter().any(|f| f == FEATURE_FOUND_TRACKS);
+                    (socket, snapshot, early, found)
                 }),
                 Ok(_) => Err(Error::ProtocolViolation {
                     reason: "expected session.joined",
@@ -1134,10 +1188,10 @@ impl Actor {
             };
 
             match rejoin {
-                Ok((socket, snapshot, early)) => {
+                Ok((socket, snapshot, early, found)) => {
                     info!(sequence = snapshot.revision, "Rejoined session");
                     self.last_sequence = snapshot.revision;
-                    self.emit(SessionEvent::Rejoined { snapshot });
+                    self.emit(SessionEvent::Rejoined { snapshot, found });
                     for message in early {
                         self.on_message(message);
                     }

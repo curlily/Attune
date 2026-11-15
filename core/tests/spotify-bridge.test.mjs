@@ -5,6 +5,7 @@ import vm from "node:vm";
 import test from "node:test";
 
 const adapterPath = new URL("../src/adapters/spotify.js", import.meta.url);
+const matcherPath = new URL("../src/adapters/matcher.js", import.meta.url);
 
 // Tracks the mock Spotify catalogue knows, by URI.
 const CATALOG = {
@@ -318,7 +319,8 @@ async function loadAdapter(setup, { pageSetTimeout = setTimeout } = {}) {
     });
     context.window.__jamEvent = payload => events.push(JSON.parse(payload));
 
-    const source = await readFile(adapterPath, "utf8");
+    // The shared matcher goes ahead, as Attune injects it.
+    const source = `${await readFile(matcherPath, "utf8")}\n;\n${await readFile(adapterPath, "utf8")}`;
     const script = new vm.Script(source, { filename: fileURLToPath(adapterPath) });
     const bridge = await script.runInContext(context);
 

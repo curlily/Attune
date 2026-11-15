@@ -151,40 +151,8 @@
         return error;
     }
 
-    function normalize(value) {
-        return String(value ?? "")
-            .normalize("NFKC")
-            .toLowerCase()
-            .replace(/[’‘]/g, "'")
-            .replace(/["']/g, "")
-            .replace(/[^\p{L}\p{N}]+/gu, " ")
-            .trim()
-            .replace(/\s+/g, " ");
-    }
-
-    // Services disagree on where featured artists go in a title.
-    function normalizeTitle(value) {
-        return normalize(stripSameRecordingTags(value));
-    }
-
-    /**
-     * A title without the tags that still name the same recording: a
-     * featured artist (services disagree on where it goes) and a remaster.
-     * Spotify's "Hotel California - 2013 Remaster" is "Hotel California"
-     * elsewhere. Remixes, live and other versions are different recordings
-     * and keep their tags.
-     */
-    function stripSameRecordingTags(value) {
-        return String(value ?? "")
-            .replace(/\s*[([][^)\]]*\b(feat|ft|featuring|with)\b[^)\]]*[)\]]/gi, " ")
-            .replace(/\s*[([][^)\]]*\bremaster(ed)?\b[^)\]]*[)\]]/gi, " ")
-            .replace(/\s[-–]\s*[^-–]*\bremaster(ed)?\b[^-–]*$/i, " ")
-            // "Rock You Like a Hurricane - 2015 - Remaster": the year is left.
-            .replace(/\s[-–]\s*\d{4}\s*$/, " ")
-            .replace(/\s[-–]\s*(feat|ft|featuring)\b.*$/i, " ")
-            .replace(/\s+/g, " ")
-            .trim();
-    }
+    // Finding songs is shared by all adapters (matcher.js).
+    const matcher = globalThis.__ATTUNE_MATCHER__;
 
     /**
      * Artists from MusicKit's one-line credit. Verified live: "Get Lucky"
@@ -373,110 +341,31 @@
         return (response?.data?.results?.songs?.data ?? []).filter(playable);
     }
 
-    /**
-     * Whether two normalized artist names are the same act. A name that
-     * starts with the other one, as whole words, counts: YouTube Music
-     * credits "Purple Rain" to "Prince & The Revolution", Spotify to
-     * "Prince" (verified live). Very short names must match exactly.
-     */
-    function sameArtist(a, b) {
-        if (a === b) return true;
-        const [short, long] = a.length < b.length ? [a, b] : [b, a];
-        return short.length >= 4 && long.startsWith(`${short} `);
-    }
-
-    function artistOverlap(trackA, trackB) {
-        const artistsA = (trackA.artists ?? []).map(normalize).filter(Boolean);
-        return (trackB.artists ?? []).map(normalize).filter(Boolean)
-            .some(name => artistsA.some(other => sameArtist(name, other)));
-    }
-
-    function scoreCandidate(source, candidate) {
-        if (source.isrc && candidate.isrc && source.isrc !== candidate.isrc) return -1;
-        if (normalizeTitle(source.title) !== normalizeTitle(candidate.title)) return -1;
-        if (!artistOverlap(source, candidate)) return -1;
-
-        let score = 10; // Same title and at least one matching artist.
-        if (normalize(source.title) === normalize(candidate.title)) score += 1;
-        if (source.album && candidate.album && normalize(source.album) === normalize(candidate.album)) {
-            score += 3;
-        }
-        if (Number.isFinite(source.durationMs) && Number.isFinite(candidate.durationMs)) {
-            const difference = Math.abs(source.durationMs - candidate.durationMs);
-            if (difference <= 2_500) score += 2;
-            else if (difference > 8_000) score -= 2;
-        }
-        return score;
-    }
-
-    /**
-     * Among releases of the same recording (one ISRC is on the album and on
-     * every compilation, verified live: five for "Get Lucky"), the one on
-     * the same album, else the closest length, else Apple's first.
-     */
-    function bestRelease(source, songs) {
-        let best = null;
-        let bestScore = -Infinity;
-        for (const song of songs) {
-            const candidate = descriptorOf(song);
-            let score = 0;
-            if (source.album && candidate.album && normalize(source.album) === normalize(candidate.album)) score += 3;
-            if (Number.isFinite(source.durationMs) && Number.isFinite(candidate.durationMs) &&
-                Math.abs(source.durationMs - candidate.durationMs) <= 2_500) {
-                score += 1;
-            }
-            if (score > bestScore) {
-                best = song;
-                bestScore = score;
-            }
-        }
-        return best;
-    }
-
-    /**
-     * Search terms to try in turn: the title without featured artists and
-     * remaster tags with the main artist first (featured artists named
-     * twice throw searches off), the full title and two artists after.
-     */
-    function searchTerms(track) {
-        const artists = (track.artists ?? []).filter(Boolean);
-        const bareTitle = stripSameRecordingTags(track.title) || String(track.title ?? "");
-        return [...new Set([
-            `${bareTitle} ${artists.slice(0, 1).join(" ")}`.trim(),
-            `${track.title} ${artists.slice(0, 2).join(" ")}`.trim(),
-        ])];
-    }
+    // A catalog song as a candidate for the matcher.
+    const asCandidate = song => ({ song, track: descriptorOf(song) });
 
     async function resolveTrack(track) {
-        const existingProviderId = track.providerTrackId ?? track.provider_track_id;
-        if (track.provider === "AppleMusic" && existingProviderId) return String(existingProviderId);
+        const known = matcher.knownId(track, "AppleMusic");
+        if (known) return known;
 
-        const cacheKey = [
-            track.isrc ?? "",
-            normalize(track.title),
-            (track.artists ?? []).map(normalize).join("|"),
-            normalize(track.album),
-            track.durationMs ?? "",
-        ].join("::");
-        if (resolvedSongIdCache.has(cacheKey)) return resolvedSongIdCache.get(cacheKey);
+        const key = matcher.cacheKey(track);
+        if (resolvedSongIdCache.has(key)) return resolvedSongIdCache.get(key);
 
+        // One ISRC is on the album and on every compilation (verified live:
+        // five for "Get Lucky"); the matcher picks the release.
         let found = null;
         if (track.isrc) {
-            const songs = await songsByIsrc(track.isrc);
-            if (songs.length) found = bestRelease(track, songs);
+            found = matcher.pickByIsrc(track, (await songsByIsrc(track.isrc)).map(asCandidate));
         }
-        for (const term of found ? [] : searchTerms(track)) {
-            const candidates = await searchSongs(term);
-            // Sorting is stable: equal scores keep Apple's ranking.
-            found = candidates
-                .map(song => ({ song, score: scoreCandidate(track, descriptorOf(song)) }))
-                .filter(candidate => candidate.score >= 0)
-                .sort((a, b) => b.score - a.score)[0]?.song ?? null;
-            if (found) break;
-        }
+        // Equal scores keep Apple's ranking.
+        found ??= await matcher.searchText(
+            track,
+            async term => (await searchSongs(term)).map(asCandidate),
+            { idOf: candidate => String(candidate.song.id) },
+        );
         if (!found) throw new TrackLookupError(`No matching Apple Music song found for "${track.title}"`);
-        const songId = String(found.id);
-        resolvedSongIdCache.set(cacheKey, songId);
+        const songId = String(found.song.id);
+        resolvedSongIdCache.set(key, songId);
         return songId;
     }
 

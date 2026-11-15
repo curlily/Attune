@@ -64,5 +64,6 @@ pub fn hello(client_id: &str) -> ClientHello {
         client_id: client_id.to_owned(),
         display_name: format!("User {client_id}"),
         provider: Some("tidal".to_owned()),
+        features: Vec::new(),
     }
 }

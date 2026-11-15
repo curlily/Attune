@@ -30,14 +30,16 @@
 //! `originClientId: null`. The check runs after every change that could
 //! matter: queue changes, reports, status changes, and participants leaving.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::{
     PROTOCOL_VERSION,
     messages::{
-        ClientHello, ClientMessage, CreateSession, ErrorCode, JoinSession, MAX_DISPLAY_NAME_CHARS,
-        MAX_ID_LEN, MAX_PROVIDER_LABEL_CHARS, OperationRequest, Participant, ParticipantStatus,
-        RejectCode, ServerMessage, SessionControl,
+        ClientHello, ClientMessage, CreateSession, ErrorCode, FEATURE_FOUND_TRACKS, FoundTrack,
+        JoinSession, MAX_DISPLAY_NAME_CHARS, MAX_FEATURES, MAX_FOUND_PROVIDER_LEN,
+        MAX_FOUND_TRACK_ID_LEN, MAX_FOUND_TRACKS_PER_MESSAGE, MAX_ID_LEN, MAX_PROVIDER_LABEL_CHARS,
+        OperationRequest, Participant, ParticipantStatus, RejectCode, ServerMessage,
+        SessionControl,
     },
     model::{RepeatMode, SessionMusicState, SessionOperation, SessionSnapshot},
     state,
@@ -134,11 +136,26 @@ pub fn validate_hello(hello: &ClientHello) -> Result<ClientHello, HandshakeError
             HandshakeError::new(ErrorCode::InvalidIdentity, "invalid provider label")
         })?),
     };
+    if hello.features.len() > MAX_FEATURES {
+        return Err(HandshakeError::new(
+            ErrorCode::InvalidIdentity,
+            "too many features",
+        ));
+    }
+    // Only the ones this server knows; the reply lists them back.
+    let mut features: Vec<String> = hello
+        .features
+        .iter()
+        .filter(|feature| feature.as_str() == FEATURE_FOUND_TRACKS)
+        .cloned()
+        .collect();
+    features.dedup();
     Ok(ClientHello {
         protocol_version: hello.protocol_version,
         client_id: hello.client_id.clone(),
         display_name,
         provider,
+        features,
     })
 }
 
@@ -173,6 +190,24 @@ pub struct SessionCoordinator {
     updated_at_ms: u64,
     /// In join order.
     participants: Vec<Participant>,
+    /// Clients that understand `tracks.found`.
+    found_clients: HashSet<String>,
+    /// Each queue entry's song as listeners' services found it.
+    found: HashMap<String, FoundIds>,
+}
+
+/// One entry's song on each service that found it, and its ISRC if
+/// someone's service had one.
+#[derive(Debug, Default)]
+struct FoundIds {
+    ids: BTreeMap<String, String>,
+    isrc: Option<String>,
+}
+
+fn token(value: &str, max: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max
+        && !value.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
 impl SessionCoordinator {
@@ -208,7 +243,10 @@ impl SessionCoordinator {
             state: initial_state,
             updated_at_ms: now_ms,
             participants: Vec::new(),
+            found_clients: HashSet::new(),
+            found: HashMap::new(),
         };
+        coordinator.note_features(&hello);
         coordinator
             .participants
             .push(participant(hello, ParticipantStatus::Synced));
@@ -220,6 +258,7 @@ impl SessionCoordinator {
                     session_id: coordinator.session_id.clone(),
                     rejoin_secret,
                     snapshot: coordinator.snapshot(now_ms),
+                    features: coordinator.features_of(&creator_id),
                 },
             ),
             coordinator.participants_update(),
@@ -257,6 +296,8 @@ impl SessionCoordinator {
                 return Err(invalid());
             }
         }
+        // After the checks above: a refused join changes nothing.
+        self.note_features(&hello);
         match self.participant_mut(&client_id) {
             Some(existing) => {
                 existing.display_name = hello.display_name;
@@ -282,12 +323,20 @@ impl SessionCoordinator {
         }
 
         let rejoin_secret = self.rejoin_secrets[&client_id].clone();
+        // Everything found so far, with the snapshot it refers to.
+        let found = if self.found_clients.contains(&client_id) {
+            self.all_found()
+        } else {
+            Vec::new()
+        };
         Ok(vec![
             Outbound::to_client(
                 &client_id,
                 ServerMessage::Joined {
                     snapshot: self.snapshot(now_ms),
                     rejoin_secret,
+                    features: self.features_of(&client_id),
+                    found,
                 },
             ),
             self.participants_update(),
@@ -318,6 +367,7 @@ impl SessionCoordinator {
                 )]
             }
             ClientMessage::Operation(request) => self.handle_operation(client_id, request, now_ms),
+            ClientMessage::ReportFound { tracks } => self.report_found(client_id, tracks),
             ClientMessage::SetStatus { status } => {
                 let changed = self
                     .participant_mut(client_id)
@@ -546,6 +596,9 @@ impl SessionCoordinator {
             .iter()
             .map(|e| e.entry_id.as_str())
             .collect();
+        // Found songs are kept as long as their entries. Nobody is told:
+        // clients drop them with the entries too.
+        self.found.retain(|id, _| in_queue.contains(id.as_str()));
         let mut changed = false;
         for participant in &mut self.participants {
             let before = participant.unavailable_entry_ids.len();
@@ -662,6 +715,119 @@ impl SessionCoordinator {
         } else {
             Vec::new()
         }
+    }
+
+    fn note_features(&mut self, hello: &ClientHello) {
+        if hello.features.iter().any(|f| f == FEATURE_FOUND_TRACKS) {
+            self.found_clients.insert(hello.client_id.clone());
+        } else {
+            self.found_clients.remove(&hello.client_id);
+        }
+    }
+
+    /// The features to list back to `client_id` in its handshake reply.
+    fn features_of(&self, client_id: &str) -> Vec<String> {
+        if self.found_clients.contains(client_id) {
+            vec![FEATURE_FOUND_TRACKS.to_owned()]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn all_found(&self) -> Vec<FoundTrack> {
+        let mut tracks: Vec<FoundTrack> = self
+            .found
+            .iter()
+            .flat_map(|(entry_id, found)| {
+                found.ids.iter().map(|(provider, id)| FoundTrack {
+                    entry_id: entry_id.clone(),
+                    provider: provider.clone(),
+                    provider_track_id: id.clone(),
+                    isrc: found.isrc.clone(),
+                })
+            })
+            .collect();
+        tracks.sort_by(|a, b| (&a.entry_id, &a.provider).cmp(&(&b.entry_id, &b.provider)));
+        tracks
+    }
+
+    /// Songs `client_id`'s service found. Each service's first ID for an
+    /// entry is kept (a later, different one is ignored), and an ISRC only
+    /// fills in for an entry that came without one. What is new goes to
+    /// the other clients that understand it.
+    fn report_found(&mut self, client_id: &str, tracks: Vec<FoundTrack>) -> Vec<Outbound> {
+        let valid = tracks.len() <= MAX_FOUND_TRACKS_PER_MESSAGE
+            && tracks.iter().all(|track| {
+                valid_id(&track.entry_id)
+                    && token(&track.provider, MAX_FOUND_PROVIDER_LEN)
+                    && token(&track.provider_track_id, MAX_FOUND_TRACK_ID_LEN)
+                    && track
+                        .isrc
+                        .as_deref()
+                        .is_none_or(|isrc| token(isrc, state::MAX_ISRC_LEN))
+            });
+        if !valid {
+            return vec![error_to(
+                client_id,
+                ErrorCode::InvalidMessage,
+                "invalid found tracks",
+            )];
+        }
+        let mut new = Vec::new();
+        for track in tracks {
+            let Some(entry) = self
+                .state
+                .queue
+                .iter()
+                .find(|entry| entry.entry_id == track.entry_id)
+            else {
+                continue; // left the queue meanwhile
+            };
+            // The queuer's own ID came with the song already.
+            if entry.track.provider.as_deref() == Some(track.provider.as_str()) {
+                continue;
+            }
+            let has_isrc = entry.track.isrc.is_some();
+            let found = self.found.entry(track.entry_id.clone()).or_default();
+            let mut added = false;
+            if !found.ids.contains_key(&track.provider) {
+                found
+                    .ids
+                    .insert(track.provider.clone(), track.provider_track_id.clone());
+                added = true;
+            }
+            if !has_isrc && found.isrc.is_none() && track.isrc.is_some() {
+                found.isrc = track.isrc.clone();
+                added = true;
+            }
+            if added {
+                new.push(FoundTrack {
+                    isrc: found.isrc.clone(),
+                    provider_track_id: found.ids[&track.provider].clone(),
+                    ..track
+                });
+            }
+        }
+        if new.is_empty() {
+            return Vec::new();
+        }
+        let mut recipients: Vec<&String> = self
+            .found_clients
+            .iter()
+            .filter(|id| id.as_str() != client_id)
+            .collect();
+        recipients.sort();
+        recipients
+            .into_iter()
+            .map(|id| {
+                Outbound::to_client(
+                    id,
+                    ServerMessage::FoundTracks {
+                        tracks: new.clone(),
+                    },
+                )
+            })
+            .collect()
     }
 
     pub fn snapshot(&self, now_ms: u64) -> SessionSnapshot {

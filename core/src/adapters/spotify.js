@@ -185,43 +185,8 @@
         return error;
     }
 
-    function normalize(value) {
-        return String(value ?? "")
-            .normalize("NFKC")
-            .toLowerCase()
-            .replace(/[’‘]/g, "'")
-            .replace(/["']/g, "")
-            .replace(/[^\p{L}\p{N}]+/gu, " ")
-            .trim()
-            .replace(/\s+/g, " ");
-    }
-
-    // Services disagree on where featured artists go: "Shoong!" on one is
-    // "Shoong! (feat. LISA of BLACKPINK)" on another (verified live).
-    function normalizeTitle(value) {
-        return normalize(stripSameRecordingTags(value));
-    }
-
-    /**
-     * A title without the tags that still name the same recording: a
-     * featured artist (services disagree on where it goes) and a remaster.
-     * Verified live: Spotify's "Hotel California - 2013 Remaster", "Enter
-     * Sandman - Remastered 2021" and "Whole Lotta Love - 1990 Remaster" are
-     * "Hotel California", "Enter Sandman" and "Whole Lotta Love (Remaster)"
-     * on YouTube Music. Remixes, live and other versions are different
-     * recordings and keep their tags.
-     */
-    function stripSameRecordingTags(value) {
-        return String(value ?? "")
-            .replace(/\s*[([][^)\]]*\b(feat|ft|featuring|with)\b[^)\]]*[)\]]/gi, " ")
-            .replace(/\s*[([][^)\]]*\bremaster(ed)?\b[^)\]]*[)\]]/gi, " ")
-            .replace(/\s[-–]\s*[^-–]*\bremaster(ed)?\b[^-–]*$/i, " ")
-            // "Rock You Like a Hurricane - 2015 - Remaster": the year is left.
-            .replace(/\s[-–]\s*\d{4}\s*$/, " ")
-            .replace(/\s[-–]\s*(feat|ft|featuring)\b.*$/i, " ")
-            .replace(/\s+/g, " ")
-            .trim();
-    }
+    // Finding songs is shared by all adapters (matcher.js).
+    const matcher = globalThis.__ATTUNE_MATCHER__;
 
     function isTrackUri(uri) {
         return typeof uri === "string" && uri.startsWith("spotify:track:");
@@ -358,87 +323,29 @@
         }).filter(Boolean);
     }
 
-    /**
-     * Whether two normalized artist names are the same act. A name that
-     * starts with the other one, as whole words, counts: YouTube Music
-     * credits "Purple Rain" to "Prince & The Revolution", Spotify to
-     * "Prince" (verified live). Very short names must match exactly.
-     */
-    function sameArtist(a, b) {
-        if (a === b) return true;
-        const [short, long] = a.length < b.length ? [a, b] : [b, a];
-        return short.length >= 4 && long.startsWith(`${short} `);
-    }
-
-    function artistOverlap(trackA, trackB) {
-        const artistsA = (trackA.artists ?? []).map(normalize).filter(Boolean);
-        return (trackB.artists ?? []).map(normalize).filter(Boolean)
-            .some(name => artistsA.some(other => sameArtist(name, other)));
-    }
-
-    function scoreCandidate(source, candidate) {
-        if (normalizeTitle(source.title) !== normalizeTitle(candidate.track.title)) return -1;
-        if (!artistOverlap(source, candidate.track)) return -1;
-
-        let score = 10; // Same title and at least one matching artist.
-        if (normalize(source.title) === normalize(candidate.track.title)) score += 1;
-        if (source.album && candidate.track.album &&
-            normalize(source.album) === normalize(candidate.track.album)) {
-            score += 3;
-        }
-        if (Number.isFinite(source.durationMs) && Number.isFinite(candidate.track.durationMs)) {
-            const difference = Math.abs(source.durationMs - candidate.track.durationMs);
-            if (difference <= 2_000) score += 2;
-            else if (difference > 8_000) score -= 2;
-        }
-        return score;
-    }
-
     async function resolveTrack(track) {
-        const existingProviderId = track.providerTrackId ?? track.provider_track_id;
-        if (track.provider === "Spotify" && existingProviderId) {
-            return toTrackUri(String(existingProviderId));
-        }
+        const known = matcher.knownId(track, "Spotify");
+        if (known) return toTrackUri(known);
 
-        const cacheKey = [
-            normalize(track.title),
-            (track.artists ?? []).map(normalize).join("|"),
-            normalize(track.isrc),
-            normalize(track.album),
-            track.durationMs ?? "",
-        ].join("::");
-        if (resolvedUriCache.has(cacheKey)) return resolvedUriCache.get(cacheKey);
-
-        let uri = null;
+        const key = matcher.cacheKey(track);
+        if (resolvedUriCache.has(key)) return resolvedUriCache.get(key);
 
         // An ISRC names one recording, and Spotify's search understands
-        // `isrc:` (verified live). Still require the title or an artist to
-        // agree, in case the code is wrong.
+        // `isrc:` (verified live). The matcher still wants the title or an
+        // artist to agree, in case the code is wrong.
+        let found = null;
         if (track.isrc) {
             const candidates = await searchTracks(`isrc:${String(track.isrc).trim()}`, 5);
-            uri = candidates.find(candidate =>
-                normalizeTitle(candidate.track.title) === normalizeTitle(track.title) ||
-                artistOverlap(track, candidate.track))?.uri ?? null;
+            found = matcher.pickByIsrc(track, candidates);
         }
-
-        if (!uri) {
-            const query = `${track.title} ${(track.artists ?? []).slice(0, 2).join(" ")}`.trim();
-            const candidates = await searchTracks(query, 10);
-            // Sorting is stable: equal scores keep Spotify's ranking. Equal
-            // candidates are the same recording on different releases
-            // (single, album, deluxe), so the first is as good as any.
-            const ranked = candidates
-                .map(candidate => ({ ...candidate, score: scoreCandidate(track, candidate) }))
-                .filter(candidate => candidate.score >= 0)
-                .sort((a, b) => b.score - a.score);
-            uri = ranked[0]?.uri ?? null;
-        }
-
-        if (!uri) {
+        // Equal candidates are the same recording on different releases
+        // (single, album, deluxe), so Spotify's first is as good as any.
+        found ??= await matcher.searchText(track, query => searchTracks(query, 10), { idOf: candidate => candidate.uri });
+        if (!found) {
             throw new TrackLookupError(`No matching Spotify recording found for "${track.title}"`);
         }
-        resolvedUriCache.set(cacheKey, uri);
-        return uri;
+        resolvedUriCache.set(key, found.uri);
+        return found.uri;
     }
 
     // Resolve every entry independently, a few at a time. Entries already

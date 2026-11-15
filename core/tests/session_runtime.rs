@@ -91,6 +91,11 @@ struct FakeProvider {
     stalled: AtomicBool,
     /// A seek doesn't end the stall either (a connection too slow to keep up).
     hold_stall: AtomicBool,
+    /// Acting as this service: songs it loads carry its own ID for them
+    /// (`<service>:<entry>`, as if looked up), like the adapters'.
+    service: Mutex<Option<String>>,
+    /// Songs that arrived with an ID for this service already: (entry, ID).
+    given_ids: Mutex<Vec<(String, String)>>,
 }
 
 impl FakeProvider {
@@ -108,7 +113,18 @@ impl FakeProvider {
             cover_host: Mutex::default(),
             stalled: AtomicBool::new(false),
             hold_stall: AtomicBool::new(false),
+            service: Mutex::default(),
+            given_ids: Mutex::default(),
         })
+    }
+
+    /// Act as `service`, its current songs queued from it.
+    fn as_service(&self, service: &str) {
+        *self.service.lock().unwrap() = Some(service.to_owned());
+        for entry in &mut self.state.lock().unwrap().queue {
+            entry.track.provider = Some(service.to_owned());
+            entry.track.provider_track_id = Some(format!("{service}:{}", entry.entry_id));
+        }
     }
 
     /// The player buffers: its position stops moving on, though it still
@@ -229,6 +245,23 @@ impl FakeProvider {
         if let Some(host) = self.cover_host.lock().unwrap().as_deref() {
             for entry in &mut kept {
                 entry.track.cover_url = Some(format!("https://{host}/{}", entry.entry_id));
+            }
+        }
+        if let Some(service) = self.service.lock().unwrap().clone() {
+            for entry in &mut kept {
+                match (&entry.track.provider, &entry.track.provider_track_id) {
+                    (Some(provider), Some(id)) if *provider == service => {
+                        self.given_ids
+                            .lock()
+                            .unwrap()
+                            .push((entry.entry_id.clone(), id.clone()));
+                    }
+                    _ => {
+                        entry.track.provider = Some(service.clone());
+                        entry.track.provider_track_id =
+                            Some(format!("{service}:{}", entry.entry_id));
+                    }
+                }
             }
         }
         *self.state.lock().unwrap() = SessionMusicState {
@@ -1305,4 +1338,67 @@ async fn a_paused_session_is_never_behind() {
     tokio::time::sleep(Duration::from_secs(5)).await;
     assert_eq!(s.b.status().behind_ms, None);
     assert_eq!(s.b_provider.seeks(), 0);
+}
+
+#[tokio::test]
+async fn songs_one_listener_found_reach_the_next_on_the_same_service() {
+    let server = TestServer::start().await;
+    let a_provider = FakeProvider::new(&["s1", "s2", "s3"]);
+    a_provider.as_service("Tidal");
+    let a = SessionRuntime::create(a_provider.clone(), config(&server, "a"))
+        .await
+        .expect("create");
+    let session_id = a.credentials().code.clone();
+
+    // B, on Spotify, finds the songs itself and tells the others.
+    let b_provider = FakeProvider::new(&["x1"]);
+    b_provider.as_service("Spotify");
+    let _b = SessionRuntime::join(
+        b_provider.clone(),
+        config(&server, "b"),
+        a.credentials().clone(),
+    )
+    .await
+    .expect("join b");
+    assert!(
+        b_provider.given_ids.lock().unwrap().is_empty(),
+        "nobody had found them yet"
+    );
+    eventually("B reported what it found", || {
+        server
+            .received("b")
+            .iter()
+            .any(|m| matches!(m, attune_core::protocol::ClientMessage::ReportFound { tracks } if tracks.len() == 3))
+    })
+    .await;
+
+    // C, on Spotify too, gets B's IDs with the songs: no lookups.
+    let c_provider = FakeProvider::new(&["y1"]);
+    c_provider.as_service("Spotify");
+    let _c = SessionRuntime::join(
+        c_provider.clone(),
+        config(&server, "c"),
+        a.credentials().clone(),
+    )
+    .await
+    .expect("join c");
+    let mut given = c_provider.given_ids.lock().unwrap().clone();
+    given.sort();
+    assert_eq!(
+        given,
+        [
+            ("s1", "Spotify:s1"),
+            ("s2", "Spotify:s2"),
+            ("s3", "Spotify:s3")
+        ]
+        .map(|(e, id)| (e.to_owned(), id.to_owned()))
+    );
+    // The session's songs stay as A queued them.
+    let state = server.session_state(&session_id);
+    assert!(
+        state
+            .queue
+            .iter()
+            .all(|e| e.track.provider.as_deref() == Some("Tidal"))
+    );
 }

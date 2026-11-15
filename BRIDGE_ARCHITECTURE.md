@@ -67,6 +67,20 @@ The operation set is absolute rather than toggle-based:
 
 Since protocol 2, `queue.replace` may carry `playback: { positionMs, isPlaying }` for its new current song (a provider may resume a list part-way); without it the new song starts at 0, playing. Adapters start the song there.
 
+### Finding songs
+
+Every adapter finds songs with one shared matcher, `core/src/adapters/matcher.js`, which `providers.rs` injects ahead of each adapter (it defines `globalThis.__ATTUNE_MATCHER__`; the adapter stays last, so the script still evaluates to the bridge). An adapter only searches its own catalog and loads what the matcher picked:
+
+1. **An ID for this service that came with the song** (`provider` + `providerTrackId` on the track): the queuer's own, or one another listener on this service found (the runtime puts it on the copy it hands the adapter). Played without a search.
+2. **ISRC**, on services that look one up (TIDAL, Spotify's `isrc:` search, Apple Music): the matcher picks the release (same album, else closest length).
+3. **Text search**: up to three queries, best first. A confident match stops there; otherwise all candidates are ranked together.
+
+Candidates are scored, not compared as text. Titles are parsed into the song's name, featured artists, version ("Live", "Remix" …: another recording, never matched to the original), subtitle and video tags. Roughly: name 40 (25 if only close), an artist 30 (+5 the same main artist), length up to 15 (a long difference costs 15, never more, as videos run long), album 6, ISRC 100. 60 is needed. `core/tests/matcher.test.mjs` checks the rules and replays recorded searches (`core/tests/corpus/`).
+
+### Songs listeners found
+
+Each client reports the ID its service has for songs queued from another service (`tracks.found`, plus an ISRC the song lacked). The server keeps the first ID per service and entry, sends what is new to the others, and everything found so far with `session.joined`. A client joining later, a reload, or the rest of a long list then plays exactly what another listener on the same service found. This is negotiated (`features: ["foundTracks"]` in the hello and in the handshake reply), so older servers and clients never see it, and it isn't a session change (no sequence).
+
 Adapters also expose `prefetch(entries)`: look entries up (and cache them) without changing the queue, resolving to `{ unavailableEntryIds }`. It is not a remote change, so it runs beside them. The session runtime uses it for long new lists: it loads the current song and the next 8 the provider doesn't have, prefetches the rest, and adds them with a replace that keeps the current song once the lookups are done.
 
 Serde serializes the operation variant as `type` and all variant fields in `camelCase`, matching both JavaScript adapters. `SessionSnapshot` includes the protocol version and session revision metadata; adapters receive only its `state` after Rust validates the protocol version (2).
@@ -92,7 +106,7 @@ The current implementation uses these private TIDAL application interfaces (all 
 - `search/SEARCH_FOR`, with results at `state.content.trackLists["search/tracks/" + encodeURIComponent(query)]` and metadata in `state.content.mediaItems`, for songs without an ISRC hit.
 - `playQueue.currentIndex` to discard TIDAL's played-history prefix when normalizing its queue, and `playQueue.type` to refuse writes while TIDAL plays on another device.
 
-These are undocumented application internals, not a supported TIDAL API. Runtime feature checks and explicit errors reduce the chance of silent corruption, but cannot guarantee compatibility with future TIDAL releases. An exact ISRC identifies the recording; otherwise matching requires normalized title (featured artists ignored) and artist agreement, conflicting ISRCs are rejected, and album/duration are tie-breakers. All recordings are resolved before the queue is replaced.
+These are undocumented application internals, not a supported TIDAL API. Runtime feature checks and explicit errors reduce the chance of silent corruption, but cannot guarantee compatibility with future TIDAL releases. Which TIDAL recording a song is, is decided by the shared matcher (see "Finding songs" below); an exact ISRC is tried first. All recordings are resolved before the queue is replaced.
 
 Waits in the adapter react to store changes instead of polling, because TIDAL's page runs timers only once a second while its window is hidden and silent.
 

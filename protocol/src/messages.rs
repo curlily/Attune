@@ -17,6 +17,18 @@ pub const MAX_PROVIDER_LABEL_CHARS: usize = 32;
 /// Longest accepted client, operation or request ID, in bytes.
 pub const MAX_ID_LEN: usize = 64;
 
+/// Optional abilities a client and the server tell each other about in the
+/// handshake (`features`), so neither sends the other a message it can't
+/// read. Older servers and clients leave the field out.
+pub const FEATURE_FOUND_TRACKS: &str = "foundTracks";
+/// Most features a hello may list.
+pub const MAX_FEATURES: usize = 16;
+/// Most songs one `tracks.found` may carry.
+pub const MAX_FOUND_TRACKS_PER_MESSAGE: usize = 200;
+/// Longest accepted service name and track ID in `tracks.found`.
+pub const MAX_FOUND_PROVIDER_LEN: usize = 32;
+pub const MAX_FOUND_TRACK_ID_LEN: usize = 256;
+
 /// Letters used in join codes: no `I` or `O`, which read like `1` and `0`.
 pub const JOIN_CODE_ALPHABET: &[u8; 24] = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
 /// Length of a join code (24^4, about 330,000 codes).
@@ -61,6 +73,25 @@ pub enum ClientMessage {
     /// else it's refused.
     #[serde(rename = "session.setControl")]
     SetControl { others_can_control: bool },
+    /// Songs of the queue this client's service found, with their ID
+    /// there (feature `foundTracks`). Only additions; resending is safe.
+    #[serde(rename = "tracks.found")]
+    ReportFound { tracks: Vec<FoundTrack> },
+}
+
+/// A queue entry's song on one service: what one listener's app found, so
+/// the next listener on that service plays the same song without a search.
+/// `isrc` is shared too when the finder's service has one and the song
+/// came without it, which helps services that can look ISRCs up.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoundTrack {
+    pub entry_id: String,
+    /// `Tidal`, `Spotify`, `YoutubeMusic` or `AppleMusic`.
+    pub provider: String,
+    pub provider_track_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isrc: Option<String>,
 }
 
 /// Who is connecting. Shared by create and join.
@@ -74,6 +105,10 @@ pub struct ClientHello {
     /// Display-only label such as `"tidal"` or `"spotify"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// What this client understands beyond the protocol version (see
+    /// `FEATURE_FOUND_TRACKS`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,12 +209,23 @@ pub enum ServerMessage {
         /// This participant's secret for reconnecting. Never log it.
         rejoin_secret: String,
         snapshot: SessionSnapshot,
+        /// What the server understands beyond the protocol version, of
+        /// what the client listed. Absent from older servers.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        features: Vec<String>,
     },
     #[serde(rename = "session.joined")]
     Joined {
         snapshot: SessionSnapshot,
         /// Same meaning as in `session.created`; unchanged on a rejoin.
         rejoin_secret: String,
+        /// Same meaning as in `session.created`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        features: Vec<String>,
+        /// Everything listeners found so far (feature `foundTracks`), with
+        /// the snapshot so a joining client can use it while loading it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        found: Vec<FoundTrack>,
     },
     /// Sent only to the operation's sender.
     ///
@@ -240,6 +286,11 @@ pub enum ServerMessage {
         client_time_ms: u64,
         server_time_ms: u64,
     },
+    /// Songs listeners' apps found since (feature `foundTracks`, sent only
+    /// to clients that listed it; what was found before joining comes with
+    /// `session.joined`). The first ID found for a service is kept.
+    #[serde(rename = "tracks.found")]
+    FoundTracks { tracks: Vec<FoundTrack> },
 }
 
 /// Why an operation was not accepted. The session continues either way.

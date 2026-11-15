@@ -45,7 +45,7 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
 | Changes waiting behind lookups | A provider applies session changes one at a time, so while it looked up a long new list (6–15 s for 80 songs) a pause or seek from someone else reached it only afterwards | Verified live, fixed | The runtime loads the current song and the next 8 songs the provider doesn't have, and has the provider look the rest up in the background (`prefetch`, outside the adapter's queue of remote changes). Meanwhile those entries count as missing for index translation, like unavailable ones, but aren't reported. When the lookup is done they are added with a replace keeping the current song; a skip to one of them loads everything around it. Live: a pause on Spotify reached YouTube Music 0.9 s later while 72 songs were still being looked up; they were added about 7 s later without a restart (`defer_long_tail`, `on_prefetched`) |
 | Remaster tags and band credits | Spotify names many classics "Title - 2016 Remaster", "Title - Remastered 2021" or "Title - 2015 - Remaster"; YouTube Music calls them "Title" or "Title (Remaster)". And YouTube Music credits "Purple Rain" to "Prince & The Revolution", Spotify to "Prince". YouTube Music didn't match 16 of 81 songs in a rock playlist | Verified live, fixed | All three adapters compare (and search) titles without remaster tags, like "(feat. …)" (`stripSameRecordingTags`); live, single and other versions keep their tags. An artist name that starts with the other one as whole words counts as the same act (4 characters or more). Live: 81 of 81. Looser case: "(Single Version; 2018 Remaster)" loses the whole bracket |
 | Following a replace, then its seek | A follower applies session changes one at a time. When a provider shares a new list resumed part-way, the seek that follows the replace waits until the follower has looked up the whole list: YouTube Music played the 50-song list from 0 for 8 s, then jumped to Spotify's 1:35 | Verified live, fixed | Protocol 2: `queue.replace` carries the new current song's `playback` (position, play state), so no seek follows it |
-| Same service, same song | Two YouTube Music users in one session found only about every other song of each other's queue (see 4, Search), although both had the very songs. Every client looked each song up again from its title and artists | Fixed 2026-11-15; lookups verified live, the ID path in tests | Each shared track carries the queuer's own ID (`provider` + `providerTrackId` in the track descriptor: TIDAL track ID, Spotify track URI, YouTube video ID, Apple Music catalog ID; never an Apple library `i.…` ID or a Spotify local file). A client on the same service plays exactly that, without a search (each adapter's `resolveTrack`). Everyone else still searches. Optional fields: an older server drops them, older clients ignore them |
+| Same service, same song | Two YouTube Music users in one session found only about every other song of each other's queue (see 4, Search), although both had the very songs. Every client looked each song up again from its title and artists | Fixed 2026-11-15; lookups verified live, the ID path in tests | Each shared track carries the queuer's own ID (`provider` + `providerTrackId` in the track descriptor: TIDAL track ID, Spotify track URI, YouTube video ID, Apple Music catalog ID; never an Apple library `i.…` ID or a Spotify local file). A client on the same service plays exactly that, without a search (`matcher.knownId`). What each client then finds for other services travels too (`tracks.found`, see 7). Optional fields: an older server drops them, older clients ignore them |
 | Comparing after a remote change | The app's state keeps changing for about a second after an action, which can push a debounce past a fixed suppression window; the delayed comparison then sees our own change as the user's. **With throttled timers it always happens:** the debounce takes a second, so it always fires after the 300 ms window | Verified live (TIDAL, Spotify, YouTube Music) | Every adapter resets the comparison base to the state the remote change produced: TIDAL `rebaseLocalChanges`, Spotify and YouTube Music `rebase()` at the end of `asRemoteChange`. Removing it makes both new tests publish an echo. **The rebase is only as good as the wait before it:** Spotify's queue write used to count as done while the old items still showed, and an echo followed (verified live, fixed) |
 
 ## 2. TIDAL
@@ -745,6 +745,51 @@ positions are preview positions. Everything below was verified with previews.
 5. **Storefronts**: lookups use the page's storefront; a song missing there is unavailable.
 6. **Local-change suppression is partly time-based** (300 ms after a remote change).
 7. **Not done yet:** a session with TIDAL or Spotify, and connecting from the running app.
+
+## 7. Finding songs: one matcher for every service (2026-11-15)
+
+Until now every adapter had its own copy of the lookup: one to three queries, the first query
+with any acceptable result won, and a candidate had to have **exactly** the same normalized title
+and an artist in common, then album and length broke ties. The copies drifted apart (the YouTube
+Music fixes of the same day helped only YouTube Music), and every new way of naming a song
+("Official Video", a subtitle, "Pt. II") was another regular expression in four places.
+
+Now `core/src/adapters/matcher.js` finds songs for all four (see BRIDGE_ARCHITECTURE.md, "Finding
+songs"). What changed in behaviour:
+- **Titles are parsed, not stripped**: name, featured artists, version, subtitle, video tags.
+  "(Live)", "(Remix)", "(Acoustic)", "(Taylor's Version)", "(Part 2)" keep songs apart; remasters,
+  "Radio Edit", subtitles ("(From “Top Gun: Maverick”)") and video tags don't. "Artist - Song", as
+  videos are often named, drops the artist.
+- **Scored, with few hard rules.** Only another version or no artist in common rules a candidate
+  out. Names in two scripts ("米津玄師" and "Kenshi Yonezu") can't be compared, so the same name at
+  the same length to 2 s counts instead.
+- **"Prince" is "Prince & The Revolution", "Shawn Mendes Covers" is not Shawn Mendes** (seen live
+  among YouTube Music's results): a longer name must continue with "and …" or "with …".
+- **A different ISRC only counts against** (re-releases can get a code of their own); it used to
+  rule the candidate out.
+- **All queries are ranked together** unless one gives a confident match (85).
+- **Length**: a music video runs 30–60 s longer than its song (263 s for the 202 s "Blinding
+  Lights"), so a long difference costs 15 points but never rules out the same name by the same
+  artist. Measured live: with a stronger penalty, 11 of a radio's 50 songs went missing again.
+- **Recorded searches** (`core/tests/corpus/youtube-music-search.json`): 77 songs, YouTube
+  Music's real answers to every query (signed out, 2026-11-15), each result checked by hand: 27
+  as TIDAL and Spotify describe them (some from a user's log) and the 50 music videos of a radio.
+  76 are found, all correctly; the miss is an upload credited to "Kara's Flowers" instead of
+  Maroon 5. Live through the page afterwards: 74 of 75. A query the matcher asks that isn't
+  recorded fails the test, so record again after changing the queries. Other services' searches
+  aren't recorded yet (their test accounts need signing in).
+
+**Songs listeners found** (`tracks.found`): each client reports the ID its service found for songs
+queued from another service, and an ISRC the song lacked; the server keeps the first per service
+and sends the rest of the session what is new, and everything with `session.joined`. A later
+joiner on the same service then loads those songs without searching (tested with a fake TIDAL
+host, a Spotify listener and a second Spotify listener joining later). It matters most for late
+joiners, reconnects and the rest of a long list; everyone who is already in a session looks the
+first songs up at the same moment. Negotiated in the handshake (`features: ["foundTracks"]`), so
+an older server or client never sees it. Needs the server deployed.
+
+No outside lookup service (song.link and the like) is used: listening data stays between the
+music services and the session.
 
 ## Four clients in one session (live, 2026-11-14)
 

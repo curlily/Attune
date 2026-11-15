@@ -5,6 +5,7 @@ import vm from "node:vm";
 import test from "node:test";
 
 const adapterPath = new URL("../src/adapters/tidal.js", import.meta.url);
+const matcherPath = new URL("../src/adapters/matcher.js", import.meta.url);
 const STORE_EVENT_SETTLE_MS = 250; // > the adapter's 180ms debounce
 // Loading a queue: the first track loads this long, then starts playing.
 const TRACK_LOAD_MS = 60;
@@ -388,7 +389,8 @@ async function loadAdapter({ store = createStore(), withOpenApi = true, localSto
 
     // The renderer script dynamically imports TIDAL chunks. Replace only that
     // import site so this test can supply a deterministic mock store accessor.
-    const original = await readFile(adapterPath, "utf8");
+    // The shared matcher goes ahead, as Attune injects it.
+    const original = `${await readFile(matcherPath, "utf8")}\n;\n${await readFile(adapterPath, "utf8")}`;
     const source = original.replace("await import(url)", "await loadModule(url)");
     assert.notEqual(source, original, "test import hook was not applied");
 

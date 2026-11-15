@@ -106,6 +106,7 @@ fn create_returns_invite_and_snapshot_at_sequence_zero() {
                     session_id,
                     rejoin_secret,
                     snapshot,
+                    ..
                 },
         } => {
             assert_eq!(client, "a");
@@ -1344,4 +1345,218 @@ fn repeat_is_session_state_and_restarting_at_the_end_is_allowed_when_locked() {
         T0,
     );
     assert_eq!(rejection_code(&out, "b"), Some(RejectCode::NotAllowed));
+}
+
+// ---------------------------------------------------------------------------
+// Songs listeners found (feature `foundTracks`)
+// ---------------------------------------------------------------------------
+
+/// The first message to `client` (create and join also send everyone the
+/// participant list).
+fn to_client<'a>(out: &'a [Outbound], client: &str) -> &'a ServerMessage {
+    &out.iter()
+        .find(|o| o.to == Recipient::Client(client.to_owned()))
+        .unwrap_or_else(|| panic!("nothing to {client}: {out:?}"))
+        .message
+}
+
+fn with_found_feature(client: &str) -> attune_protocol::ClientHello {
+    let mut hello = hello(client);
+    hello.features = vec![attune_protocol::FEATURE_FOUND_TRACKS.to_owned()];
+    hello
+}
+
+/// "a" (who understands found tracks) created it; "b" understands it too,
+/// "old" is an older client that doesn't.
+fn found_session() -> SessionCoordinator {
+    let (mut session, out) = SessionCoordinator::create(
+        SESSION.to_owned(),
+        SECRET_A.to_owned(),
+        CreateSession {
+            hello: with_found_feature("a"),
+            initial_state: state(&["s1", "s2", "s3"], true, 0, 0),
+            others_can_control: None,
+        },
+        8,
+        T0,
+    )
+    .expect("create session");
+    match to_client(&out, "a") {
+        ServerMessage::Created { features, .. } => assert_eq!(features, &["foundTracks"]),
+        other => panic!("unexpected {other:?}"),
+    }
+    let mut request = join_request("b", None);
+    request.hello = with_found_feature("b");
+    session.join(request, secret("b"), T0).expect("join b");
+    session
+        .join(join_request("old", None), secret("old"), T0)
+        .expect("join old");
+    session
+}
+
+fn found(entry: &str, provider: &str, id: &str, isrc: Option<&str>) -> attune_protocol::FoundTrack {
+    attune_protocol::FoundTrack {
+        entry_id: entry.to_owned(),
+        provider: provider.to_owned(),
+        provider_track_id: id.to_owned(),
+        isrc: isrc.map(str::to_owned),
+    }
+}
+
+#[test]
+fn found_tracks_go_only_to_clients_that_understand_them() {
+    let mut session = found_session();
+    let sequence = session.sequence();
+    let out = session.handle(
+        "a",
+        ClientMessage::ReportFound {
+            tracks: vec![found(
+                "s1",
+                "Spotify",
+                "spotify:track:1",
+                Some("USQX91300108"),
+            )],
+        },
+        T0,
+    );
+    // To "b" only: not back to "a", never to the older client.
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert_eq!(out[0].to, Recipient::Client("b".to_owned()));
+    match &out[0].message {
+        ServerMessage::FoundTracks { tracks } => {
+            assert_eq!(
+                tracks,
+                &[found(
+                    "s1",
+                    "Spotify",
+                    "spotify:track:1",
+                    Some("USQX91300108")
+                )]
+            );
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    assert_eq!(session.sequence(), sequence, "not a session change");
+}
+
+#[test]
+fn the_first_id_found_for_a_service_is_kept() {
+    let mut session = found_session();
+    session.handle(
+        "a",
+        ClientMessage::ReportFound {
+            tracks: vec![found("s2", "Tidal", "111", None)],
+        },
+        T0,
+    );
+    let out = session.handle(
+        "b",
+        ClientMessage::ReportFound {
+            tracks: vec![
+                found("s2", "Tidal", "222", None),      // a second opinion: ignored
+                found("ghost", "Tidal", "333", None),   // not in the queue
+                found("s3", "AppleMusic", "444", None), // new
+            ],
+        },
+        T0,
+    );
+    let ServerMessage::FoundTracks { tracks } = to_client(&out, "a") else {
+        panic!("unexpected {out:?}");
+    };
+    assert_eq!(tracks, &[found("s3", "AppleMusic", "444", None)]);
+}
+
+#[test]
+fn a_joining_client_gets_everything_found_so_far() {
+    let mut session = found_session();
+    session.handle(
+        "a",
+        ClientMessage::ReportFound {
+            tracks: vec![
+                found("s1", "Spotify", "spotify:track:1", None),
+                found("s2", "Tidal", "7", None),
+            ],
+        },
+        T0,
+    );
+    let mut request = join_request("c", None);
+    request.hello = with_found_feature("c");
+    let out = session.join(request, secret("c"), T0).expect("join c");
+    // With the snapshot, so loading it can use them.
+    match to_client(&out, "c") {
+        ServerMessage::Joined { found: tracks, .. } => assert_eq!(
+            tracks,
+            &[
+                found("s1", "Spotify", "spotify:track:1", None),
+                found("s2", "Tidal", "7", None)
+            ]
+        ),
+        other => panic!("unexpected {other:?}"),
+    }
+    // An older client joining gets none of it.
+    let out = session
+        .join(join_request("old2", None), secret("old2"), T0)
+        .expect("join old2");
+    match to_client(&out, "old2") {
+        ServerMessage::Joined {
+            features, found, ..
+        } => {
+            assert!(features.is_empty());
+            assert!(found.is_empty());
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn found_tracks_leave_with_their_entries() {
+    let mut session = found_session();
+    session.handle(
+        "a",
+        ClientMessage::ReportFound {
+            tracks: vec![found("s2", "Tidal", "7", None)],
+        },
+        T0,
+    );
+    let out = session.handle(
+        "a",
+        op(
+            "remove",
+            session.sequence(),
+            Op::QueueRemove {
+                entry_id: "s2".to_owned(),
+            },
+        ),
+        T0,
+    );
+    assert!(!out.is_empty());
+    let mut request = join_request("c", None);
+    request.hello = with_found_feature("c");
+    let out = session.join(request, secret("c"), T0).expect("join c");
+    match to_client(&out, "c") {
+        ServerMessage::Joined { found, .. } => assert!(found.is_empty(), "{found:?}"),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn invalid_found_tracks_are_refused() {
+    let mut session = found_session();
+    for bad in [
+        found("s1", "Spotify", "has space", None),
+        found("s1", "", "x", None),
+        found("s1", "Spotify", &"x".repeat(300), None),
+    ] {
+        let out = session.handle("a", ClientMessage::ReportFound { tracks: vec![bad] }, T0);
+        assert!(
+            matches!(
+                to_client(&out, "a"),
+                ServerMessage::Error {
+                    code: ErrorCode::InvalidMessage,
+                    ..
+                }
+            ),
+            "{out:?}"
+        );
+    }
 }

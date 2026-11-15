@@ -192,6 +192,7 @@ fn every_server_message_round_trips() {
                 session_id: "s1".to_owned(),
                 rejoin_secret: "secret".to_owned(),
                 snapshot: snapshot(),
+                features: vec!["foundTracks".to_owned()],
             },
             "session.created",
         ),
@@ -199,8 +200,21 @@ fn every_server_message_round_trips() {
             ServerMessage::Joined {
                 snapshot: snapshot(),
                 rejoin_secret: "secret".to_owned(),
+                features: Vec::new(),
+                found: Vec::new(),
             },
             "session.joined",
+        ),
+        (
+            ServerMessage::FoundTracks {
+                tracks: vec![attune_protocol::FoundTrack {
+                    entry_id: "e1".to_owned(),
+                    provider: "Spotify".to_owned(),
+                    provider_track_id: "spotify:track:1".to_owned(),
+                    isrc: Some("USQX91300108".to_owned()),
+                }],
+            },
+            "tracks.found",
         ),
         (
             ServerMessage::OperationAck {

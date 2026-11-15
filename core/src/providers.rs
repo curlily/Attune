@@ -23,6 +23,13 @@ fn env_dir(var: &'static str) -> Result<PathBuf> {
         .ok_or(Error::MissingEnv { var })
 }
 
+/// The shared song matcher goes ahead of every adapter, which uses it
+/// (`globalThis.__ATTUNE_MATCHER__`). The adapter stays last, so the
+/// script still evaluates to its bridge.
+fn with_matcher(adapter: &str) -> String {
+    format!("{}\n;\n{adapter}", include_str!("adapters/matcher.js"))
+}
+
 pub fn spotify() -> Result<ProviderConfig> {
     Ok(ProviderConfig {
         id: ProviderId::Spotify,
@@ -30,7 +37,7 @@ pub fn spotify() -> Result<ProviderConfig> {
         executable_path: env_dir("APPDATA")?.join("Spotify").join("Spotify.exe"),
         page_url: "xpui.app.spotify.com".to_owned(),
         debugging_port: SPOTIFY_CDP_PORT,
-        bridge_script: include_str!("adapters/spotify.js").to_owned(),
+        bridge_script: with_matcher(include_str!("adapters/spotify.js")),
         browser: None,
     })
 }
@@ -42,7 +49,7 @@ pub fn tidal() -> Result<ProviderConfig> {
         executable_path: env_dir("LOCALAPPDATA")?.join("TIDAL").join("TIDAL.exe"),
         page_url: "desktop.tidal.com".to_owned(),
         debugging_port: TIDAL_CDP_PORT,
-        bridge_script: include_str!("adapters/tidal.js").to_owned(),
+        bridge_script: with_matcher(include_str!("adapters/tidal.js")),
         browser: None,
     })
 }
@@ -62,7 +69,7 @@ pub fn youtube_music() -> Result<ProviderConfig> {
         executable_path: chromium_browser(),
         page_url: "music.youtube.com".to_owned(),
         debugging_port: YOUTUBE_MUSIC_CDP_PORT,
-        bridge_script: include_str!("adapters/youtube_music.js").to_owned(),
+        bridge_script: with_matcher(include_str!("adapters/youtube_music.js")),
         browser: Some(BrowserPage {
             start_url: "https://music.youtube.com".to_owned(),
             profile_dir,
@@ -86,7 +93,7 @@ pub fn apple_music() -> Result<ProviderConfig> {
         executable_path: chromium_browser(),
         page_url: "music.apple.com".to_owned(),
         debugging_port: APPLE_MUSIC_CDP_PORT,
-        bridge_script: include_str!("adapters/apple_music.js").to_owned(),
+        bridge_script: with_matcher(include_str!("adapters/apple_music.js")),
         browser: Some(BrowserPage {
             start_url: "https://music.apple.com".to_owned(),
             profile_dir,

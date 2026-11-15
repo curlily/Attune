@@ -143,87 +143,8 @@
         return error;
     }
 
-    function normalize(value) {
-        return String(value ?? "")
-            .normalize("NFKC")
-            .toLowerCase()
-            .replace(/[’‘]/g, "'")
-            .replace(/["']/g, "")
-            .replace(/[^\p{L}\p{N}]+/gu, " ")
-            .trim()
-            .replace(/\s+/g, " ");
-    }
-
-    // Services disagree on where featured artists go in a title.
-    function normalizeTitle(value) {
-        return normalize(stripSameRecordingTags(value));
-    }
-
-    /**
-     * A title without the tags that still name the same recording: a
-     * featured artist (services disagree on where it goes) and a remaster.
-     * Verified live: Spotify's "Hotel California - 2013 Remaster", "Enter
-     * Sandman - Remastered 2021" and "Whole Lotta Love - 1990 Remaster" are
-     * "Hotel California", "Enter Sandman" and "Whole Lotta Love (Remaster)"
-     * on YouTube Music. Remixes, live and other versions are different
-     * recordings and keep their tags.
-     */
-    function stripSameRecordingTags(value) {
-        return stripVideoTags(value)
-            .replace(/\s*[([][^)\]]*\b(feat|ft|featuring|with)\b[^)\]]*[)\]]/gi, " ")
-            .replace(/\s*[([][^)\]]*\bremaster(ed)?\b[^)\]]*[)\]]/gi, " ")
-            .replace(/\s[-–]\s*[^-–]*\bremaster(ed)?\b[^-–]*$/i, " ")
-            // "Rock You Like a Hurricane - 2015 - Remaster": the year is left.
-            .replace(/\s[-–]\s*\d{4}\s*$/, " ")
-            .replace(/\s[-–]\s*(feat|ft|featuring)\b.*$/i, " ")
-            // "Starboy ft. Daft Punk" (a music video's title).
-            .replace(/\s(?:feat\.?|ft\.|featuring)\s+\S.*$/i, " ")
-            .replace(/\s+/g, " ")
-            .trim();
-    }
-
-    // "(Official Video)", "[Official Music Video]", "(Lyric Video)", "(HD)" …
-    const VIDEO_TAG = new RegExp(
-        String.raw`\s*[([]\s*(?:official\s+)?(?:hd\s+|4k\s+)?` +
-        String.raw`(?:music\s+video|video\s+clip|lyric\s+video|lyrics?|visuali[sz]er|audio|video|mv|hd|4k)` +
-        String.raw`(?:\s+(?:hd|4k|version))?\s*[)\]]`,
-        "gi",
-    );
-
-    /**
-     * A music video's title without what only says it is a video. Verified
-     * live (2026-11-15): a radio started from a song, signed out, was 50
-     * music videos (`MUSIC_VIDEO_TYPE_OMV`), most named like "Blinding
-     * Lights (Official Video)" or "Take My Breath (Official Music Video)".
-     * The song search found the songs, but the titles never matched: 24
-     * of the 50 weren't found, even by another YouTube Music user.
-     */
-    function stripVideoTags(value) {
-        return String(value ?? "")
-            .replace(VIDEO_TAG, " ")
-            .replace(/\s*\|\s*official\b.*$/i, " ")
-            .replace(/\s+/g, " ")
-            .trim();
-    }
-
-    // Bracketed parts that make a different recording or take.
-    const VERSION_WORDS = /\b(remix|mix|live|acoustic|instrumental|karaoke|cover|version|sped|slowed|reverb|nightcore|8d|demo|piano|orchestral|rework|vip|bootleg|mashup|tribute|originally|extended|remake|re-?recorded|taylor'?s|unplugged|session)\b/i;
-    const BRACKETED = /\s*(?:\([^)]*\)|\[[^\]]*\])/g;
-
-    /**
-     * Whether two titles name the same song once subtitles are left out:
-     * YouTube Music's song is "Sunflower (Spider-Man: Into the
-     * Spider-Verse)", its video just "Sunflower" (verified live). Parts
-     * that name another version ("(Live)", "(Remix)") keep them apart.
-     */
-    function sameBaseTitle(a, b) {
-        const titleA = stripSameRecordingTags(a);
-        const titleB = stripSameRecordingTags(b);
-        const extras = title => (title.match(BRACKETED) ?? []).join(" ");
-        if (VERSION_WORDS.test(extras(titleA)) || VERSION_WORDS.test(extras(titleB))) return false;
-        const baseA = normalize(titleA.replace(BRACKETED, " "));
-        return baseA !== "" && baseA === normalize(titleB.replace(BRACKETED, " "));
-    }
+    // Finding songs is shared by all adapters (matcher.js).
+    const matcher = globalThis.__ATTUNE_MATCHER__;
 
     // Anything but a plain song (`MUSIC_VIDEO_TYPE_ATV`): a music video or upload.
     function isMusicVideo(renderer) {
@@ -314,7 +235,7 @@
         // A video's title is shared as the song's, so every service finds it.
         const title = runsText(renderer?.title);
         return {
-            title: isMusicVideo(renderer) ? stripVideoTags(title) || title : title,
+            title: isMusicVideo(renderer) ? matcher.videoTitleAsSong(title) : title,
             artists,
             // YouTube Music doesn't expose ISRCs.
             isrc: null,
@@ -494,98 +415,21 @@
         }).filter(Boolean);
     }
 
-    /**
-     * Whether two normalized artist names are the same act. A name that
-     * starts with the other one, as whole words, counts: YouTube Music
-     * credits "Purple Rain" to "Prince & The Revolution", Spotify to
-     * "Prince" (verified live). Very short names must match exactly.
-     */
-    function sameArtist(a, b) {
-        if (a === b) return true;
-        const [short, long] = a.length < b.length ? [a, b] : [b, a];
-        return short.length >= 4 && long.startsWith(`${short} `);
-    }
-
-    function artistOverlap(trackA, trackB) {
-        const artistsA = (trackA.artists ?? []).map(normalize).filter(Boolean);
-        return (trackB.artists ?? []).map(normalize).filter(Boolean)
-            .some(name => artistsA.some(other => sameArtist(name, other)));
-    }
-
-    function scoreCandidate(source, candidate) {
-        const sameTitle = normalizeTitle(source.title) === normalizeTitle(candidate.track.title);
-        if (!sameTitle && !sameBaseTitle(source.title, candidate.track.title)) return -1;
-        if (!artistOverlap(source, candidate.track)) return -1;
-
-        // Same title (or the same but for a subtitle) and a matching artist.
-        let score = sameTitle ? 10 : 8;
-        if (normalize(source.title) === normalize(candidate.track.title)) score += 1;
-        if (source.album && candidate.track.album &&
-            normalize(source.album) === normalize(candidate.track.album)) {
-            score += 3;
-        }
-        if (Number.isFinite(source.durationMs) && Number.isFinite(candidate.track.durationMs)) {
-            // Durations here are whole seconds.
-            const difference = Math.abs(source.durationMs - candidate.track.durationMs);
-            if (difference <= 2_500) score += 2;
-            else if (difference > 8_000) score -= 2;
-        }
-        return score;
-    }
-
-    /**
-     * Queries to try in turn. Featured artists named in the title and again
-     * as artists throw the search off: "Get Lucky (feat. Pharrell Williams
-     * and Nile Rodgers) Daft Punk Pharrell Williams" found only covers,
-     * "Get Lucky Daft Punk" the original. So the title without them and the
-     * main artist come first, the full title and two artists after.
-     */
-    function searchQueries(track) {
-        const artists = (track.artists ?? []).filter(Boolean);
-        const bareTitle = stripSameRecordingTags(track.title) || String(track.title ?? "");
-        const queries = [
-            `${withoutApostrophes(bareTitle)} ${artists.slice(0, 1).join(" ")}`,
-            `${bareTitle} ${artists.slice(0, 1).join(" ")}`,
-            `${track.title} ${artists.slice(0, 2).join(" ")}`,
-        ].map(query => query.trim());
-        return [...new Set(queries)];
-    }
-
-    /**
-     * Verified live (2026-11-15): an apostrophe throws the search off.
-     * "Don't Start Now Dua Lipa" found only covers and karaoke versions,
-     * "Dont Start Now Dua Lipa" the original first.
-     */
-    function withoutApostrophes(value) {
-        return String(value).replace(/['’‘`]/g, "");
-    }
-
     async function resolveTrack(track) {
-        const existingProviderId = track.providerTrackId ?? track.provider_track_id;
-        if (track.provider === "YoutubeMusic" && existingProviderId) return String(existingProviderId);
+        const known = matcher.knownId(track, "YoutubeMusic");
+        if (known) return known;
 
-        const cacheKey = [
-            normalize(track.title),
-            (track.artists ?? []).map(normalize).join("|"),
-            normalize(track.album),
-            track.durationMs ?? "",
-        ].join("::");
-        if (resolvedVideoIdCache.has(cacheKey)) return resolvedVideoIdCache.get(cacheKey);
-
-        let best = null;
-        for (const query of searchQueries(track)) {
-            const candidates = await searchSongs(query);
-            // Sorting is stable: equal scores keep YouTube Music's ranking.
-            best = candidates
-                .map(candidate => ({ ...candidate, score: scoreCandidate(track, candidate) }))
-                .filter(candidate => candidate.score >= 0)
-                .sort((a, b) => b.score - a.score)[0] ?? null;
-            if (best) break;
-        }
+        const key = matcher.cacheKey(track);
+        if (resolvedVideoIdCache.has(key)) return resolvedVideoIdCache.get(key);
+        // YouTube Music has no ISRCs: text search only.
+        const best = await matcher.searchText(track, searchSongs, {
+            idOf: candidate => candidate.videoId,
+            withoutApostrophes: true,
+        });
         if (!best) {
             throw new TrackLookupError(`No matching YouTube Music song found for "${track.title}"`);
         }
-        resolvedVideoIdCache.set(cacheKey, best.videoId);
+        resolvedVideoIdCache.set(key, best.videoId);
         return best.videoId;
     }
 
