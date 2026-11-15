@@ -768,14 +768,17 @@ songs"). What changed in behaviour:
 - **A different ISRC only counts against** (re-releases can get a code of their own); it used to
   rule the candidate out.
 - **All queries are ranked together** unless one gives a confident match (85).
-- **Length**: a music video runs 30–60 s longer than its song (263 s for the 202 s "Blinding
-  Lights"), so a long difference costs 15 points but never rules out the same name by the same
-  artist. Measured live: with a stronger penalty, 11 of a radio's 50 songs went missing again.
+- **Length is a hard limit: more than 4 s off is another cut**, even with the same name, artist
+  or ISRC. Sync is by position, so a music video (263 s for the 202 s "Blinding Lights", its
+  intro included) or a radio edit would leave its listeners that far apart all song long. The
+  same recording differs by up to about 2 s between services (YouTube Music rounds to whole
+  seconds). A first version let videos match their songs at a lower score; that was wrong.
 - **Recorded searches** (`core/tests/corpus/youtube-music-search.json`): 77 songs, YouTube
   Music's real answers to every query (signed out, 2026-11-15), each result checked by hand: 27
   as TIDAL and Spotify describe them (some from a user's log) and the 50 music videos of a radio.
-  76 are found, all correctly; the miss is an upload credited to "Kara's Flowers" instead of
-  Maroon 5. Live through the page afterwards: 74 of 75. A query the matcher asks that isn't
+  Of the radio's 50 music videos, 35 run 10–60 s longer than their songs and now match
+  nothing (`note` in the file); the rest, and all 27 songs from other services, are found
+  correctly. A query the matcher asks that isn't
   recorded fails the test, so record again after changing the queries. Other services' searches
   aren't recorded yet (their test accounts need signing in).
 
@@ -787,6 +790,33 @@ host, a Spotify listener and a second Spotify listener joining later). It matter
 joiners, reconnects and the rest of a long list; everyone who is already in a session looks the
 first songs up at the same moment. Negotiated in the handshake (`features: ["foundTracks"]`), so
 an older server or client never sees it. Needs the server deployed.
+
+**Artist names in other scripts** (verified live, 2026-11-15, all four signed in or signed out
+as noted):
+- **YouTube Music** names artists in the request's language: the same video is by "米津玄師"
+  with `hl: "ja"`, "Kenshi Yonezu" with `hl: "en"`, "BTS (방탄소년단)" with `hl: "ko"`. The app's
+  network manager always uses the page's language, so the adapter asks YouTube's API directly
+  with the page's client settings and only `hl` changed (`searchSongsIn`).
+- **Apple Music** names them by storefront: song 1537460612 is by "米津玄師" in `jp`, "Kenshi
+  Yonezu" in `us` and `de`; "Dynamite" by "방탄소년단" in `kr`. `l=ja` in the US storefront
+  changes nothing. Catalog IDs are the same everywhere, so one `songs?ids=` lookup in the right
+  storefront. Kanji alone needs both: the Japanese catalog calls 周杰倫 "Jay Chou", the
+  Taiwanese one "周杰倫".
+- **Spotify** (signed in) names artists in the app's language only ("Kenshi Yonezu", "BTS",
+  "Jay Chou" in English, also for a query in Japanese). The GraphQL loader ignored every
+  per-request language tried (headers, `accept-language`, `locale`). Calling Spotify's API with
+  the session token and another language would work, but takes the user's token out of the app
+  and breaks with the next client; not done.
+- **TIDAL** (signed in) has one name per artist ("Kenshi Yonezu"), whatever the country code
+  or locale, and no other names among the artist's attributes. It also romanizes some titles
+  ("Kanden", "Shinigami" for 感電, 死神), which no artist name can make up for. Its ISRCs do:
+  Spotify and Apple Music look them up.
+- Where nothing gives other names, the fallback stays: the same title at the same length to 2 s.
+
+**Open: music videos in a YouTube Music queue.** A radio is mostly music videos, and with the
+length limit most of them can't be played in step by anyone on another service: they show as
+missing for those listeners. Sharing the song version instead (the item's `counterpart`, or the
+song search) would keep them, but changes what the YouTube Music listener plays.
 
 No outside lookup service (song.link and the like) is used: listening data stays between the
 music services and the session.

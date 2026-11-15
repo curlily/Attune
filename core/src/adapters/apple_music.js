@@ -344,6 +344,35 @@
     // A catalog song as a candidate for the matcher.
     const asCandidate = song => ({ song, track: descriptorOf(song) });
 
+    // A storefront whose catalog names artists in each language.
+    const STOREFRONT_FOR = {
+        ja: "jp", ko: "kr", "zh-TW": "tw", ru: "ru", el: "gr", ar: "sa", he: "il", th: "th", hi: "in", en: "us",
+    };
+
+    /**
+     * The candidates' artists as another language's storefront names them.
+     * Verified live (2026-11-15): song 1537460612 is by "米津玄師" in the
+     * Japanese catalog and "Kenshi Yonezu" in the US and German ones, and
+     * "Dynamite" by "방탄소년단" in the Korean one; a catalog asked for a
+     * language it doesn't carry (`l=ja` in the US) answers in its own.
+     * Catalog IDs are the same in every storefront, so one lookup by ID.
+     */
+    async function alternateNames({ candidates, language }) {
+        const storefrontId = STOREFRONT_FOR[language];
+        const names = new Map();
+        if (!storefrontId || !candidates.length) return names;
+        const ids = candidates.map(candidate => String(candidate.song.id));
+        const response = await withTimeout(
+            music.api.music(`/v1/catalog/${storefrontId}/songs`, { ids: ids.join(",") }),
+            "Apple Music took too long to name artists in another language",
+        );
+        for (const song of response?.data?.data ?? []) {
+            const artistCount = song.relationships?.artists?.data?.length ?? 0;
+            names.set(String(song.id), splitArtists(song.attributes?.artistName, artistCount));
+        }
+        return names;
+    }
+
     async function resolveTrack(track) {
         const known = matcher.knownId(track, "AppleMusic");
         if (known) return known;
@@ -361,7 +390,7 @@
         found ??= await matcher.searchText(
             track,
             async term => (await searchSongs(term)).map(asCandidate),
-            { idOf: candidate => String(candidate.song.id) },
+            { idOf: candidate => String(candidate.song.id), alternateNames },
         );
         if (!found) throw new TrackLookupError(`No matching Apple Music song found for "${track.title}"`);
         const songId = String(found.song.id);

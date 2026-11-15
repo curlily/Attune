@@ -97,10 +97,28 @@ test("Equal candidates keep the service's order", () => {
 
 test("A matching ISRC wins; a different one only counts against", () => {
     const source = song("Get Lucky", ["Daft Punk"], { isrc: "USQX91300108", durationMs: 369_000 });
-    const sameCode = song("Get Lucky (Radio Edit)", ["Daft Punk"], { isrc: "USQX91300108", durationMs: 248_000 });
+    const sameCode = song("Get Lucky", ["Daft Punk"], { isrc: "USQX91300108", durationMs: 368_000 });
     const otherCode = song("Get Lucky", ["Daft Punk"], { isrc: "USQX91300999", durationMs: 369_000 });
     assert.ok(matcher.score(source, sameCode) > matcher.score(source, otherCode));
     assert.ok(matcher.score(source, otherCode) >= matcher.ACCEPT_SCORE, "a re-release is still the song");
+});
+
+// Everyone plays the session's song at the same position: another length
+// would leave its listeners that far apart all song long.
+test("Another length is another cut, even with the same name, artist or ISRC", () => {
+    const album = song("Get Lucky", ["Daft Punk"], { isrc: "USQX91300108", durationMs: 369_000 });
+    const radioEdit = song("Get Lucky (Radio Edit)", ["Daft Punk"], { isrc: "USQX91300108", durationMs: 248_000 });
+    assert.equal(matcher.score(album, radioEdit), null);
+    assert.equal(matcher.pickByIsrc(album, [{ id: "edit", track: radioEdit }]), null);
+    // Verified live: the video runs 263 s, the song 202 s.
+    const video = song("Blinding Lights", ["The Weeknd"], { durationMs: 263_000, provider: "YoutubeMusic" });
+    assert.equal(matcher.score(video, song("Blinding Lights", ["The Weeknd"], { durationMs: 202_000 })), null);
+    // Services round differently: 2 s is still the same recording, and so is 4 s.
+    for (const offset of [2_000, 4_000]) {
+        const value = matcher.score(album, { ...album, isrc: null, durationMs: 369_000 + offset });
+        assert.ok(value >= matcher.ACCEPT_SCORE, `${offset} ms: ${value}`);
+    }
+    assert.equal(matcher.score(album, { ...album, isrc: null, durationMs: 374_000 }), null);
 });
 
 test("Among releases of one ISRC, the same album, else the closest length", () => {
@@ -198,3 +216,60 @@ for (const file of (await readdir(corpusDir)).filter(name => name.endsWith(".jso
         });
     }
 }
+
+test("Artists in another script are compared by the service's names for them in that language", async () => {
+    // Verified live: YouTube Music and Apple Music name the same song's
+    // artist "米津玄師" in Japanese and "Kenshi Yonezu" in English.
+    const source = song("Lemon", ["米津玄師"], { durationMs: 255_000 });
+    const results = [
+        { id: "cover", track: song("Lemon", ["Lemon Covers Band"], { durationMs: 255_000 }) },
+        { id: "original", track: song("Lemon", ["Kenshi Yonezu"], { durationMs: 256_000 }) },
+    ];
+    const asked = [];
+    const alternateNames = async ({ candidates, language }) => {
+        asked.push([language, Array.from(candidates, c => c.id)]);
+        const japanese = { original: ["米津玄師"], cover: ["レモン・カバーズ"] };
+        return new Map(candidates.map(c => [c.id, japanese[c.id] ?? []]));
+    };
+    const found = await matcher.searchText(source, async () => results, { idOf: c => c.id, alternateNames });
+    assert.equal(found.id, "original");
+    // Asked in Japanese first (kanji alone could be Chinese too), for the
+    // candidates the names could decide.
+    assert.deepEqual(asked.map(([language]) => language), ["ja"], "Chinese not asked once Japanese settled it");
+    assert.deepEqual(asked[0][1], ["cover", "original"]);
+});
+
+test("Names in another language are only asked when the title and length agree", async () => {
+    const source = song("Lemon", ["米津玄師"], { durationMs: 255_000 });
+    let asked = 0;
+    await matcher.searchText(source, async () => [
+        { id: "other length", track: song("Lemon", ["Kenshi Yonezu"], { durationMs: 300_000 }) },
+        { id: "other title", track: song("Flamingo", ["Kenshi Yonezu"], { durationMs: 255_000 }) },
+    ], { idOf: c => c.id, alternateNames: async () => { asked += 1; return new Map(); } });
+    assert.equal(asked, 0);
+});
+
+test("Latin names against a catalog in another script are asked in English", async () => {
+    const source = song("Dynamite", ["BTS"], { durationMs: 199_000 });
+    const languages = [];
+    const found = await matcher.searchText(source, async () => [
+        { id: "kr", track: song("Dynamite", ["방탄소년단"], { durationMs: 199_000 }) },
+    ], {
+        idOf: c => c.id,
+        alternateNames: async ({ language }) => {
+            languages.push(language);
+            return new Map([["kr", ["BTS"]]]);
+        },
+    });
+    assert.equal(found.id, "kr");
+    assert.deepEqual(languages, ["en"]);
+});
+
+test("A service that can't give other names leaves the search as it was", async () => {
+    const source = song("Lemon", ["米津玄師"], { durationMs: 255_000 });
+    const found = await matcher.searchText(source, async () => [
+        { id: "original", track: song("Lemon", ["Kenshi Yonezu"], { durationMs: 256_000 }) },
+    ], { idOf: c => c.id, alternateNames: async () => { throw new Error("offline"); } });
+    // The fallback: same name, same length to the second.
+    assert.equal(found.id, "original");
+});

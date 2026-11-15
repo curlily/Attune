@@ -23,6 +23,10 @@
 globalThis.__ATTUNE_MATCHER__ = (() => {
     "use strict";
 
+    // The same recording differs by up to about 2 s between services
+    // (YouTube Music rounds to whole seconds; seen live). More is another
+    // cut, which can't be played in step with the session's.
+    const MAX_LENGTH_DIFFERENCE_MS = 4_000;
     // A candidate needs this score to be taken at all …
     const ACCEPT_SCORE = 60;
     // … and with this one no further queries are tried.
@@ -80,6 +84,24 @@ globalThis.__ATTUNE_MATCHER__ = (() => {
     }
 
     const hasNonLatinLetters = value => /[^\p{Script=Latin}\P{L}]/u.test(String(value ?? ""));
+
+    // Languages whose catalog names artists in a script. Han alone may be
+    // Japanese ("米津玄師") or Chinese ("周杰倫"), so both are asked.
+    const SCRIPT_LANGUAGES = [
+        [/[\p{Script=Hiragana}\p{Script=Katakana}]/u, ["ja"]],
+        [/\p{Script=Hangul}/u, ["ko"]],
+        [/\p{Script=Han}/u, ["ja", "zh-TW"]],
+        [/\p{Script=Cyrillic}/u, ["ru"]],
+        [/\p{Script=Greek}/u, ["el"]],
+        [/\p{Script=Arabic}/u, ["ar"]],
+        [/\p{Script=Hebrew}/u, ["he"]],
+        [/\p{Script=Thai}/u, ["th"]],
+        [/\p{Script=Devanagari}/u, ["hi"]],
+    ];
+
+    function languagesOf(text) {
+        return SCRIPT_LANGUAGES.find(([script]) => script.test(text))?.[1] ?? [];
+    }
 
     // ---------------------------------------------------------------------
     // Titles
@@ -206,7 +228,9 @@ globalThis.__ATTUNE_MATCHER__ = (() => {
 
     /** Everyone credited: the artists and any featured in the title. */
     function creditedArtists(track, parsed) {
-        const names = [...(track.artists ?? []), ...parsed.featured];
+        // `artistAliases`: the same artists' names in another language,
+        // from the service (see `searchText`).
+        const names = [...(track.artists ?? []), ...(track.artistAliases ?? []), ...parsed.featured];
         // "Post Malone & Swae Lee" as one name on one service, two on another.
         return [...new Set(names.flatMap(name => [name, ...splitNames(name)]).map(normalize).filter(Boolean))];
     }
@@ -218,6 +242,10 @@ globalThis.__ATTUNE_MATCHER__ = (() => {
     // ---------------------------------------------------------------------
     // Scoring
     // ---------------------------------------------------------------------
+
+    const differenceInLength = (a, b) => Number.isFinite(a.durationMs) && Number.isFinite(b.durationMs)
+        ? Math.abs(a.durationMs - b.durationMs)
+        : null;
 
     const normalizeIsrc = value => String(value ?? "").replace(/[^a-z0-9]/gi, "").toUpperCase();
 
@@ -240,9 +268,12 @@ globalThis.__ATTUNE_MATCHER__ = (() => {
         const versionAdjustment = compareVersions(parsedSource.versions, parsedCandidate.versions);
         if (versionAdjustment == null) return null;
 
-        const lengthDifference = Number.isFinite(source.durationMs) && Number.isFinite(candidate.durationMs)
-            ? Math.abs(source.durationMs - candidate.durationMs)
-            : null;
+        // Everyone plays the session's song at the same position, so another
+        // length is another cut: a music video's intro (263 s for the 202 s
+        // "Blinding Lights", verified live) or a radio edit would leave its
+        // listeners that far apart all song long.
+        const lengthDifference = differenceInLength(source, candidate);
+        if (lengthDifference != null && lengthDifference > MAX_LENGTH_DIFFERENCE_MS) return null;
 
         let value = versionAdjustment;
         if (parsedSource.name && parsedSource.name === parsedCandidate.name) {
@@ -252,8 +283,7 @@ globalThis.__ATTUNE_MATCHER__ = (() => {
             // less in a long title) at nearly the same length. Short names
             // are left out: "Love Me" is not "Love Me Do".
             Math.min(parsedSource.words.length, parsedCandidate.words.length) >= 3 &&
-            similarity(parsedSource.words, parsedCandidate.words) >= 0.8 &&
-            (lengthDifference == null || lengthDifference <= 5_000)
+            similarity(parsedSource.words, parsedCandidate.words) >= 0.8
         ) {
             value += 25;
         } else {
@@ -282,16 +312,7 @@ globalThis.__ATTUNE_MATCHER__ = (() => {
             return null;
         }
 
-        if (lengthDifference != null) {
-            // A music video runs longer than its song (intro, outro): 263 s
-            // for the 202 s "Blinding Lights" (verified live). So a long
-            // difference ranks a candidate lower but never rules out the
-            // same name by the same artist.
-            const fromVideo = source.provider === "YoutubeMusic" || candidate.provider === "YoutubeMusic";
-            if (lengthDifference <= 2_500) value += 15;
-            else if (lengthDifference <= 5_000) value += 8;
-            else if (lengthDifference > 10_000 && !fromVideo) value -= 15;
-        }
+        if (lengthDifference != null) value += lengthDifference <= 2_500 ? 15 : 8;
         if (source.album && candidate.album && albumName(source.album) === albumName(candidate.album)) value += 6;
 
         const isrcA = normalizeIsrc(source.isrc);
@@ -334,11 +355,12 @@ globalThis.__ATTUNE_MATCHER__ = (() => {
             const parsed = parseTitle(track.title, track.artists);
             const sameName = similarity(parsedSource.words, parsed.words) >= 0.8;
             if (!sameName && !artistOverlap(artistsA, creditedArtists(track, parsed))) continue;
+            // Even with the same code, another length can't be played in step.
+            const lengthDifference = differenceInLength(source, track);
+            if (lengthDifference != null && lengthDifference > MAX_LENGTH_DIFFERENCE_MS) continue;
             let value = sameName ? 10 : 0;
             if (source.album && track.album && albumName(source.album) === albumName(track.album)) value += 6;
-            if (Number.isFinite(source.durationMs) && Number.isFinite(track.durationMs)) {
-                value -= Math.min(5, Math.abs(source.durationMs - track.durationMs) / 1000);
-            }
+            if (lengthDifference != null) value -= lengthDifference / 1000;
             if (!best || value > best.score) best = { candidate, score: value };
         }
         return best?.candidate ?? null;
@@ -374,27 +396,99 @@ globalThis.__ATTUNE_MATCHER__ = (() => {
     }
 
     /**
+     * The languages to ask a candidate's artist names in, when they are in
+     * another script than the song's but the title and length agree:
+     * "Lemon" by 米津玄師 and "Lemon" by Kenshi Yonezu. Empty otherwise.
+     */
+    function languagesToAsk(source, candidate) {
+        const parsedSource = parseTitle(source.title, source.artists);
+        const parsedCandidate = parseTitle(candidate.title, candidate.artists);
+        if (compareVersions(parsedSource.versions, parsedCandidate.versions) == null) return [];
+        const sameName = parsedSource.name !== "" && parsedSource.name === parsedCandidate.name;
+        if (!sameName && similarity(parsedSource.words, parsedCandidate.words) < 0.8) return [];
+        const lengthDifference = differenceInLength(source, candidate);
+        if (lengthDifference != null && lengthDifference > MAX_LENGTH_DIFFERENCE_MS) return [];
+        const artistsA = creditedArtists(source, parsedSource);
+        const artistsB = creditedArtists(candidate, parsedCandidate);
+        if (artistOverlap(artistsA, artistsB)) return [];
+        const sourceForeign = hasNonLatinLetters(artistsA.join(" "));
+        if (sourceForeign === hasNonLatinLetters(artistsB.join(" "))) return [];
+        // The song's names are in a script the candidate's aren't: ask the
+        // service in that script's language; the other way round, in English.
+        return sourceForeign ? languagesOf(artistsA.join(" ")) : ["en"];
+    }
+
+    /**
      * The best candidate for `track` from text searches, or null.
      * `search(query)` resolves to candidates `{ track, … }` in the service's
      * order. A confident match stops the queries; otherwise all are tried
      * and ranked together. `idOf(candidate)` tells the same candidate apart
      * when several queries find it.
+     *
+     * `alternateNames({ query, candidates, language })`, where the service
+     * names artists in other languages: resolves to a Map from `idOf` to
+     * the candidates' artist names in `language`. Asked only for candidates
+     * whose title and length agree but whose artists are in another script
+     * (verified live: YouTube Music and Apple Music name the same song's
+     * artist "米津玄師" in Japanese and "Kenshi Yonezu" in English).
      */
-    async function searchText(track, search, { idOf, withoutApostrophes = false } = {}) {
+    async function searchText(track, search, { idOf = candidate => candidate, withoutApostrophes = false, alternateNames } = {}) {
         const seen = new Set();
+        const asked = new Set();
         const all = [];
         let best = null;
         for (const query of searchQueries(track, { withoutApostrophes })) {
             for (const candidate of await search(query)) {
-                const id = idOf ? idOf(candidate) : candidate;
+                const id = idOf(candidate);
                 if (seen.has(id)) continue;
                 seen.add(id);
                 all.push(candidate);
             }
             best = pick(track, all);
             if (best && best.score >= CONFIDENT_SCORE) break;
+            if (alternateNames && await addAlternateNames(track, query, all, asked, idOf, alternateNames)) {
+                best = pick(track, all);
+                if (best && best.score >= CONFIDENT_SCORE) break;
+            }
         }
         return best?.candidate ?? null;
+    }
+
+    /** Fill in `artistAliases` where they could decide. Whether any were found. */
+    async function addAlternateNames(track, query, all, asked, idOf, alternateNames) {
+        const wanted = new Map(); // language -> indexes into `all`
+        all.forEach((candidate, index) => {
+            if (candidate.track.artistAliases) return;
+            for (const language of languagesToAsk(track, candidate.track)) {
+                const key = `${language}\u0000${idOf(candidate)}`;
+                if (asked.has(key)) continue;
+                asked.add(key);
+                if (!wanted.has(language)) wanted.set(language, []);
+                wanted.get(language).push(index);
+            }
+        });
+        let added = false;
+        // In turn: once Japanese names settled "米津玄師", Chinese aren't asked.
+        for (const [language, asked] of wanted) {
+            if (added && (pick(track, all)?.score ?? 0) >= CONFIDENT_SCORE) break;
+            const indexes = asked.filter(index => languagesToAsk(track, all[index].track).length);
+            if (!indexes.length) continue;
+            let names;
+            try {
+                names = await alternateNames({ query, candidates: indexes.map(index => all[index]), language });
+            } catch (error) {
+                console.warn("[Attune] Artist names in another language unavailable", error?.message ?? error);
+                continue;
+            }
+            for (const index of indexes) {
+                const aliases = names?.get(idOf(all[index]));
+                if (!aliases?.length) continue;
+                const previous = all[index].track.artistAliases ?? [];
+                all[index] = { ...all[index], track: { ...all[index].track, artistAliases: [...previous, ...aliases] } };
+                added = true;
+            }
+        }
+        return added;
     }
 
     /**

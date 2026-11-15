@@ -390,6 +390,48 @@
             network.fetch("/search", { query, params: SEARCH_SONGS_PARAMS }),
             `YouTube Music search timed out for "${query}"`,
         );
+        return songsOf(response);
+    }
+
+    /**
+     * The same search in another language. YouTube Music names artists in
+     * the request's language (verified live, 2026-11-15): one video is by
+     * "米津玄師" with `hl: "ja"` and "Kenshi Yonezu" with `hl: "en"`, and
+     * with `hl: "ko"` by "BTS (방탄소년단)". The app's network manager always
+     * uses the page's language, so this asks YouTube's API directly with the
+     * page's own client settings, only the language changed.
+     */
+    async function searchSongsIn(query, language) {
+        const context = structuredClone(window.ytcfg?.get?.("INNERTUBE_CONTEXT"));
+        if (!context?.client) throw new Error("YouTube Music's client settings are unavailable");
+        context.client.hl = language;
+        const key = window.ytcfg.get("INNERTUBE_API_KEY");
+        const response = await withTimeout(
+            fetch(`/youtubei/v1/search?prettyPrint=false${key ? `&key=${encodeURIComponent(key)}` : ""}`, {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ context, query, params: SEARCH_SONGS_PARAMS }),
+            }).then(reply => {
+                if (!reply.ok) throw new Error(`YouTube Music search in ${language} failed (${reply.status})`);
+                return reply.json();
+            }),
+            `YouTube Music search timed out for "${query}" in ${language}`,
+        );
+        return songsOf(response);
+    }
+
+    // The artists of the same candidates, named in `language`.
+    async function alternateNames({ query, candidates, language }) {
+        const wanted = new Set(candidates.map(candidate => candidate.videoId));
+        const names = new Map();
+        for (const song of await searchSongsIn(query, language)) {
+            if (wanted.has(song.videoId)) names.set(song.videoId, song.track.artists);
+        }
+        return names;
+    }
+
+    function songsOf(response) {
         if (!response || typeof response !== "object") {
             throw new Error("YouTube Music's search returned an unexpected response");
         }
@@ -425,6 +467,7 @@
         const best = await matcher.searchText(track, searchSongs, {
             idOf: candidate => candidate.videoId,
             withoutApostrophes: true,
+            alternateNames,
         });
         if (!best) {
             throw new TrackLookupError(`No matching YouTube Music song found for "${track.title}"`);
