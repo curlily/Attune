@@ -813,10 +813,28 @@ as noted):
   Spotify and Apple Music look them up.
 - Where nothing gives other names, the fallback stays: the same title at the same length to 2 s.
 
-**Open: music videos in a YouTube Music queue.** A radio is mostly music videos, and with the
-length limit most of them can't be played in step by anyone on another service: they show as
-missing for those listeners. Sharing the song version instead (the item's `counterpart`, or the
-song search) would keep them, but changes what the YouTube Music listener plays.
+**Music videos in a YouTube Music queue are swapped for their songs during a session.** A radio
+is mostly music videos, and with the length limit nobody on another service could play them in
+step. So the adapter replaces each music video the user puts in the queue (a radio, a video
+queued, the queue a session is created from) with its song before sharing it: the song YouTube
+Music links to the item (`counterpart`, signed in), else the song a search finds with the same
+name, artist and version, no longer than the video (`matcher.songForVideo`). Videos the session
+put in the queue are left alone (another listener's choice), a video without a song stays (it's
+missing for listeners elsewhere), and the current item is swapped only in its first 15 s (later
+the song would start over). The first five positions go first and are shared at once, the rest
+follow as an edit. Verified live (signed out, 2026-11-15): of a radio's 50 music videos, 49 were
+swapped (the 202 s "Blinding Lights" for the 263 s video, and so on), the first share after 7.6 s
+and the rest after 18.6 s, and no video was ever shared. All 50 in one pass took 27 s. Signed out
+there are no `counterpart`s, so every one was searched. Not verified: that playback carries on
+smoothly while the current item is swapped (the test window stopped playing anything, videos and
+songs alike, also without the adapter).
+
+**Entry keys include the video** (found while testing the swap): queue numbers start again after a
+clear, and a new list as long as the old one ends on the same `nextQueueItemId`, so the restart
+went unnoticed and each new item took the entry of the old one with its number. Starting a 50-song
+radio over a 50-song session queue then looked like no change and wasn't shared. Fixed: the key is
+the generation, the number and the video ID. Test: "A new list as long as the old one is shared
+too".
 
 No outside lookup service (song.link and the like) is used: listening data stays between the
 music services and the session.

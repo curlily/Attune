@@ -27,6 +27,8 @@ const CATALOG = {
     sunflower: { title: "Sunflower (Spider-Man: Into the Spider-Verse)", artists: ["Post Malone", "Swae Lee"], album: "Spider-Man", length: "2:39" },
     // Searching with the apostrophe finds only covers.
     dont: { title: "Don't Start Now", artists: ["Dua Lipa"], album: "Future Nostalgia", length: "3:03", hiddenByApostrophe: true },
+    // A music video no song goes with.
+    lonely: { title: "Lonely Clip (Official Video)", artists: ["Nobody Known"], album: null, length: "3:10", plain: true, videoType: "MUSIC_VIDEO_TYPE_OMV" },
 };
 const PLAYER = { UNSTARTED: -1, ENDED: 0, PLAYING: 1, PAUSED: 2, BUFFERING: 3 };
 
@@ -619,6 +621,21 @@ test("The user starting another song replaces the session queue", () => withAdap
     assert.notEqual(replace.currentEntryId, "session-c", "a new occurrence, although its queue number was used before");
 }));
 
+test("A new list as long as the old one is shared too", () => withAdapter(async ({ bridge, page, events }) => {
+    // Three songs after three: YouTube Music's numbers start again and end
+    // on the same `nextQueueItemId`, so the restart isn't noticed.
+    await loadSession(bridge, ["a", "b", "c"]);
+    await settle();
+    events.length = 0;
+
+    page.userPlays("hotel", "purple", "lotta");
+    await settle();
+    const replace = operations(events).find(op => op.type === "queue.replace");
+    assert.ok(replace, JSON.stringify(operations(events)));
+    assert.deepEqual(replace.entries.map(entry => entry.track.title), ["Hotel California", "Purple Rain", "Whole Lotta Love (Remaster)"]);
+    assert.ok(!replace.entries.some(entry => entry.entryId.startsWith("session-")), "new entries, not the old ones");
+}));
+
 test("Autoplay and repeat are switched off for a session, kept off, and put back", () => withAdapter(page => {
     page.store.dispatch({ type: "SET_REPEAT", payload: "ALL" });
 }, async ({ bridge, page, events }) => {
@@ -851,6 +868,52 @@ test("A song another YouTube Music user queued plays by its video ID, without a 
     assert.deepEqual([...outcome.unavailableEntryIds], []);
     assert.deepEqual(page.requests.filter(request => request.startsWith("search:")), []);
     assert.equal(page.store.getState().queue.items.at(-1).playlistPanelVideoRenderer.videoId, "omv");
+}));
+
+test("During a session, music videos the user plays are swapped for their songs before they are shared", () => withAdapter(async ({ bridge, page, events }) => {
+    await loadSession(bridge);
+    await bridge.prepareForSession();
+    await settle();
+    events.length = 0;
+
+    // A radio: a music video (263 s for the 202 s song), a song, a video no song goes with.
+    page.userPlays("omv", "a", "lonely");
+    const playing = () => bridge.getState().queue.map(entry => `${entry.track.title} | ${entry.track.providerTrackId}`);
+    // The adapter waits for the track to load (up to 3 s) before it looks.
+    for (let waited = 0; waited < 8_000 && playing()[0] !== "Blinding Lights | lights"; waited += 100) await sleep(100);
+    await settle();
+    assert.deepEqual(playing(), ["Blinding Lights | lights", "Song A | a", "Lonely Clip | lonely"]);
+    const published = operations(events);
+    assert.ok(
+        !JSON.stringify(published).includes('"providerTrackId":"omv"'),
+        `the video itself was never shared: ${JSON.stringify(published)}`,
+    );
+    const replace = published.filter(op => op.type === "queue.replace").at(-1);
+    assert.deepEqual(replace.entries.map(entry => entry.track.providerTrackId), ["lights", "a", "lonely"]);
+}));
+
+test("Music videos the session put in the queue are left as they are", () => withAdapter(async ({ bridge, page, events }) => {
+    await bridge.prepareForSession();
+    await bridge.applySnapshot({
+        queue: [
+            { entryId: "s-video", track: { title: "Blinding Lights", artists: ["The Weeknd"], provider: "YoutubeMusic", providerTrackId: "omv" } },
+            entry("s-a", "a"),
+        ],
+        currentEntryId: "s-video",
+        playback: playback(),
+    });
+    events.length = 0;
+    await settle();
+    await settle();
+    assert.deepEqual(entryIds(bridge.getState()), ["s-video", "s-a"]);
+    assert.equal(bridge.getState().queue[0].track.providerTrackId, "omv");
+    assert.deepEqual(operations(events), []);
+}));
+
+test("Outside a session, music videos stay", () => withAdapter(async ({ bridge, page }) => {
+    page.userPlays("omv");
+    await settle();
+    assert.equal(bridge.getState().queue[0].track.providerTrackId, "omv");
 }));
 
 // Verified live: a YouTube Music listener's player stuck loading published a

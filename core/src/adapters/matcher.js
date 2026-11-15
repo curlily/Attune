@@ -338,6 +338,22 @@ globalThis.__ATTUNE_MATCHER__ = (() => {
     }
 
     /**
+     * The song version of a music video, among song candidates, or null: the
+     * same name, artist and version, at any length up to the video's (its
+     * intro and outro make it longer: 263 s for the 202 s "Blinding Lights",
+     * verified live). Used to play the song instead, so that everyone in a
+     * session plays the same cut.
+     */
+    function songForVideo(video, candidates) {
+        const asSong = { ...video, durationMs: undefined, provider: undefined };
+        const shorter = candidates.filter(candidate => !(
+            Number.isFinite(video.durationMs) && Number.isFinite(candidate.track.durationMs) &&
+            candidate.track.durationMs > video.durationMs + MAX_LENGTH_DIFFERENCE_MS
+        ));
+        return pick(asSong, shorter)?.candidate ?? null;
+    }
+
+    /**
      * Among candidates with the song's ISRC (one recording, but on the
      * album, the single and every compilation: five for "Get Lucky" on
      * Apple Music, verified live), the one on the same album, else the
@@ -524,6 +540,7 @@ globalThis.__ATTUNE_MATCHER__ = (() => {
         score,
         pick,
         pickByIsrc,
+        songForVideo,
         searchQueries,
         searchText,
         knownId,
