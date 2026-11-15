@@ -189,6 +189,8 @@ mod tests {
                     album: Some("Night Drive".to_owned()),
                     duration_ms: Some(240_000),
                     cover_url: Some("https://i.scdn.co/image/abc".to_owned()),
+                    provider: None,
+                    provider_track_id: None,
                 },
                 added_by: None,
             }],

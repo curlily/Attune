@@ -26,6 +26,8 @@ fn entry(id: &str) -> QueueEntry {
             album: None,
             duration_ms: Some(200_000),
             cover_url: None,
+            provider: None,
+            provider_track_id: None,
         },
         added_by: None,
     }

@@ -18,6 +18,14 @@ const CATALOG = {
     hotel: { title: "Hotel California", artists: ["Eagles"], album: "Legacy", length: "6:32" },
     lotta: { title: "Whole Lotta Love (Remaster)", artists: ["Led Zeppelin"], album: "Led Zeppelin II", length: "5:35" },
     purple: { title: "Purple Rain", artists: ["Prince & The Revolution"], album: "Purple Rain", length: "8:42" },
+    // Verified live (2026-11-15): a radio is mostly music videos, named
+    // "… (Official Video)"; the song search finds only the songs.
+    omv: { title: "Blinding Lights (Official Video)", artists: ["The Weeknd"], album: null, length: "4:23", plain: true, videoType: "MUSIC_VIDEO_TYPE_OMV" },
+    lights: { title: "Blinding Lights", artists: ["The Weeknd"], album: "After Hours", length: "3:22" },
+    // The song has a subtitle its video doesn't.
+    sunflower: { title: "Sunflower (Spider-Man: Into the Spider-Verse)", artists: ["Post Malone", "Swae Lee"], album: "Spider-Man", length: "2:39" },
+    // Searching with the apostrophe finds only covers.
+    dont: { title: "Don't Start Now", artists: ["Dua Lipa"], album: "Future Nostalgia", length: "3:03", hiddenByApostrophe: true },
 };
 const PLAYER = { UNSTARTED: -1, ENDED: 0, PLAYING: 1, PAUSED: 2, BUFFERING: 3 };
 
@@ -48,7 +56,14 @@ function queueItem(videoId) {
             lengthText: { runs: [{ text: song.length }] },
             videoId,
             selected: false,
-            navigationEndpoint: { watchEndpoint: { videoId } },
+            navigationEndpoint: {
+                watchEndpoint: {
+                    videoId,
+                    watchEndpointMusicSupportedConfigs: {
+                        watchEndpointMusicConfig: { musicVideoType: song.videoType ?? "MUSIC_VIDEO_TYPE_ATV" },
+                    },
+                },
+            },
             thumbnail: { thumbnails: [{ url: `https://img.example/${videoId}.jpg` }] },
         },
     };
@@ -225,8 +240,12 @@ function createYouTubeMusic() {
                 return { queueDatas: params.videoIds.filter(id => CATALOG[id]).map(id => ({ content: queueItem(id) })) };
             }
             const rows = Object.entries(CATALOG)
-                // Like the real search, the title without a trailing "(…)" is enough.
-                .filter(([, song]) => params.query.includes(song.title.replace(/\s*\([^)]*\)$/, "")))
+                // Like the real search, the title without a trailing "(…)" is
+                // enough, apostrophes or not. The "Songs" filter leaves videos out.
+                .filter(([, song]) => !song.videoType)
+                .filter(([, song]) => !(song.hiddenByApostrophe && /['’]/.test(params.query)))
+                .filter(([, song]) => params.query.replace(/['’]/g, "")
+                    .includes(song.title.replace(/\s*\([^)]*\)$/, "").replace(/['’]/g, "")))
                 .map(([videoId, song]) => ({
                     musicResponsiveListItemRenderer: {
                         playlistItemData: { videoId },
@@ -387,6 +406,8 @@ test("YouTube Music adapter exposes the shared bridge API", () => withAdapter(as
         album: "First Album",
         durationMs: 180_000,
         coverUrl: "https://img.example/cur.jpg",
+        provider: "YoutubeMusic",
+        providerTrackId: "cur",
     });
     assert.equal(state.currentEntryId, state.queue[0].entryId);
     assert.equal(state.playback.isPlaying, true);
@@ -783,6 +804,51 @@ test("Remaster tags and a band credit still match the same recording", () => wit
     });
     assert.deepEqual([...outcome.unavailableEntryIds], ["e-live"]);
     assert.deepEqual(entryIds(bridge.getState()), ["e-hotel", "e-lotta", "e-purple"]);
+}));
+
+test("A music video is shared under its song's title, with its video ID", () => withAdapter(async ({ bridge, page }) => {
+    page.userPlays("omv");
+    await sleep(50);
+    const [video] = bridge.getState().queue;
+    assert.equal(video.track.title, "Blinding Lights");
+    assert.equal(video.track.provider, "YoutubeMusic");
+    assert.equal(video.track.providerTrackId, "omv");
+}));
+
+test("Songs behind music video titles, subtitles and apostrophes are found", () => withAdapter(async ({ bridge, page }) => {
+    // Verified live: 24 of a 50-song radio weren't found by another
+    // YouTube Music user. An older client shares the video's own title.
+    const track = (title, artists) => ({ title, artists });
+    const outcome = await bridge.applySnapshot({
+        queue: [
+            { entryId: "e-video", track: track("Blinding Lights (Official Video)", ["The Weeknd"]) },
+            { entryId: "e-sub", track: track("Sunflower", ["Post Malone", "Swae Lee"]) },
+            { entryId: "e-dont", track: track("Don't Start Now", ["Dua Lipa"]) },
+            // Another version is still another recording.
+            { entryId: "e-live", track: track("Sunflower (Live)", ["Post Malone"]) },
+        ],
+        currentEntryId: "e-video",
+        playback: playback(),
+    });
+    assert.deepEqual([...outcome.unavailableEntryIds], ["e-live"]);
+    const videoIds = page.store.getState().queue.items.map(item => item.playlistPanelVideoRenderer.videoId);
+    assert.deepEqual(videoIds.slice(-3), ["lights", "sunflower", "dont"]);
+}));
+
+test("A song another YouTube Music user queued plays by its video ID, without a search", () => withAdapter(async ({ bridge, page }) => {
+    page.requests.length = 0;
+    const outcome = await bridge.applySnapshot({
+        queue: [{
+            entryId: "e-shared",
+            // Metadata that wouldn't be found: the ID decides.
+            track: { title: "Not In Any Search", artists: ["Nobody"], provider: "YoutubeMusic", providerTrackId: "omv" },
+        }],
+        currentEntryId: "e-shared",
+        playback: playback(),
+    });
+    assert.deepEqual([...outcome.unavailableEntryIds], []);
+    assert.deepEqual(page.requests.filter(request => request.startsWith("search:")), []);
+    assert.equal(page.store.getState().queue.items.at(-1).playlistPanelVideoRenderer.videoId, "omv");
 }));
 
 // Verified live: a YouTube Music listener's player stuck loading published a

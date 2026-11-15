@@ -497,6 +497,11 @@
         return isTrackUri(uri) && provider !== "autoplay";
     }
 
+    // Other Spotify users play this exact track without a search.
+    function withSource(track, uri) {
+        return isTrackUri(uri) ? { ...track, provider: "Spotify", providerTrackId: uri } : track;
+    }
+
     /**
      * Spotify's playback as plain data: `current` and `upcoming` are
      * `{ uid, uri, track }`.
@@ -504,7 +509,7 @@
     function readPlayer(state = player.getState()) {
         const item = state?.item;
         const current = item && isTrackUri(item.uri)
-            ? { uid: item.uid || `current:${item.uri}`, uri: item.uri, track: descriptorFromItem(item) }
+            ? { uid: item.uid || `current:${item.uri}`, uri: item.uri, track: withSource(descriptorFromItem(item), item.uri) }
             : null;
 
         // The state's own list matches the rest of the state, but is cut
@@ -516,7 +521,7 @@
             .map((next, index) => ({
                 uid: next.uid || `next:${next.uri}:${index}`,
                 uri: next.uri,
-                track: descriptorFromItem(next),
+                track: withSource(descriptorFromItem(next), next.uri),
             }));
         if (nextItems.length >= STATE_NEXT_ITEMS_CAP) {
             const tracks = internalQueue()?.nextTracks ?? [];
@@ -529,7 +534,7 @@
                     upcoming.push({
                         uid: contextTrack.uid,
                         uri: contextTrack.uri,
-                        track: descriptorFromMetadata(contextTrack.metadata),
+                        track: withSource(descriptorFromMetadata(contextTrack.metadata), contextTrack.uri),
                     });
                 }
             }

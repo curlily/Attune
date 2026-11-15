@@ -212,6 +212,16 @@
         return value != null && Number.isFinite(number) ? Math.round(number) : null;
     }
 
+    /**
+     * The catalog ID with the descriptor, so other Apple Music users play
+     * this exact song without a search. A library song's own ID (`i.…`)
+     * means nothing to anyone else, so only catalog IDs are shared.
+     */
+    function withSource(track, item) {
+        const catalogId = String(item?.attributes?.playParams?.catalogId ?? item?.id ?? "");
+        return /^\d+$/.test(catalogId) ? { ...track, provider: "AppleMusic", providerTrackId: catalogId } : track;
+    }
+
     /** A track descriptor from catalog data or a queue's media item. */
     function descriptorOf(source) {
         const attributes = source?.attributes ?? {};
@@ -310,7 +320,7 @@
                 playback: { isPlaying: false, positionMs: 0, positionCapturedAtMs: Date.now() },
             };
         }
-        const entries = queue.map(entry => ({ entryId: entryIdOf(entry.item), track: descriptorOf(entry.item) }));
+        const entries = queue.map(entry => ({ entryId: entryIdOf(entry.item), track: withSource(descriptorOf(entry.item), entry.item) }));
         // The player may still hold the previous track for a moment.
         const loaded = loadedItem() === queue[0].item;
         return {

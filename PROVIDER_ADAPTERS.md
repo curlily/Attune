@@ -45,6 +45,7 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
 | Changes waiting behind lookups | A provider applies session changes one at a time, so while it looked up a long new list (6–15 s for 80 songs) a pause or seek from someone else reached it only afterwards | Verified live, fixed | The runtime loads the current song and the next 8 songs the provider doesn't have, and has the provider look the rest up in the background (`prefetch`, outside the adapter's queue of remote changes). Meanwhile those entries count as missing for index translation, like unavailable ones, but aren't reported. When the lookup is done they are added with a replace keeping the current song; a skip to one of them loads everything around it. Live: a pause on Spotify reached YouTube Music 0.9 s later while 72 songs were still being looked up; they were added about 7 s later without a restart (`defer_long_tail`, `on_prefetched`) |
 | Remaster tags and band credits | Spotify names many classics "Title - 2016 Remaster", "Title - Remastered 2021" or "Title - 2015 - Remaster"; YouTube Music calls them "Title" or "Title (Remaster)". And YouTube Music credits "Purple Rain" to "Prince & The Revolution", Spotify to "Prince". YouTube Music didn't match 16 of 81 songs in a rock playlist | Verified live, fixed | All three adapters compare (and search) titles without remaster tags, like "(feat. …)" (`stripSameRecordingTags`); live, single and other versions keep their tags. An artist name that starts with the other one as whole words counts as the same act (4 characters or more). Live: 81 of 81. Looser case: "(Single Version; 2018 Remaster)" loses the whole bracket |
 | Following a replace, then its seek | A follower applies session changes one at a time. When a provider shares a new list resumed part-way, the seek that follows the replace waits until the follower has looked up the whole list: YouTube Music played the 50-song list from 0 for 8 s, then jumped to Spotify's 1:35 | Verified live, fixed | Protocol 2: `queue.replace` carries the new current song's `playback` (position, play state), so no seek follows it |
+| Same service, same song | Two YouTube Music users in one session found only about every other song of each other's queue (see 4, Search), although both had the very songs. Every client looked each song up again from its title and artists | Fixed 2026-11-15; lookups verified live, the ID path in tests | Each shared track carries the queuer's own ID (`provider` + `providerTrackId` in the track descriptor: TIDAL track ID, Spotify track URI, YouTube video ID, Apple Music catalog ID; never an Apple library `i.…` ID or a Spotify local file). A client on the same service plays exactly that, without a search (each adapter's `resolveTrack`). Everyone else still searches. Optional fields: an older server drops them, older clients ignore them |
 | Comparing after a remote change | The app's state keeps changing for about a second after an action, which can push a debounce past a fixed suppression window; the delayed comparison then sees our own change as the user's. **With throttled timers it always happens:** the debounce takes a second, so it always fires after the 300 ms window | Verified live (TIDAL, Spotify, YouTube Music) | Every adapter resets the comparison base to the state the remote change produced: TIDAL `rebaseLocalChanges`, Spotify and YouTube Music `rebase()` at the end of `asRemoteChange`. Removing it makes both new tests publish an echo. **The rebase is only as good as the wait before it:** Spotify's queue write used to count as done while the old items still showed, and an echo followed (verified live, fixed) |
 
 ## 2. TIDAL
@@ -182,6 +183,7 @@ The adapter was injected into the running app and driven directly, not through
   in the player reacts to it).
 - When a track actually starts, TIDAL resets the position to 0 (sometimes about 3 s after the request). This is not a seek: the adapter ignores it for 10 s after a track change.
 - **Skipping keeps the old song's sync point for a moment.** Pressing next writes the sync point at the click (75.6 s into the old song), then shows the new track about 740 ms later still carrying it, and resets to 0 only about 220 ms after that (2026-11-13, recorded by polling `getState()` every 100 ms). The 180 ms debounce fell inside that window, so the skip was published as an advance to 75 s into the new song: Attune's progress bar carried on from where the old song was skipped (stuck at the end when that was past the new song's length), and the others were sent there. A song's natural end didn't show it (position 0, synced 0.1 s before). Fixed: a sync point from before the active track was seen to start is read as 0 at its start (`playbackOf`; a track already playing when the adapter attached is left alone). Test: "Skipping in TIDAL advances to the new song's start …". **Clicking another song** shows the same thing with a twist (recorded at 50 ms): the clicked song appears with position 0 but the previous song's start time (73.5 s before), so for about 150 ms it reads 101.9 s in, before TIDAL writes its own start time. The same rule covers it, since it looks at when the position was taken, not its value. Test: "Clicking another song in TIDAL …".
+- **A track TIDAL still has loaded shows at the click itself.** After a repeat-one restart (TIDAL had moved on to the next song, the session loaded the ended one back), skipping to that next song again switched within about 5 ms of the click, still carrying the old song's sync point (21.8 s), so the guard above (a sync point *older* than the track's start) let it through: the skip was published as an advance to 21.8 s into the new song, and Attune then sought TIDAL there to "catch up" (2026-11-15, from a user's log). Fixed: a sync point taken within 1 s of the track's start that is further in than the track has been playing (plus 1.5 s) is read as 0 too. Test: "Skipping to a track TIDAL still has loaded …".
 
 **Timers while TIDAL is in the background**
 - While TIDAL's window is hidden and nothing plays, Chromium runs the page's timers
@@ -525,6 +527,25 @@ Signing in is optional: the page also plays signed out. The launch command is
   is "Artist & Other • 2.1B views".
 - Titles differ again: "Shoong! (feat. 리사 (LISA))".
 - The network manager caches responses, so a repeated lookup costs nothing.
+- **Most of a radio is music videos, and their titles aren't the songs'** (verified live,
+  2026-11-15, signed out): a radio started from a song was 50 items, nearly all
+  `MUSIC_VIDEO_TYPE_OMV`, named "Blinding Lights (Official Video)", "Take My Breath (Official
+  Music Video)", "Starboy ft. Daft Punk (Official Video) (feat. Daft Punk)". The Songs search
+  finds the songs, but the titles never matched: **24 of the 50 weren't found by another
+  YouTube Music user**, the two users' report of "about every 4th song". Now a video's title is
+  shared without its video tags (`stripVideoTags`, only for items that aren't
+  `MUSIC_VIDEO_TYPE_ATV`), and matching ignores them too (older clients still send them).
+  The music type is in `navigationEndpoint.watchEndpoint.watchEndpointMusicSupportedConfigs
+  .watchEndpointMusicConfig.musicVideoType`.
+- **The song may have a subtitle its video lacks:** the video "Sunflower", the song "Sunflower
+  (Spider-Man: Into the Spider-Verse)". A title equal once bracketed parts are left out now
+  matches, scored below an exact one, unless a part names another version ("Live", "Remix",
+  "Acoustic", "Karaoke", "Sped Up" …).
+- **An apostrophe throws the search off:** "Don't Start Now Dua Lipa" returned only covers and
+  karaoke versions (the original not among 20 rows), "Dont Start Now Dua Lipa" the original
+  first. The adapter searches without apostrophes first.
+- With all three, the same radio's songs (looked up as from another service, IDs removed): 48
+  of 49 found. The miss is an upload credited to "Kara's Flowers".
 - **Featured artists named twice throw the search off.** For the session's "Get Lucky (feat.
   Pharrell Williams and Nile Rodgers)" by Daft Punk, Pharrell Williams, Nile Rodgers, the
   query "*title* Daft Punk Pharrell Williams" returned only covers and karaoke versions, so

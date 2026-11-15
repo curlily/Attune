@@ -32,6 +32,8 @@ pub const MAX_TEXT_LEN: usize = 512;
 pub const MAX_COVER_URL_LEN: usize = 2048;
 pub const MAX_ARTISTS: usize = 32;
 pub const MAX_ISRC_LEN: usize = 32;
+pub const MAX_PROVIDER_LEN: usize = 32;
+pub const MAX_PROVIDER_TRACK_ID_LEN: usize = 256;
 pub const MAX_DURATION_MS: u64 = 24 * 60 * 60 * 1000;
 /// Positions this close to the expected position count as "the same" when
 /// deciding whether an operation changes anything.
@@ -108,6 +110,23 @@ pub fn validate_track(track: &TrackDescriptor) -> Result<(), StateError> {
         return Err(StateError::InvalidTrackField {
             field: "durationMs",
         });
+    }
+    let short_token = |value: &str, max: usize| {
+        !value.is_empty()
+            && value.len() <= max
+            && !value.chars().any(|c| c.is_control() || c.is_whitespace())
+    };
+    if let Some(provider) = &track.provider {
+        if !short_token(provider, MAX_PROVIDER_LEN) {
+            return Err(StateError::InvalidTrackField { field: "provider" });
+        }
+    }
+    if let Some(id) = &track.provider_track_id {
+        if !short_token(id, MAX_PROVIDER_TRACK_ID_LEN) {
+            return Err(StateError::InvalidTrackField {
+                field: "providerTrackId",
+            });
+        }
     }
     if let Some(url) = &track.cover_url {
         if !url.starts_with("https://")

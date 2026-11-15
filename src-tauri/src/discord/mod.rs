@@ -422,6 +422,8 @@ mod tests {
                     album: None,
                     duration_ms: Some(240_000),
                     cover_url: None,
+                    provider: None,
+                    provider_track_id: None,
                 },
                 added_by: None,
             }],

@@ -836,7 +836,8 @@
 
         return {
             entryId: makeEntryId(queueElement, productId, index),
-            track: getTrackDescriptor(productId, state),
+            // Other TIDAL users play this exact track without a search.
+            track: { ...getTrackDescriptor(productId, state), provider: "Tidal", providerTrackId: String(productId) },
         };
     }
 
@@ -1729,6 +1730,9 @@
     const TRACK_START_POSITION_MS = 1_500;
     // A sync point this much older than the track's start is the previous track's.
     const STALE_SYNC_MARGIN_MS = 50;
+    // A sync point taken this soon after the track started is checked
+    // against how long it has been playing.
+    const TRACK_START_SYNC_WINDOW_MS = 1_000;
     let activeTrackReference = null;
     let activeTrackChangedAt = 0;
     // When the active track was seen to start, or null if it was already
@@ -1767,10 +1771,28 @@
         const playback = getPlayback(reduxState);
         if (activeTrackStartedAt != null &&
             trackReferenceOf(reduxState) === activeTrackReference &&
-            playback.positionCapturedAtMs < activeTrackStartedAt - STALE_SYNC_MARGIN_MS) {
+            isPreviousTracksSyncPoint(playback)) {
             return { ...playback, positionMs: 0, positionCapturedAtMs: activeTrackStartedAt };
         }
         return playback;
+    }
+
+    /**
+     * Whether a sync point belongs to the track before the active one.
+     *
+     * Usually it is simply older than the track's start. But a track TIDAL
+     * still has loaded shows at the click itself (verified live,
+     * 2026-11-15: after a repeat-one restart reloaded the song before it,
+     * skipping to it again switched within 5 ms of the click and carried
+     * the old song's 21.8 s), so the times can't tell them apart. A sync
+     * point taken around the start that is further in than the track has
+     * been playing is the old song's too.
+     */
+    function isPreviousTracksSyncPoint(playback) {
+        const sinceStart = playback.positionCapturedAtMs - activeTrackStartedAt;
+        if (sinceStart < -STALE_SYNC_MARGIN_MS) return true;
+        return sinceStart < TRACK_START_SYNC_WINDOW_MS &&
+            playback.positionMs > Math.max(0, sinceStart) + TRACK_START_POSITION_MS;
     }
 
     function positionWasSought(before, after) {

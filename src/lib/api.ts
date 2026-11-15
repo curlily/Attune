@@ -92,6 +92,9 @@ export interface Track {
   durationMs?: number;
   /** Album art from the provider that queued the song. */
   coverUrl?: string;
+  /** The service that queued the song, and its ID there. */
+  provider?: string;
+  providerTrackId?: string;
 }
 
 export interface QueueItem {

@@ -169,15 +169,67 @@
      * recordings and keep their tags.
      */
     function stripSameRecordingTags(value) {
-        return String(value ?? "")
+        return stripVideoTags(value)
             .replace(/\s*[([][^)\]]*\b(feat|ft|featuring|with)\b[^)\]]*[)\]]/gi, " ")
             .replace(/\s*[([][^)\]]*\bremaster(ed)?\b[^)\]]*[)\]]/gi, " ")
             .replace(/\s[-–]\s*[^-–]*\bremaster(ed)?\b[^-–]*$/i, " ")
             // "Rock You Like a Hurricane - 2015 - Remaster": the year is left.
             .replace(/\s[-–]\s*\d{4}\s*$/, " ")
             .replace(/\s[-–]\s*(feat|ft|featuring)\b.*$/i, " ")
+            // "Starboy ft. Daft Punk" (a music video's title).
+            .replace(/\s(?:feat\.?|ft\.|featuring)\s+\S.*$/i, " ")
             .replace(/\s+/g, " ")
             .trim();
+    }
+
+    // "(Official Video)", "[Official Music Video]", "(Lyric Video)", "(HD)" …
+    const VIDEO_TAG = new RegExp(
+        String.raw`\s*[([]\s*(?:official\s+)?(?:hd\s+|4k\s+)?` +
+        String.raw`(?:music\s+video|video\s+clip|lyric\s+video|lyrics?|visuali[sz]er|audio|video|mv|hd|4k)` +
+        String.raw`(?:\s+(?:hd|4k|version))?\s*[)\]]`,
+        "gi",
+    );
+
+    /**
+     * A music video's title without what only says it is a video. Verified
+     * live (2026-11-15): a radio started from a song, signed out, was 50
+     * music videos (`MUSIC_VIDEO_TYPE_OMV`), most named like "Blinding
+     * Lights (Official Video)" or "Take My Breath (Official Music Video)".
+     * The song search found the songs, but the titles never matched: 24
+     * of the 50 weren't found, even by another YouTube Music user.
+     */
+    function stripVideoTags(value) {
+        return String(value ?? "")
+            .replace(VIDEO_TAG, " ")
+            .replace(/\s*\|\s*official\b.*$/i, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+    }
+
+    // Bracketed parts that make a different recording or take.
+    const VERSION_WORDS = /\b(remix|mix|live|acoustic|instrumental|karaoke|cover|version|sped|slowed|reverb|nightcore|8d|demo|piano|orchestral|rework|vip|bootleg|mashup|tribute|originally|extended|remake|re-?recorded|taylor'?s|unplugged|session)\b/i;
+    const BRACKETED = /\s*(?:\([^)]*\)|\[[^\]]*\])/g;
+
+    /**
+     * Whether two titles name the same song once subtitles are left out:
+     * YouTube Music's song is "Sunflower (Spider-Man: Into the
+     * Spider-Verse)", its video just "Sunflower" (verified live). Parts
+     * that name another version ("(Live)", "(Remix)") keep them apart.
+     */
+    function sameBaseTitle(a, b) {
+        const titleA = stripSameRecordingTags(a);
+        const titleB = stripSameRecordingTags(b);
+        const extras = title => (title.match(BRACKETED) ?? []).join(" ");
+        if (VERSION_WORDS.test(extras(titleA)) || VERSION_WORDS.test(extras(titleB))) return false;
+        const baseA = normalize(titleA.replace(BRACKETED, " "));
+        return baseA !== "" && baseA === normalize(titleB.replace(BRACKETED, " "));
+    }
+
+    // Anything but a plain song (`MUSIC_VIDEO_TYPE_ATV`): a music video or upload.
+    function isMusicVideo(renderer) {
+        const type = renderer?.navigationEndpoint?.watchEndpoint?.watchEndpointMusicSupportedConfigs
+            ?.watchEndpointMusicConfig?.musicVideoType;
+        return typeof type === "string" && type !== "MUSIC_VIDEO_TYPE_ATV";
     }
 
     const runsText = text => (text?.runs ?? []).map(run => run.text ?? "").join("");
@@ -259,8 +311,10 @@
     function descriptorOf(item) {
         const renderer = rendererOf(item);
         const { artists, album } = parseByline(renderer?.longBylineText ?? renderer?.shortBylineText);
+        // A video's title is shared as the song's, so every service finds it.
+        const title = runsText(renderer?.title);
         return {
-            title: runsText(renderer?.title),
+            title: isMusicVideo(renderer) ? stripVideoTags(title) || title : title,
             artists,
             // YouTube Music doesn't expose ISRCs.
             isrc: null,
@@ -362,7 +416,11 @@
                 playback: { isPlaying: false, positionMs: 0, positionCapturedAtMs: Date.now() },
             };
         }
-        const entries = queue.map(entry => ({ entryId: entryIdFor(entry.key), track: descriptorOf(entry.item) }));
+        const entries = queue.map(entry => ({
+            entryId: entryIdFor(entry.key),
+            // Other YouTube Music users play this exact video without a search.
+            track: { ...descriptorOf(entry.item), provider: "YoutubeMusic", providerTrackId: entry.videoId },
+        }));
         // The player may still hold the previous track for a moment.
         const loaded = loadedVideoId() === queue[0].videoId;
         return {
@@ -455,10 +513,12 @@
     }
 
     function scoreCandidate(source, candidate) {
-        if (normalizeTitle(source.title) !== normalizeTitle(candidate.track.title)) return -1;
+        const sameTitle = normalizeTitle(source.title) === normalizeTitle(candidate.track.title);
+        if (!sameTitle && !sameBaseTitle(source.title, candidate.track.title)) return -1;
         if (!artistOverlap(source, candidate.track)) return -1;
 
-        let score = 10; // Same title and at least one matching artist.
+        // Same title (or the same but for a subtitle) and a matching artist.
+        let score = sameTitle ? 10 : 8;
         if (normalize(source.title) === normalize(candidate.track.title)) score += 1;
         if (source.album && candidate.track.album &&
             normalize(source.album) === normalize(candidate.track.album)) {
@@ -484,10 +544,20 @@
         const artists = (track.artists ?? []).filter(Boolean);
         const bareTitle = stripSameRecordingTags(track.title) || String(track.title ?? "");
         const queries = [
-            `${bareTitle} ${artists.slice(0, 1).join(" ")}`.trim(),
-            `${track.title} ${artists.slice(0, 2).join(" ")}`.trim(),
-        ];
+            `${withoutApostrophes(bareTitle)} ${artists.slice(0, 1).join(" ")}`,
+            `${bareTitle} ${artists.slice(0, 1).join(" ")}`,
+            `${track.title} ${artists.slice(0, 2).join(" ")}`,
+        ].map(query => query.trim());
         return [...new Set(queries)];
+    }
+
+    /**
+     * Verified live (2026-11-15): an apostrophe throws the search off.
+     * "Don't Start Now Dua Lipa" found only covers and karaoke versions,
+     * "Dont Start Now Dua Lipa" the original first.
+     */
+    function withoutApostrophes(value) {
+        return String(value).replace(/['’‘`]/g, "");
     }
 
     async function resolveTrack(track) {

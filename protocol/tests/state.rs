@@ -808,3 +808,37 @@ fn republished_entries_keep_the_sessions_track_and_queuer() {
     );
     assert_eq!(entries[2].added_by.as_deref(), Some("Zoe"));
 }
+
+// ---------------------------------------------------------------------------
+// The queuer's own track ID
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_track_carries_the_id_of_the_service_that_queued_it() {
+    let mut track = common::track("Blinding Lights");
+    let plain = serde_json::to_value(&track).unwrap();
+    assert!(
+        plain.get("provider").is_none(),
+        "left out when unknown: {plain}"
+    );
+
+    track.provider = Some("YoutubeMusic".into());
+    track.provider_track_id = Some("4NRXx6U8ABQ".into());
+    let json = serde_json::to_value(&track).unwrap();
+    assert_eq!(json["provider"], "YoutubeMusic");
+    assert_eq!(json["providerTrackId"], "4NRXx6U8ABQ");
+    let back: attune_protocol::TrackDescriptor = serde_json::from_value(json).unwrap();
+    assert_eq!(back, track);
+    assert!(attune_protocol::state::validate_track(&track).is_ok());
+
+    for bad in ["", "two words", &"x".repeat(300)] {
+        let mut wrong = track.clone();
+        wrong.provider_track_id = Some(bad.to_owned());
+        assert!(matches!(
+            attune_protocol::state::validate_track(&wrong),
+            Err(StateError::InvalidTrackField {
+                field: "providerTrackId"
+            })
+        ));
+    }
+}

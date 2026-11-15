@@ -51,6 +51,8 @@ fn ghost(entry_id: &str) -> QueueEntry {
             album: None,
             duration_ms: None,
             cover_url: None,
+            provider: None,
+            provider_track_id: None,
         },
         added_by: None,
     }

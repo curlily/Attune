@@ -14,6 +14,8 @@ pub fn track(title: &str) -> TrackDescriptor {
         album: Some("Album".to_owned()),
         duration_ms: Some(DURATION_MS),
         cover_url: None,
+        provider: None,
+        provider_track_id: None,
     }
 }
 

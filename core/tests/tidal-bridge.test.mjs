@@ -330,9 +330,12 @@ function createStore() {
                 // for about 220 ms with the previous track's sync point,
                 // written at the click about 740 ms before, then TIDAL
                 // resets it to 0.
+                // A track TIDAL still has loaded shows at the click itself
+                // (`payload.showsAfterMs: 0`, verified live).
                 const controls = state.playbackControls;
-                const clickedAt = Date.now() - 740;
-                controls.latestCurrentTime = livePosition(controls) - 0.74;
+                const showsAfterMs = payload?.showsAfterMs ?? 740;
+                const clickedAt = Date.now() - showsAfterMs;
+                controls.latestCurrentTime = livePosition(controls) - showsAfterMs / 1000;
                 controls.latestCurrentTimeSyncTimestamp = clickedAt;
                 state.playQueue.currentIndex += 1;
                 const next = state.playQueue.elements[state.playQueue.currentIndex];
@@ -697,6 +700,23 @@ test("Skipping in TIDAL advances to the new song's start, not the old song's pos
     assert.ok(advance.positionMs < 1_500, `advanced to ${advance.positionMs} ms`);
     assert.ok(!published.some(op => op.type === "playback.seek"), JSON.stringify(published));
     assert.ok(bridge.getState().playback.positionMs < 1_500);
+});
+
+test("Skipping to a track TIDAL still has loaded advances to its start, not the old song's position", async () => {
+    const { bridge, store, events } = await loadAdapter();
+    // Verified live: after a repeat-one restart, skipping to the song TIDAL
+    // had just moved on to showed it at the click, with the old song's 21.8 s.
+    store.dispatch({ type: "test/SET_PLAYBACK", payload: { latestCurrentTime: 21.8, latestCurrentTimeSyncTimestamp: Date.now() } });
+    await sleep(STORE_EVENT_SETTLE_MS);
+    events.length = 0;
+
+    store.dispatch({ type: "test/USER_NEXT", payload: { showsAfterMs: 0 } });
+    await sleep(STORE_EVENT_SETTLE_MS + 300);
+    const published = operations(events).map(event => event.data);
+    const advance = published.find(op => op.type === "playback.advance");
+    assert.ok(advance, `no advance: ${JSON.stringify(published)}`);
+    assert.ok(advance.positionMs < 1_500, `advanced to ${advance.positionMs} ms`);
+    assert.ok(!published.some(op => op.type === "playback.seek"), JSON.stringify(published));
 });
 
 test("TIDAL keeps a paused session paused, at its position, once the loaded track starts", async () => {

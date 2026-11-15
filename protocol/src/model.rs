@@ -1,7 +1,9 @@
 //! Shared music-session data model.
 //!
-//! Provider-specific identifiers never cross this boundary. Each adapter maps
-//! these descriptors and operations to its own music client's internal API.
+//! Each adapter maps these descriptors and operations to its own music
+//! client's internal API. The one provider-specific identifier is a track's
+//! ID on the service that queued it: a hint that lets clients on that same
+//! service skip the lookup. Everyone else looks the song up by its metadata.
 
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +22,15 @@ pub struct TrackDescriptor {
     /// Album art from the provider that queued it, for display only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover_url: Option<String>,
+    /// The service the song was queued from (`Tidal`, `Spotify`,
+    /// `YoutubeMusic`, `AppleMusic`), with `provider_track_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The song's ID on `provider` (TIDAL track ID, Spotify track URI,
+    /// YouTube video ID, Apple Music catalog ID). Clients on the same
+    /// service play exactly this song without searching for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_track_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

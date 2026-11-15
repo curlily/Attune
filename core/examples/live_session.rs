@@ -226,6 +226,8 @@ async fn main() -> Outcome {
             album: Some("SOS".to_owned()),
             duration_ms: Some(153_000),
             cover_url: None,
+            provider: None,
+            provider_track_id: None,
         },
         added_by: None,
     };
@@ -246,6 +248,8 @@ async fn main() -> Outcome {
             album: None,
             duration_ms: None,
             cover_url: None,
+            provider: None,
+            provider_track_id: None,
         },
         added_by: None,
     };
