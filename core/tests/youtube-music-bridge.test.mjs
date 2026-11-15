@@ -344,6 +344,7 @@ async function loadAdapter(setup, { pageSetTimeout = setTimeout, pageSetInterval
         window: {
             addEventListener: page.media.addEventListener,
             removeEventListener: page.media.removeEventListener,
+            localStorage: page.localStorage,
         },
         document: { querySelector: selector => elements[selector] ?? null },
         performance: { now: () => Date.now() },
@@ -888,9 +889,93 @@ test("During a session, music videos the user plays are swapped for their songs 
         !JSON.stringify(published).includes('"providerTrackId":"omv"'),
         `the video itself was never shared: ${JSON.stringify(published)}`,
     );
-    const replace = published.filter(op => op.type === "queue.replace").at(-1);
-    assert.deepEqual(replace.entries.map(entry => entry.track.providerTrackId), ["lights", "a", "lonely"]);
+    // The first song is shared as soon as it plays, without waiting for the
+    // rest; the video that has no song follows once that is known.
+    const [replace, ...later] = published.filter(op => op.type.startsWith("queue."));
+    assert.equal(replace.type, "queue.replace");
+    assert.deepEqual(replace.entries.map(entry => entry.track.providerTrackId), ["lights", "a"]);
+    assert.deepEqual(later.map(op => [op.type, op.entry?.track.providerTrackId, op.index]), [["queue.insert", "lonely", 2]]);
 }));
+
+test("A music video that becomes the current song is held before it plays, and its song starts at once", () => {
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    return withAdapter(page => {
+        const fetch = page.network.fetch;
+        page.network.fetch = async (path, params) => {
+            if (path === "/search" && params.query.includes("Blinding")) await held;
+            return fetch(path, params);
+        };
+    }, async ({ bridge, page, events }) => {
+        await loadSession(bridge);
+        await bridge.prepareForSession();
+        await settle();
+        events.length = 0;
+        page.calls.length = 0;
+
+        page.userPlays("omv", "a");
+        // Held at once, while its song is still being looked up.
+        await sleep(20);
+        assert.ok(page.calls.includes("pause"), `paused right away: ${page.calls}`);
+        assert.deepEqual(operations(events), [], "nothing shared yet");
+
+        const released = Date.now();
+        release();
+        let replace;
+        while (!replace && Date.now() - released < 3_000) {
+            await sleep(10);
+            replace = operations(events).find(op => op.type === "queue.replace");
+        }
+        assert.ok(replace, "shared");
+        // Without waiting for the song to load (that took up to 3 s).
+        assert.ok(Date.now() - released < 1_000, `shared after ${Date.now() - released} ms`);
+        assert.equal(replace.entries[0].track.providerTrackId, "lights");
+        assert.equal(bridge.getState().playback.isPlaying, true);
+        assert.ok(page.calls.includes("select:lights"));
+        assert.ok(!page.calls.includes("play"), "the video never played on");
+    });
+});
+
+test("A music video without a song plays on after the lookup", () => withAdapter(async ({ bridge, page, events }) => {
+    await loadSession(bridge);
+    await bridge.prepareForSession();
+    await settle();
+    page.calls.length = 0;
+    events.length = 0;
+
+    page.userPlays("lonely");
+    for (let waited = 0; waited < 3_000 && !operations(events).length; waited += 50) await sleep(50);
+    assert.ok(page.calls.includes("pause") && page.calls.includes("play"), `${page.calls}`);
+    const replace = operations(events).find(op => op.type === "queue.replace");
+    assert.equal(replace.entries[0].track.providerTrackId, "lonely");
+}));
+
+test("Songs found for music videos are remembered across reloads", async () => {
+    const storage = new Map();
+    const localStorage = {
+        getItem: key => storage.get(key) ?? null,
+        setItem: (key, value) => storage.set(key, String(value)),
+    };
+    // Plays the video in a session; resolves to the searches it took.
+    const playVideo = () => {
+        let searches;
+        return withAdapter(page => { page.localStorage = localStorage; }, async ({ bridge, page }) => {
+            await loadSession(bridge);
+            await bridge.prepareForSession();
+            await settle();
+            page.requests.length = 0;
+            page.userPlays("omv");
+            for (let waited = 0; waited < 3_000 && bridge.getState().queue[0]?.track.providerTrackId !== "lights"; waited += 50) {
+                await sleep(50);
+            }
+            assert.equal(bridge.getState().queue[0].track.providerTrackId, "lights");
+            searches = page.requests.filter(request => request.startsWith("search:"));
+        }).then(() => searches);
+    };
+    assert.ok((await playVideo()).length > 0, "looked up the first time");
+    assert.ok(storage.get("attune.songOfVideo")?.includes('["omv","lights"]'), [...storage.values()].join());
+    assert.deepEqual(await playVideo(), [], "not again after a reload");
+});
 
 test("Music videos the session put in the queue are left as they are", () => withAdapter(async ({ bridge, page, events }) => {
     await bridge.prepareForSession();

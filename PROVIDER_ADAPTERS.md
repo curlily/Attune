@@ -821,13 +821,32 @@ Music links to the item (`counterpart`, signed in), else the song a search finds
 name, artist and version, no longer than the video (`matcher.songForVideo`). Videos the session
 put in the queue are left alone (another listener's choice), a video without a song stays (it's
 missing for listeners elsewhere), and the current item is swapped only in its first 15 s (later
-the song would start over). The first five positions go first and are shared at once, the rest
-follow as an edit. Verified live (signed out, 2026-11-15): of a radio's 50 music videos, 49 were
-swapped (the 202 s "Blinding Lights" for the 263 s video, and so on), the first share after 7.6 s
-and the rest after 18.6 s, and no video was ever shared. All 50 in one pass took 27 s. Signed out
-there are no `counterpart`s, so every one was searched. Not verified: that playback carries on
-smoothly while the current item is swapped (the test window stopped playing anything, videos and
-songs alike, also without the adapter).
+the song would start over). Verified live (signed out, 2026-11-15): of a radio's 50 music videos,
+49 were swapped (the 202 s "Blinding Lights" for the 263 s video, and so on), and no video was
+ever shared. Signed out there are no `counterpart`s, so every one was searched.
+
+How it stays fast, without waiting on timeouts (the first version shared after 7.6 s and let
+the video play meanwhile):
+- **The current video is held the moment it appears**: checked on every store change, before the
+  150 ms debounce, and paused while it is still loading. Live: paused 71 ms after it was
+  selected, 0 ms in. If it has no song it plays on (`playVideo`).
+- **It is looked up alone**, its queries at once (not one after the other), and its song is
+  started at once (selected at 0.79 s).
+- **The first song is shared alone, right away** (0.88 s): videos further down that wait for
+  their songs aren't reported meanwhile (`waitsForSong`), so the list can be shared without them.
+  Each joins the session once swapped (here the other 24 at 4.8 s), the next five first, then the
+  rest; a video found to have no song joins as it is.
+- **Nothing waits for the song to load**: it starts at 0, playing, so the share needs no position
+  read (the 3 s "still loading" wait and a 10 s wait for the song were dropped), and it goes out
+  directly rather than through the debounce, which the new song's loading kept postponing (1.3 s).
+- **Songs found are remembered** in the page's storage (`attune.songOfVideo`, up to 2,000), so a
+  radio played again, or after a reload, needs no lookups. Videos without a song are only
+  remembered until the page reloads.
+
+Not verified live: that the song plays on smoothly after the swap. YouTube stopped streaming to
+the automated windows used for testing (videos and songs alike, also without the adapter and in a
+fresh profile: the player endpoint said OK with 18 streams, the media never loaded), so only the
+adapter's own steps were timed.
 
 **Entry keys include the video** (found while testing the swap): queue numbers start again after a
 clear, and a new list as long as the old one ends on the same `nextQueueItemId`, so the restart

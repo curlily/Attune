@@ -344,11 +344,15 @@
                 playback: { isPlaying: false, positionMs: 0, positionCapturedAtMs: Date.now() },
             };
         }
-        const entries = queue.map(entry => ({
-            entryId: entryIdFor(entry.key),
-            // Other YouTube Music users play this exact video without a search.
-            track: { ...descriptorOf(entry.item), provider: "YoutubeMusic", providerTrackId: entry.videoId },
-        }));
+        const entries = queue
+            // During a session, videos further down that wait for their song
+            // aren't reported (see `waitsForSong`): each is shared once swapped.
+            .filter((entry, index) => index === 0 || !waitsForSong(entry))
+            .map(entry => ({
+                entryId: entryIdFor(entry.key),
+                // Other YouTube Music users play this exact video without a search.
+                track: { ...descriptorOf(entry.item), provider: "YoutubeMusic", providerTrackId: entry.videoId },
+            }));
         // The player may still hold the previous track for a moment.
         const loaded = loadedVideoId() === queue[0].videoId;
         return {
@@ -1290,31 +1294,36 @@
             keepAutoplayOff({ fromUser: applying === 0 && Date.now() >= suppressLocalChangesUntil });
         }
         if (noteInterruption()) return;
-        // Published once the songs are in place.
-        if (swapping) return;
+        // A held video: shared once its song plays.
+        if (holding) return;
         if (applying > 0 || Date.now() < suppressLocalChangesUntil) {
             rebase();
             return;
         }
 
         const queue = readQueue();
-        // Before a video loading as the current item has played for long.
-        // A pass that just finished is shared first, the next one after.
-        if (sessionSettings && !shareSwapped) {
+        // The next pass of swaps. Videos waiting for theirs aren't reported
+        // (see `stateFromQueue`), so what is known can be shared meanwhile.
+        if (sessionSettings && !swapRunning) {
             const videos = videosToSwap(queue);
+            if (videos[0] && videos[0] === queue[0]) {
+                swapVideos([videos[0]]);
+                return;
+            }
             if (videos.length) {
-                // The first few at once, so the list is shared within
-                // seconds; the rest follow as an edit. All 50 of a radio
-                // took 27 s (verified live).
+                // The next few first, then the rest: all 50 of a radio at
+                // once took 27 s (verified live).
                 const soon = videos.filter(entry => queue.indexOf(entry) < VIDEO_SWAP_FIRST);
                 swapVideos(soon.length ? soon : videos);
-                return;
             }
         }
 
         // A track that is loading or buffering hasn't arrived yet.
         const loading = trackLoading(queue);
-        if (loading && Date.now() - (bufferingSince ??= Date.now()) < BUFFERING_WAIT_MS) {
+        // A swapped-in song starts at 0, playing: nothing to wait for.
+        const sharingSwap = swappedCurrent;
+        swappedCurrent = false;
+        if (loading && !sharingSwap && Date.now() - (bufferingSince ??= Date.now()) < BUFFERING_WAIT_MS) {
             scheduleEmit();
             return;
         }
@@ -1324,10 +1333,6 @@
         const beforeSettled = baselineSettled;
         const after = stateFromQueue(queue);
         baseline = after;
-        if (shareSwapped) {
-            shareSwapped = false;
-            scheduleEmit(); // the rest of the videos
-        }
         baselineSettled = !loading;
         if (!before) return;
 
@@ -1390,7 +1395,6 @@
             sendEvent("PlaystateChange", getPlayState());
         }
     }
-
     // ---------------------------------------------------------------------
     // Music videos in a session
     // ---------------------------------------------------------------------
@@ -1404,19 +1408,69 @@
     // song YouTube Music links to the video (`counterpart`, signed in), else
     // the song a search finds by the same name and artist. A video without
     // a song stays; listeners on other services can't play it.
+    //
+    // A video that becomes the current item is held (paused) the moment it
+    // shows up in the store, before the player has started it (a track
+    // takes 0.5–0.9 s to start, verified live), and looked up on its own,
+    // its queries at once. Its song starts as soon as it is found, and the
+    // change is shared right away: the queue is known and the song starts
+    // at 0, so nothing has to load first. The rest of the list follows.
 
-    // The current video is swapped only this early: later, the song would
-    // start over.
+    // The current video is swapped only this early: later (a session
+    // created from a video already playing), the song would start over.
     const VIDEO_SWAP_START_MS = 15_000;
-    // Swapped (and shared) first: the current item and the next few.
+    // Swapped and shared first: the current item and the next few.
     const VIDEO_SWAP_FIRST = 5;
+    // Songs found for videos, kept in the page's storage so a radio played
+    // again (or after a reload) needs no lookups.
+    const SWAP_STORAGE_KEY = "attune.songOfVideo";
+    const SWAP_STORAGE_LIMIT = 2_000;
     // Video ID -> its song's video ID, or null if it has none.
-    const songOfVideo = new Map();
+    const songOfVideo = loadSwaps();
     // Entry IDs the session put in the queue: another listener's choice.
     const fromSession = new Set();
-    let swapping = false;
-    // A swap finished and isn't shared yet.
-    let shareSwapped = false;
+    // A pass of swaps runs (one at a time).
+    let swapRunning = false;
+    // The current item is a video held until its song plays: nothing is
+    // shared meanwhile.
+    let holding = false;
+    // The swap started the current song: share it without waiting for it
+    // to load.
+    let swappedCurrent = false;
+
+    /**
+     * A video further down the queue that will be swapped for its song: not
+     * reported until then, so it is never shared. One that has no song is
+     * reported as it is.
+     */
+    function waitsForSong(entry) {
+        return Boolean(sessionSettings) &&
+            isMusicVideo(rendererOf(entry.item)) &&
+            !fromSession.has(entryIdFor(entry.key)) &&
+            songOfVideo.get(entry.videoId) !== null;
+    }
+
+    function loadSwaps() {
+        try {
+            const saved = JSON.parse(window.localStorage?.getItem(SWAP_STORAGE_KEY) ?? "[]");
+            return new Map(Array.isArray(saved) ? saved.filter(pair => Array.isArray(pair) && pair.length === 2) : []);
+        } catch {
+            return new Map();
+        }
+    }
+
+    function rememberSwap(videoId, song) {
+        songOfVideo.delete(videoId);
+        songOfVideo.set(videoId, song);
+        // Only songs found are kept: a lookup that found none may find one later.
+        if (!song) return;
+        try {
+            const found = [...songOfVideo].filter(([, value]) => value).slice(-SWAP_STORAGE_LIMIT);
+            window.localStorage?.setItem(SWAP_STORAGE_KEY, JSON.stringify(found));
+        } catch {
+            // Storage full or unavailable: the lookups are only made again.
+        }
+    }
 
     function videosToSwap(queue) {
         return queue.filter((entry, index) => {
@@ -1432,7 +1486,12 @@
         return renderer?.videoId ?? renderer?.navigationEndpoint?.watchEndpoint?.videoId ?? null;
     }
 
-    async function songFor(entry) {
+    /**
+     * The song for a video's queue entry, or null. `urgent`: the video is
+     * what plays (held meanwhile), so its queries run at once instead of
+     * one after the other.
+     */
+    async function songFor(entry, { urgent = false } = {}) {
         if (songOfVideo.has(entry.videoId)) return songOfVideo.get(entry.videoId);
         let song = null;
         const counterpart = counterpartOf(entry.item);
@@ -1440,59 +1499,121 @@
             song = videoIdOfRenderer(counterpart);
         } else {
             const video = descriptorOf(entry.item);
-            for (const query of matcher.searchQueries(video, { withoutApostrophes: true })) {
-                const found = matcher.songForVideo(video, await searchSongs(query));
-                if (found) {
-                    song = found.videoId;
-                    break;
+            const queries = matcher.searchQueries(video, { withoutApostrophes: true });
+            const lookUp = async query => matcher.songForVideo(video, await searchSongs(query))?.videoId ?? null;
+            if (urgent) {
+                // The first query's answer wins if it has one.
+                const answers = await Promise.all(queries.map(query => lookUp(query).catch(() => null)));
+                song = answers.find(Boolean) ?? null;
+            } else {
+                for (const query of queries) {
+                    song = await lookUp(query);
+                    if (song) break;
                 }
             }
         }
-        songOfVideo.set(entry.videoId, song);
+        rememberSwap(entry.videoId, song);
         return song;
     }
 
-    function swapVideos(videos) {
-        swapping = true;
-        const run = applyChain.then(async () => {
-            const songs = new Map(); // queue key -> song video ID
-            let next = 0;
-            const worker = async () => {
-                while (next < videos.length) {
-                    const entry = videos[next];
-                    next += 1;
-                    try {
-                        const song = await songFor(entry);
-                        if (song) songs.set(entry.key, song);
-                    } catch (error) {
-                        if (!(error instanceof TrackLookupError)) console.warn("[Attune]", error?.message ?? error);
-                    }
-                }
-            };
-            await Promise.all(Array.from({ length: Math.min(SEARCH_CONCURRENCY, videos.length) }, worker));
-            if (!songs.size) return;
+    // During a session, every store change: a video that just became the
+    // current item is held and swapped at once, before it plays.
+    function holdCurrentVideo() {
+        if (!sessionSettings || swapRunning || applying > 0 || Date.now() < suppressLocalChangesUntil) return;
+        const queue = readQueue();
+        const videos = videosToSwap(queue);
+        if (videos[0] && videos[0] === queue[0]) swapVideos([videos[0]]);
+    }
 
-            // The queue may have changed meanwhile: swap what is still there.
-            const queue = readQueue();
-            const wanted = queue.map(entry => songs.has(entry.key)
-                ? { entryId: crypto.randomUUID(), videoId: songs.get(entry.key) }
-                : { entryId: entryIdFor(entry.key), videoId: entry.videoId });
-            if (queue[0] && songs.has(queue[0].key)) {
-                await replaceAndStart(wanted);
-                // Loaded is enough: sharing waits for a track still buffering anyway.
-                await waitFor(() => loadedVideoId() === songs.get(queue[0].key), TRACK_START_TIMEOUT_MS);
-            } else {
-                await writeUpcoming(wanted.slice(1));
+    async function lookUpAll(videos) {
+        let next = 0;
+        const worker = async () => {
+            while (next < videos.length) {
+                const entry = videos[next];
+                next += 1;
+                try {
+                    await songFor(entry);
+                } catch (error) {
+                    if (!(error instanceof TrackLookupError)) console.warn("[Attune]", error?.message ?? error);
+                    // Shared as it is rather than held back for good.
+                    rememberSwap(entry.videoId, null);
+                }
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(SEARCH_CONCURRENCY, videos.length) }, worker));
+    }
+
+    // The queue as it is, with every video whose song is known swapped.
+    function withSongs(queue) {
+        return queue.map(entry => {
+            const song = isMusicVideo(rendererOf(entry.item)) && !fromSession.has(entryIdFor(entry.key))
+                ? songOfVideo.get(entry.videoId)
+                : null;
+            return song
+                ? { entryId: crypto.randomUUID(), videoId: song, swapped: true }
+                : { entryId: entryIdFor(entry.key), videoId: entry.videoId, swapped: false };
+        });
+    }
+
+    /**
+     * One pass: the current video alone (held meanwhile, so the first song
+     * plays and is shared as early as possible), or videos further down,
+     * written into the queue together once found.
+     */
+    function swapVideos(videos) {
+        swapRunning = true;
+        const shown = readQueue();
+        const current = shown[0] && videos.find(entry => entry.key === shown[0].key);
+        // Held before it plays (outside the store's dispatch).
+        if (current) {
+            holding = true;
+            Promise.resolve().then(() => {
+                try {
+                    playerApi.pauseVideo();
+                } catch {
+                    // Paused or not, the song replaces it below.
+                }
+            });
+        }
+        const rest = videos.filter(entry => entry !== current);
+        const run = applyChain.then(async () => {
+            if (current) {
+                let song = null;
+                try {
+                    song = await songFor(current, { urgent: true });
+                } catch (error) {
+                    if (!(error instanceof TrackLookupError)) console.warn("[Attune]", error?.message ?? error);
+                }
+                const queue = readQueue();
+                if (song && queue[0]?.key === current.key) {
+                    await replaceAndStart(withSongs(queue));
+                    // Selecting an item always starts it, playing (verified live).
+                    lastKnownPlaying = true;
+                    swappedCurrent = true;
+                } else if (queue[0]?.key === current.key) {
+                    // No song: the video plays after all.
+                    playerApi.playVideo();
+                }
+            }
+            if (rest.length) {
+                await lookUpAll(rest);
+                const queue = readQueue();
+                const wanted = withSongs(queue).slice(1);
+                if (wanted.some(item => item.swapped)) await writeUpcoming(wanted);
             }
         }).catch(error => {
             sendEvent("Error", `Could not swap music videos for their songs: ${error?.message ?? error}`);
         }).finally(() => {
-            swapping = false;
-            shareSwapped = true;
-            // Now share the change, songs and all.
-            scheduleEmit();
+            holding = false;
+            swapRunning = false;
+            // Share what changed and start the next pass, now: through the
+            // debounce it waited for the new song's loading to quieten down
+            // (1.3 s, verified live).
+            clearTimeout(eventTimer);
+            eventTimer = null;
+            runEmit();
         });
-        applyChain = run;
+        applyChain = run.catch(() => {});
     }
 
     function runEmit() {
@@ -1520,6 +1641,7 @@
             if (event?.type === "seeked" && applying === 0 && Date.now() >= suppressLocalChangesUntil) {
                 userSeeked = true;
             }
+            holdCurrentVideo();
             scheduleEmit();
         }, ["seeked"]);
         pollTimer = setInterval(() => {
