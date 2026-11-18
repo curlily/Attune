@@ -19,6 +19,10 @@
 //!     cargo run -p attune-core --example live_pair -- repeat <provider> one|off
 //!     cargo run -p attune-core --example live_pair -- remove <provider> <queue index>
 //!     cargo run -p attune-core --example live_pair -- leave <provider>
+//!     cargo run -p attune-core --example live_pair -- rejoin <provider>
+//!     cargo run -p attune-core --example live_pair -- move <provider> <from> <to>
+//!     cargo run -p attune-core --example live_pair -- playnow <provider> <index>
+//!     cargo run -p attune-core --example live_pair -- exists [code]
 //!     cargo run -p attune-core --example live_pair -- quit
 //!
 //! `log` returns (and clears) what happened since the last call.
@@ -30,7 +34,7 @@ use std::{
 
 use attune_core::{
     bridge_controller::{BridgeController, BridgeEvent},
-    network::{JoinCredentials, SessionClientConfig, new_client_id},
+    network::{JoinCredentials, SessionClient, SessionClientConfig, new_client_id},
     protocol::RepeatMode,
     protocol::SessionMusicState,
     providers,
@@ -143,6 +147,10 @@ struct Member {
 
 struct Pair {
     members: Vec<Member>,
+    /// Providers whose member left, kept for `join`.
+    left: Vec<(&'static str, Arc<BridgeController>)>,
+    url: String,
+    credentials: JoinCredentials,
     log: Log,
 }
 
@@ -365,6 +373,83 @@ async fn run_command(pair: &mut Pair, line: &str) -> (String, bool) {
                     .map_err(|e| format!("{e:?}"))?;
                 Ok(format!("{target}: removed [{index}]\n"))
             }
+            "move" => {
+                let mut parts = argument.split(' ');
+                let (Some(target), Some(from), Some(to)) = (parts.next(), parts.next(), parts.next()) else {
+                    return Err("move <provider> <from> <to>".to_owned());
+                };
+                let member = pair.member(target)?;
+                let from: usize = from.parse().map_err(|_| "from")?;
+                let to_index: usize = to.parse().map_err(|_| "to")?;
+                let entry_id = member
+                    .runtime
+                    .status()
+                    .queue
+                    .get(from)
+                    .map(|item| item.entry_id.clone())
+                    .ok_or("no such entry")?;
+                member
+                    .runtime
+                    .edit_queue(QueueEdit::Move { entry_id, to_index })
+                    .await
+                    .map_err(|e| format!("{e:?}"))?;
+                Ok(format!("{target}: moved [{from}] to [{to_index}]
+"))
+            }
+            // As the app's "Play now": move it next, remove the current song.
+            "playnow" => {
+                let (target, index) = argument.split_once(' ').ok_or("playnow <provider> <index>")?;
+                let member = pair.member(target)?;
+                let index: usize = index.parse().map_err(|_| "index")?;
+                let queue = member.runtime.status().queue;
+                let entry_id = queue.get(index).map(|item| item.entry_id.clone()).ok_or("no such entry")?;
+                let current = queue.first().map(|item| item.entry_id.clone()).ok_or("empty")?;
+                if index == 0 {
+                    return Ok("already current
+".to_owned());
+                }
+                if index > 1 {
+                    member
+                        .runtime
+                        .edit_queue(QueueEdit::Move { entry_id, to_index: 1 })
+                        .await
+                        .map_err(|e| format!("{e:?}"))?;
+                }
+                member
+                    .runtime
+                    .edit_queue(QueueEdit::Remove { entry_id: current })
+                    .await
+                    .map_err(|e| format!("{e:?}"))?;
+                Ok(format!("{target}: playing [{index}] now
+"))
+            }
+            // Is the session (or another code) still on the server?
+            "exists" => {
+                let code = if argument.is_empty() { pair.credentials.code.clone() } else { argument.to_uppercase() };
+                let config = SessionClientConfig::new(pair.url.clone(), new_client_id(), "Check");
+                let found = SessionClient::exists(&config, &code).await.map_err(|e| format!("{e:?}"))?;
+                Ok(format!("{code}: {found:?}
+"))
+            }
+            // Join again from a provider that left.
+            "rejoin" => {
+                let index = pair
+                    .left
+                    .iter()
+                    .position(|(name, _)| *name == argument)
+                    .ok_or_else(|| format!("{argument:?} hasn't left"))?;
+                let (name, bridge) = pair.left.remove(index);
+                let mut config = SessionClientConfig::new(pair.url.clone(), new_client_id(), format!("Live {name}"));
+                config.provider = Some(name.to_owned());
+                let started = now_ms();
+                let runtime = SessionRuntime::join(bridge.clone(), config, pair.credentials.clone())
+                    .await
+                    .map_err(|e| format!("{e:?}"))?;
+                watch_runtime(name, &runtime, pair.log.clone());
+                pair.members.push(Member { name, bridge, runtime });
+                Ok(format!("{name} joined in {} ms
+", now_ms() - started))
+            }
             // Leave the session, as the app's Leave does.
             "leave" => {
                 let index = pair
@@ -373,6 +458,7 @@ async fn run_command(pair: &mut Pair, line: &str) -> (String, bool) {
                     .position(|member| member.name == argument)
                     .ok_or_else(|| format!("unknown provider {argument:?}"))?;
                 let member = pair.members.remove(index);
+                pair.left.push((member.name, member.bridge.clone()));
                 member.runtime.leave().await.map_err(|e| format!("{e:?}"))?;
                 Ok(format!("{argument} left\n"))
             }
@@ -434,7 +520,7 @@ async fn daemon(url: &str, host: &str, guests: &[String]) -> Outcome<()> {
         "[pair] all in session {}; control port {CONTROL}",
         members[0].runtime.status().session_id
     );
-    serve(Pair { members, log }).await
+    serve(Pair { members, left: Vec::new(), url: url.to_owned(), credentials, log }).await
 }
 
 /// Join an existing session from one provider, e.g. to watch a real jam.
@@ -469,6 +555,12 @@ async fn join(url: &str, guest: &str, code: &str) -> Outcome<()> {
             bridge: guest_bridge,
             runtime,
         }],
+        left: Vec::new(),
+        url: url.to_owned(),
+        credentials: JoinCredentials {
+            code: code.to_uppercase(),
+            rejoin_secret: None,
+        },
         log,
     };
     serve(pair).await

@@ -37,6 +37,7 @@ Architecture and the bridge contract are in [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCH
 | Playback needs a gesture | A browser refuses to start playback from a script until the page had a user gesture. Desktop apps allow it. | Verified live (YouTube Music) | Calls are evaluated as user gestures; the browser is launched with `--autoplay-policy=no-user-gesture-required` |
 | Leave dialog | A page that is playing can block its reload with a "Leave site?" dialog | Verified live (YouTube Music) | `install_bridge` confirms `beforeunload` dialogs |
 | Falling behind while buffering | On a slow connection a player buffers while the session plays on. Adapters never take a position read while loading for a seek (that threw everyone back, see YouTube Music), so the client stayed seconds behind and still showed "In sync" | Tested with a fake provider; not yet verified live. TIDAL extrapolates its position from the last play, pause or seek, so a stall may not show in what it reports | The runtime compares positions every second while synced (`check_drift`). Off by more than 2 s for 3 readings shows "N s behind" here and "Catching up" to the others; once the player plays on, one seek to the session's position (at most every 5 s, 3 times per song). Nothing is published |
+| Pauses adding up to a gap | `playback.setPlaying` has no position: the server takes it as of when it accepts the pause, while each app stops wherever its player is | Verified live 2026-11-18 (TIDAL, Spotify, YouTube Music): each pause and play left TIDAL 0.1–0.3 s further behind and Spotify further ahead, 2.3 s apart after four cycles, each under the 2 s drift tolerance | After a pause the runtime moves every app (the one that paused too) to the session's paused position when it is more than 250 ms off (`align_paused_position`); a seek while paused can't be heard. Live after: 0–250 ms on every pause, no growth |
 | Interruptions | Advertisements take over playback for a while | Verified live (YouTube Music) | Adapter sends `Interruption`; the runtime steps out and rejoins after |
 | Background timers | While the app's window is hidden and nothing plays, Chromium runs the page's timers once a second (a 25 ms timeout took 1000 ms). Polling loops slow down exactly while a track loads paused. | Verified live (TIDAL; Spotify, **also while playing**, as its sound is native; YouTube Music, where sound from the page lifts it, and selecting a song always starts sound). Hidden for more than 5 minutes, chained timers run **once a minute** (verified live, YouTube Music) | Waits react to the app's own signals, with a 250 ms fallback check: TIDAL store changes (`waitFor`, `holdUntil`); Spotify `update`/`queue_update` events (`watchPlayer`); YouTube Music store changes and `<video>` media events, caught in the capture phase (`watchPage`). Timers remain only for timeouts and stable periods, and the 150–180 ms debounce of local changes |
 | Resuming a new list part-way | A new current song starts at 0 in the session (`queue.replace`), but **Spotify resumes an album or playlist where it was left** (seen 48 s, 164 s and 176 s in). The others then played that far behind, and the next resync (a stale queue edit, a rejoin) threw Spotify back to the session's position: heard as the song restarting, again on every resync | Verified live (Spotify + YouTube Music session), fixed | After a local replace that changes the current song, the runtime compares the provider's position with the session's and attaches where the provider really is to the replace (protocol 2 `playback`, `with_actual_playback`). Covers any provider. Live: Spotify resumed at 1:33, YouTube Music started at 1:34.5, within 20 ms of it |
@@ -243,6 +244,17 @@ The adapter was injected into the running app and driven directly, not through
   jump to where our last seek should land is ours. In a scripted run (join, replace
   keeping the song, advance, pause, seek, empty) nothing was published; the user's
   pause, seek, play, skip and removal in TIDAL were.
+- **The user's queue edits are small operations** (2026-11-18): an insert, removal or
+  move in TIDAL is published as `queue.insert`/`remove`/`move`, as the other adapters
+  do. Before, every edit was a `queue.replace` of the whole queue (one removal sent 78
+  songs), which the server refuses as stale if someone else edited meanwhile.
+- **A start that times out is caught by the runtime** (2026-11-18, live, TIDAL hidden):
+  for a remote Next TIDAL loaded the song paused and `startLoadedTrack` gave up after
+  5 s without an error; TIDAL stayed silent, shown in sync, until the next song. Now
+  the runtime starts an app that sits paused on the session's song for 3 s while the
+  session plays (`restart_if_stopped`).
+- **Right after a pause the store's position can be far off** (2026-11-18: 21 s, an old
+  sync point). The runtime's move to the session's paused position puts it right.
 - **Timings measured** (TIDAL hidden): join playing 0.9 s, paused join 1.0–2.6 s,
   replace keeping the song 0.5–0.7 s (no gap), advance 0.9 s (sound after 0.34 s),
   seek 15 ms, empty queue 25 ms, resume after a paused join 0.7–1.2 s.
@@ -256,6 +268,11 @@ The adapter was injected into the running app and driven directly, not through
 2. **Big queues without ISRCs** are searched six at a time through the open API (a
    51-song rejoin took 6.8 s, most of it the current song's hold while hidden). Without
    the open API (an older or newer TIDAL) it falls back to one at a time.
+2a. **A remote Next while hidden is slow** (2026-11-18): an advance is a replace (RESET
+   with the new song, then the rest appended), and the hold takes up to 6 s with the
+   window hidden. Meanwhile TIDAL's queue has 1 song; once it played 2.6 s behind until
+   the drift check caught it up. Skipping to the next element in place would avoid the
+   reload.
 3. **A paused join can be heard from 0 for a moment** when the session resumes, in
    the double-reload case above. Why the player sometimes loads twice isn't known.
 4. **Some edits still replace the whole queue:** inserting at the front, removing or
@@ -385,6 +402,26 @@ went both ways without echoes; YouTube Music trailed by 0.1–1.2 s.
 6. **The local-change suppression is still partly time-based:** 300 ms after a remote change, though the change itself is now waited for. A user action in that window is lost.
 7. **Shuffle and repeat during a jam.** A repeat press is reported as `playback.setRepeat` and `setRepeat(0)` puts Spotify's back. For shuffle the adapter waits 600 ms (Spotify shows the shuffled order a moment after the flag), shares the order, then calls `setShuffle(false)`; Spotify then puts its old order back, so the shuffled order is written again with `writeUpcoming`. **Verified live (2026-11-14): Spotify's shuffle never reorders queued songs**, only a playlist or album it plays, and a session's songs are queued items. So when a press produced no queue change (none shared within ~600 ms of it), the adapter shuffles the upcoming songs itself, loads them through its own `queue.replace` and shares that replace; the button reads "Enable Shuffle" again. Repeat presses were reported and undone live. Autoplay changes are still not detected.
 8. **80-song queue limit** (verified live 2026-11-14): Spotify keeps at most 80 queued songs. A write of 91 showed 80 and timed out ("Spotify did not show the new queue"), putting the session in Error. The adapter now writes 80 and keeps the rest in `overflow`, reports them as part of its queue (so the runtime doesn't see songs missing), and refills from it once fewer than 60 are left. Live: a 92-song session loaded in step.
+9a. **A playlist runs on past the session's queue** (verified live 2026-11-18): after
+   Spotify's own "Add to queue" with a long playlist, Spotify showed 80 of it and one more
+   each time a song ended or a queued one was removed. Moving on by itself, the adapter
+   shared that song; moving on for another listener's song end (a remote advance), it went
+   into the baseline unreported, and Spotify's queue grew past the session's by one per song
+   (6 after a few). Now the adapter publishes what Spotify added after a remote advance
+   (`noteRevealed`), and the runtime puts an insert past the session's end at its end (the
+   server refused it as out of range, and the resync didn't remove the songs). Live: 81
+   songs kept through three remote Nexts and two removals.
+9b. **A hidden window doesn't repaint** (2026-11-18): its clock stood at 0:08 while the
+   song played on, and the shuffle button read "Disable Shuffle" with shuffle off. Don't
+   read Spotify's UI for its state; its player API is current.
+9c. **Only `index.html` reloads** (2026-11-18): Spotify's own navigation keeps the page
+   address at `xpui.app.spotify.com/index.html` (a link to an album changed the view, not
+   the address). A test that moved the page with `history.pushState` left it on
+   `/search/…`; the bridge's reload then couldn't load it, Spotify opened that address in
+   the default browser, and the bridge never became ready.
+9d. **Resumes run a little ahead** (2026-11-18): after a play Spotify was 0.3–0.9 s ahead of
+   the session, most when it resumed itself. It resets at the next pause, under the drift
+   tolerance.
 9. **Intermittent** (seen once, 2026-11-14): applying a remote `queue.remove` hung for ~20 s and failed with "Spotify did not show the new queue"; a resync recovered it. Not reproduced in two more tries, including after a pause and resume in Spotify right before.
 8. **Debug port:** Attune's config expects Spotify on 9223. `--remote-debugging-port=<port>` needs the `=`; with a space Spotify ignores it without a word.
 9. **Store version:** still unchecked.
@@ -623,7 +660,16 @@ selecting another song 0.9–1.7 s.
 5. **Local-change suppression is partly time-based** (300 ms after a remote change).
 6. **Server queue:** store edits aren't sent to the server queue. Effects across a
    reload or on other devices weren't tested.
-7. **Signed out, age-restricted and region-blocked videos** weren't tested.
+7. **Signed out, age-restricted and region-blocked videos** weren't tested. Signed out
+   (2026-11-18, four-client run) the player, search and queue work; the row menus need
+   a visible window (their popups don't render while it's hidden).
+7a. **Refusals are plain objects** (verified live 2026-11-18): looking up a 216-song list,
+   `music/get_queue` answered 503 "The service is currently unavailable" (`backendError`)
+   three times in a row. YouTube's network manager rejects with the response object, not
+   an `Error`, so it wasn't a lookup failure: it failed the whole list ("applyOperation
+   failed: [object Object]") and YouTube Music stopped following. Searches and queue
+   fetches are now tried again after 1 s and 3 s; a refusal that goes on counts only for
+   those songs (`fetchRetrying`). The same search worked again moments later.
 8. **Podcasts and uploads** in the queue weren't tested.
 9. **Other browsers:** only Edge was tested. Chrome and Brave take the same flags.
 10. **Not done yet:** a session with TIDAL (one with Spotify was run live, `live_pair`), launching the
