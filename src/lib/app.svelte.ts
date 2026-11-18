@@ -88,6 +88,8 @@ class App {
   settings = $state<Settings | null>(null);
   providers = $state<ProviderAvailability[]>([]);
   connected = $state<ProviderId | null>(null);
+  /** Attune is connecting to this one by itself (the last one, on start). */
+  autoConnecting = $state<ProviderId | null>(null);
   status = $state<RuntimeStatus | null>(null);
   code = $state<string | null>(null);
   rejoinCode = $state<string | null>(null);
@@ -179,6 +181,7 @@ class App {
       events.onNotice((notice) => this.#onNotice(notice)),
       events.onProviderChanged((id) => {
         this.connected = id;
+        this.autoConnecting = null;
       }),
       events.onJoinLink((code) => this.#onJoinLink(code)),
       events.onProviderLost((name) => {
@@ -204,6 +207,7 @@ class App {
     this.settings = settings;
     this.providers = overview.providers;
     this.connected = overview.connected;
+    this.autoConnecting = overview.connected ? null : overview.connecting;
     this.status = status;
     if (status) this.code = await api.getJoinCode().catch(() => null);
     this.loaded = true;
@@ -261,6 +265,7 @@ class App {
       const overview = await api.getProviders();
       this.providers = overview.providers;
       this.connected = overview.connected;
+      this.autoConnecting = overview.connected ? null : overview.connecting;
     } catch (error) {
       this.toast(errorText(error), "error");
     }

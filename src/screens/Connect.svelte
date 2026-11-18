@@ -9,6 +9,8 @@
   const POLL_MS = 3000;
 
   let connecting = $state<ProviderId | null>(null);
+  // This screen's own connect, or Attune's reconnecting to the last app.
+  let busy = $derived(connecting ?? app.autoConnecting);
   let error = $state<{ id: ProviderId; text: string } | null>(null);
 
   // Keep the list fresh while this screen is open, e.g. after opening an app.
@@ -90,7 +92,7 @@
 
 <div class="connect scroll">
   {#if app.connected}
-    <button class="btn ghost back" onclick={back} disabled={connecting !== null}>
+    <button class="btn ghost back" onclick={back} disabled={busy !== null}>
       <Icon name="back" size={14} /> Back
     </button>
   {/if}
@@ -116,11 +118,11 @@
         <button
           class="btn wide"
           class:primary={provider.ready && provider.id !== app.connected}
-          disabled={connecting !== null}
-          aria-busy={connecting === provider.id}
+          disabled={busy !== null}
+          aria-busy={busy === provider.id}
           onclick={() => connect(provider.id)}
         >
-          {#if connecting === provider.id}
+          {#if busy === provider.id}
             <span class="spinner"></span> Connecting…
           {:else}
             {info.action}
@@ -135,7 +137,7 @@
               {provider.displayName} opens in a browser window of its own. To use your account,
               sign in once first, then close that window and connect.
             </p>
-            <button class="btn ghost wide" disabled={connecting !== null} onclick={() => signIn(provider.id)}>
+            <button class="btn ghost wide" disabled={busy !== null} onclick={() => signIn(provider.id)}>
               Sign in first
             </button>
           </div>

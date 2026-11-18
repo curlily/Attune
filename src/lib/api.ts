@@ -21,6 +21,8 @@ export interface ProviderAvailability {
 export interface ProviderOverview {
   providers: ProviderAvailability[];
   connected: ProviderId | null;
+  /** Being connected right now, e.g. the last one when Attune starts. */
+  connecting: ProviderId | null;
 }
 
 export interface Settings {

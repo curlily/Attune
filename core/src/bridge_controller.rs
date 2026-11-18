@@ -1004,10 +1004,7 @@ pub fn open_sign_in_window(config: &ProviderConfig) -> Result<()> {
 /// Whether something answers the CDP HTTP endpoint on `debugging_port`.
 async fn debug_port_open(debugging_port: u16) -> bool {
     let url = format!("http://127.0.0.1:{debugging_port}/json/version");
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    else {
+    let Some(client) = debug_port_client() else {
         return false;
     };
     client
@@ -1015,6 +1012,22 @@ async fn debug_port_open(debugging_port: u16) -> bool {
         .send()
         .await
         .is_ok_and(|response| response.status().is_success())
+}
+
+/// A listening port on this computer accepts within a millisecond.
+/// Measured on Windows (2026-11-18): connecting to a port nobody listens on
+/// isn't refused at once but retried, and fails only after 2.0 s. Checking
+/// the music apps' debug ports one after another, that made the connect
+/// screen wait 5 s on start.
+const DEBUG_PORT_CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// HTTP client for the music apps' local debug ports.
+fn debug_port_client() -> Option<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(DEBUG_PORT_CONNECT_TIMEOUT)
+        .timeout(Duration::from_secs(2))
+        .build()
+        .ok()
 }
 
 /// Watch the connected client's debug port. Once it stops answering (the
@@ -1047,7 +1060,10 @@ async fn watch_client(
 pub(crate) async fn music_client_running(debugging_port: u16, page_url: &str) -> Result<bool> {
     let url = format!("http://127.0.0.1:{debugging_port}/json/list");
 
-    let response = match reqwest::get(&url).await {
+    let Some(client) = debug_port_client() else {
+        return Ok(false);
+    };
+    let response = match client.get(&url).send().await {
         Ok(response) => response,
         Err(_) => return Ok(false),
     };

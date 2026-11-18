@@ -40,16 +40,14 @@ pub async fn detect_providers() -> Result<Vec<ProviderAvailability>> {
         System::new_with_specifics(RefreshKind::nothing().with_processes(
             ProcessRefreshKind::nothing().with_exe(sysinfo::UpdateKind::OnlyIfNotSet),
         ));
-    let mut found = Vec::new();
-    for config in [
+    let configs = [
         providers::tidal()?,
         providers::spotify()?,
         providers::youtube_music()?,
         providers::apple_music()?,
-    ] {
-        found.push(detect(&system, &config).await);
-    }
-    Ok(found)
+    ];
+    // All at once: each may wait on a debug port.
+    Ok(futures_util::future::join_all(configs.iter().map(|config| detect(&system, config))).await)
 }
 
 async fn detect(system: &System, config: &ProviderConfig) -> ProviderAvailability {

@@ -50,6 +50,7 @@ pub(crate) async fn connect(
     if controller_slot.is_some() {
         return Err(attune_core::Error::AlreadyConnected.into());
     }
+    let _connecting = state.mark_connecting(id);
     let controller = Arc::new(BridgeController::initialise(provider_config(id)?).await?);
     watch_for_loss(app.clone(), &controller);
     crate::discord::follow_music_app(app.clone(), &controller);
@@ -159,20 +160,31 @@ pub(crate) async fn auto_connect(app: &AppHandle, state: &AppState, at_login: bo
 pub struct ProviderOverview {
     pub providers: Vec<ProviderAvailability>,
     pub connected: Option<ProviderId>,
+    /// Being connected right now (e.g. the last one, on start).
+    pub connecting: Option<ProviderId>,
 }
 
 /// Which music apps are installed and running, and which one is connected.
 #[tauri::command]
 pub async fn get_providers(state: State<'_, AppState>) -> Result<ProviderOverview, AppError> {
-    let connected = state
-        .controller
-        .lock()
-        .await
-        .as_ref()
-        .map(|controller| controller.provider_id());
+    // Not waiting for the lock: a connect holds it until the music app is
+    // attached (on start, reconnecting to the last one took seconds, and
+    // the window showed nothing meanwhile). It says what it's connecting.
+    // Other commands hold the lock only for a moment: wait for those.
+    let connected = match state.controller.try_lock() {
+        Ok(slot) => slot.as_ref().map(|controller| controller.provider_id()),
+        Err(_) if state.connecting().is_some() => None,
+        Err(_) => state
+            .controller
+            .lock()
+            .await
+            .as_ref()
+            .map(|controller| controller.provider_id()),
+    };
     Ok(ProviderOverview {
         providers: detect_providers().await?,
         connected,
+        connecting: state.connecting(),
     })
 }
 

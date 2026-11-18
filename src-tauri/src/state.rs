@@ -3,7 +3,9 @@ use std::{
     sync::{Arc, Mutex as SyncMutex, MutexGuard},
 };
 
-use attune_core::{bridge_controller::BridgeController, session::SessionRuntime};
+use attune_core::{
+    bridge_controller::BridgeController, session::SessionRuntime, structs::ProviderId,
+};
 use tokio::sync::Mutex;
 
 use crate::settings::{Settings, Store};
@@ -20,6 +22,9 @@ pub struct AppState {
     pub store: Store,
     /// Never held across an `.await`.
     settings: SyncMutex<Settings>,
+    /// The provider being connected right now (the controller's lock is
+    /// held meanwhile), so the UI can show it without waiting for it.
+    connecting: SyncMutex<Option<ProviderId>>,
 }
 
 impl AppState {
@@ -32,7 +37,24 @@ impl AppState {
             session: Mutex::new(None),
             store,
             settings: SyncMutex::new(settings),
+            connecting: SyncMutex::new(None),
         }
+    }
+
+    pub fn connecting(&self) -> Option<ProviderId> {
+        *self
+            .connecting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Mark `id` as being connected until the returned guard is dropped.
+    pub fn mark_connecting(&self, id: ProviderId) -> ConnectingGuard<'_> {
+        *self
+            .connecting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(id);
+        ConnectingGuard(&self.connecting)
     }
 
     pub fn settings(&self) -> MutexGuard<'_, Settings> {
@@ -53,5 +75,17 @@ impl AppState {
         self.store.save_settings(&next)?;
         *settings = next;
         Ok(result)
+    }
+}
+
+/// Clears [`AppState::connecting`] when connecting ends, however it ends.
+pub struct ConnectingGuard<'a>(&'a SyncMutex<Option<ProviderId>>);
+
+impl Drop for ConnectingGuard<'_> {
+    fn drop(&mut self) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 }
