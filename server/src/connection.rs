@@ -140,6 +140,11 @@ async fn handshake(
     match message {
         ClientMessage::Create(request) => hub.create(request, connection).map_err(Some),
         ClientMessage::Join(request) => hub.join(request, connection, ip).await.map_err(Some),
+        // Answered, then closed like a refused handshake.
+        ClientMessage::Check { session_id } => Err(Some(match hub.exists(&session_id, ip) {
+            Ok(exists) => Box::new(ServerMessage::Exists { exists }),
+            Err(rejection) => rejection,
+        })),
         _ => Err(Some(Box::new(error_message(
             ErrorCode::NotJoined,
             "create or join a session first",

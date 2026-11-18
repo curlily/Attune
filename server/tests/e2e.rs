@@ -436,6 +436,41 @@ async fn guessing_codes_is_rate_limited_per_address() {
     assert_eq!(remote_code(error), ErrorCode::RateLimited);
 }
 
+#[tokio::test]
+async fn asking_whether_a_session_exists_counts_misses_like_failed_joins() {
+    let config = ServerConfig {
+        join_attempts_per_minute: 2,
+        ..ServerConfig::default()
+    };
+    let server = Server::start(config).await;
+    let (a, a_start) = SessionClient::create(server.client("a"), music(&["s1"]))
+        .await
+        .expect("create");
+    let code = a_start.credentials.code.clone();
+    let wrong = if code == "AAAA" { "BBBB" } else { "AAAA" };
+    let asker = server.client("asker");
+
+    // A running session, asked about as often as you like.
+    for _ in 0..3 {
+        let found = SessionClient::exists(&asker, &code.to_lowercase()).await;
+        assert_eq!(found.expect("check"), Some(true));
+    }
+
+    // Once everyone has left, it is gone.
+    a.leave().await.expect("leave");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let found = SessionClient::exists(&asker, &code).await;
+    assert_eq!(found.expect("check"), Some(false));
+
+    // Codes that don't exist count like failed joins.
+    let found = SessionClient::exists(&asker, wrong).await;
+    assert_eq!(found.expect("check"), Some(false));
+    let error = SessionClient::exists(&asker, wrong)
+        .await
+        .expect_err("limited");
+    assert_eq!(remote_code(error), ErrorCode::RateLimited);
+}
+
 /// Raw WebSocket client for protocol-level checks.
 async fn raw(
     server: &Server,

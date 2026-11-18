@@ -359,7 +359,7 @@ impl SessionCoordinator {
         }
 
         match message {
-            ClientMessage::Create(_) | ClientMessage::Join(_) => {
+            ClientMessage::Create(_) | ClientMessage::Join(_) | ClientMessage::Check { .. } => {
                 vec![error_to(
                     client_id,
                     ErrorCode::AlreadyJoined,

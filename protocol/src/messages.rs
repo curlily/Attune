@@ -54,6 +54,12 @@ pub enum ClientMessage {
     Create(CreateSession),
     #[serde(rename = "session.join")]
     Join(JoinSession),
+    /// Whether a session with this code is still running, without joining
+    /// it: answered with `session.exists`, then the server closes. Instead
+    /// of create/join only. A code that doesn't exist counts as a failed
+    /// join attempt, so it tells nothing a join wouldn't.
+    #[serde(rename = "session.check")]
+    Check { session_id: String },
     #[serde(rename = "session.operation")]
     Operation(OperationRequest),
     #[serde(rename = "participant.setStatus")]
@@ -277,6 +283,9 @@ pub enum ServerMessage {
     },
     #[serde(rename = "session.left")]
     Left,
+    /// Answer to `session.check`.
+    #[serde(rename = "session.exists")]
+    Exists { exists: bool },
     #[serde(rename = "session.error")]
     Error { code: ErrorCode, message: String },
     /// Reply to `time.ping`: the client's own timestamp and the server's

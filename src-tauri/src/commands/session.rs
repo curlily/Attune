@@ -24,7 +24,7 @@ use crate::{
     tray,
 };
 use attune_core::{
-    network::{JoinCredentials, SessionClientConfig},
+    network::{JoinCredentials, SessionClient, SessionClientConfig},
     protocol::{ErrorCode, RepeatMode},
     session::{Notice, QueueEdit, RuntimeStatus, SessionRuntime, SyncState},
 };
@@ -197,10 +197,34 @@ pub async fn join_session(
     start(app, &state, Entry::Join(credentials)).await
 }
 
-/// The code of a session Attune was in when it last closed, if any.
+/// The code of a session Attune was in when it last closed, if it is still
+/// running. One the server no longer has is forgotten; when the server
+/// can't be asked (offline, an older server), it is offered anyway.
 #[tauri::command]
-pub fn get_rejoin_offer(state: State<'_, AppState>) -> Option<String> {
-    state.store.load_rejoin().map(|saved| saved.code)
+pub async fn get_rejoin_offer(state: State<'_, AppState>) -> Result<Option<String>, AppError> {
+    let Some(saved) = state.store.load_rejoin() else {
+        return Ok(None);
+    };
+    let config = {
+        let settings = state.settings();
+        SessionClientConfig::new(
+            saved.server_url.clone(),
+            settings.client_id.clone(),
+            settings.display_name.clone().unwrap_or_default(),
+        )
+    };
+    match SessionClient::exists(&config, &saved.code).await {
+        Ok(Some(false)) => {
+            debug!("The saved session is over; not offering to rejoin it");
+            state.store.clear_rejoin();
+            Ok(None)
+        }
+        Ok(_) => Ok(Some(saved.code)),
+        Err(error) => {
+            debug!(%error, "Could not ask whether the saved session still exists");
+            Ok(Some(saved.code))
+        }
+    }
 }
 
 /// Take the saved seat back.

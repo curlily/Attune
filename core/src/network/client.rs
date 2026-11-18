@@ -453,6 +453,40 @@ impl SessionClient {
         ))
     }
 
+    /// Whether a session with `code` is still running, without joining it.
+    /// `None` when the server can't tell: an older server that doesn't
+    /// know the question. A code that doesn't exist counts against this
+    /// address's join attempts on the server.
+    pub async fn exists(config: &SessionClientConfig, code: &str) -> Result<Option<bool>> {
+        let request = ClientMessage::Check {
+            session_id: code.to_owned(),
+        };
+        let exchange = async {
+            let mut socket = connect(config).await?;
+            send(&mut socket, &request, config.max_message_bytes).await?;
+            let answer = loop {
+                match next_message(&mut socket).await? {
+                    ServerMessage::Exists { exists } => break Some(exists),
+                    ServerMessage::Error {
+                        code: ErrorCode::InvalidMessage,
+                        ..
+                    } => break None,
+                    ServerMessage::Error { code, message } => {
+                        return Err(Error::Remote { code, message });
+                    }
+                    _ => {}
+                }
+            };
+            let _ = socket.close(None).await;
+            Ok(answer)
+        };
+        timeout(config.request_timeout, exchange)
+            .await
+            .map_err(|_| Error::Timeout {
+                context: "ask whether the session still exists",
+            })?
+    }
+
     /// Join an existing session by its code. With a rejoin secret (from an
     /// earlier run with the same client ID) this takes the old seat back.
     pub async fn join(
@@ -1099,7 +1133,9 @@ impl Actor {
                 }
             }
 
-            ServerMessage::Created { .. } | ServerMessage::Joined { .. } => {
+            ServerMessage::Created { .. }
+            | ServerMessage::Joined { .. }
+            | ServerMessage::Exists { .. } => {
                 warn!("Ignoring an unexpected handshake reply");
             }
         }

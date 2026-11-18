@@ -213,6 +213,23 @@ impl Hub {
         })
     }
 
+    /// Whether a session with `code` is running. An unknown code counts
+    /// against `ip`'s join limit, as a failed join would.
+    pub fn exists(&self, code: &str, ip: IpAddr) -> Result<bool, Rejection> {
+        if !self.limiter.allows(ip) {
+            return Err(rejection(
+                ErrorCode::RateLimited,
+                "too many failed join attempts; try again in a minute",
+            ));
+        }
+        let exists = normalize_join_code(code)
+            .is_some_and(|code| self.sessions().contains_key(&code));
+        if !exists {
+            self.limiter.failed(ip);
+        }
+        Ok(exists)
+    }
+
     /// Join by code. Failed attempts count against `ip`'s limit.
     pub async fn join(
         &self,

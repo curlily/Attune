@@ -193,17 +193,18 @@ class App {
         this.shown++;
       }),
     ]);
-    const [settings, overview, status, rejoin] = await Promise.all([
+    // The rejoin offer asks the server whether that session still runs:
+    // it shows up when the answer comes, not holding up the window.
+    void this.refreshRejoin();
+    const [settings, overview, status] = await Promise.all([
       api.getSettings(),
       api.getProviders(),
       api.getSessionStatus(),
-      api.getRejoinOffer(),
     ]);
     this.settings = settings;
     this.providers = overview.providers;
     this.connected = overview.connected;
     this.status = status;
-    this.rejoinCode = rejoin;
     if (status) this.code = await api.getJoinCode().catch(() => null);
     this.loaded = true;
     const link = await api.takeJoinLink().catch(() => null);
@@ -266,7 +267,9 @@ class App {
   }
 
   async refreshRejoin() {
-    this.rejoinCode = await api.getRejoinOffer().catch(() => null);
+    const code = await api.getRejoinOffer().catch(() => null);
+    // Joined meanwhile: nothing to offer.
+    this.rejoinCode = this.status ? null : code;
   }
 
   /** Run a create/join and adopt its result. Throws for the caller to show. */
