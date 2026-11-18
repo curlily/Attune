@@ -668,7 +668,7 @@ impl BridgeController {
         // Adapters may attach a string `code` and JSON `details` to an error
         // to report an expected, structured failure (see `bridge_failure`).
         let expression = format!(
-            "(async () => {{ try {{ const api = {api_expression}; if (!api) throw new Error('Bridge API is unavailable'); const fn = api[{method_json}]; if (typeof fn !== 'function') throw new Error('Bridge method is unavailable: ' + {method_json}); const value = await fn.apply(api, {args_json}); return {{ __attuneBridgeResult: true, ok: true, value: value === undefined ? null : value }}; }} catch (error) {{ return {{ __attuneBridgeResult: true, ok: false, error: String(error?.stack ?? error), message: String(error?.message ?? error), code: typeof error?.code === 'string' ? error.code : null, details: error?.details ?? null }}; }} }})()"
+            "(async () => {{ try {{ const api = {api_expression}; if (!api) throw new Error('Bridge API is unavailable'); const fn = api[{method_json}]; if (typeof fn !== 'function') throw new Error('Bridge method is unavailable: ' + {method_json}); const value = await fn.apply(api, {args_json}); return {{ __attuneBridgeResult: true, ok: true, value: value === undefined ? null : value }}; }} catch (error) {{ return {{ __attuneBridgeResult: true, ok: false, error: String(error?.stack ?? (error && typeof error === 'object' ? JSON.stringify(error) : error)), message: String(error?.message ?? (error && typeof error === 'object' ? JSON.stringify(error) : error)), code: typeof error?.code === 'string' ? error.code : null, details: error?.details ?? null }}; }} }})()"
         );
         let invalid = || Error::InvalidBridgeResponse {
             method,

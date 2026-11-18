@@ -457,6 +457,34 @@ test("YouTube Music skips upcoming tracks it cannot find and reports them", () =
     assert.deepEqual(page.calls.filter(call => call.startsWith("select")), ["select:a"]);
 }));
 
+test("A refused search is tried again, and one that stays refused costs only its song", () => withAdapter(async ({ bridge, page }) => {
+    // Seen live: one refused search (an object, not an Error) failed a
+    // whole 216-song list and stopped YouTube Music following the session.
+    const fetch = page.network.fetch;
+    let refusals = 0;
+    let refusedA = false;
+    page.network.fetch = async (path, params) => {
+        if (path === "/search" && params.query.includes(CATALOG.b.title)) {
+            refusals += 1;
+            throw { error: "refused", status: 429 };
+        }
+        if (path === "/search" && params.query.includes(CATALOG.a.title) && !refusedA) {
+            refusedA = true;
+            throw { error: "refused once", status: 429 };
+        }
+        return fetch(path, params);
+    };
+    const outcome = await bridge.applySnapshot({
+        queue: [entry("session-a", "a"), entry("session-b", "b"), entry("session-c", "c")],
+        currentEntryId: "session-a",
+        playback: playback(),
+    });
+    assert.deepEqual([...outcome.unavailableEntryIds], ["session-b"]);
+    assert.deepEqual(entryIds(bridge.getState()), ["session-a", "session-c"]);
+    assert.ok(refusedA, "A's search was refused once and found it after");
+    assert.ok(refusals >= 3, `B's search was tried ${refusals} times`);
+}));
+
 test("YouTube Music rejects an unplayable current track and changes nothing", () => withAdapter(async ({ bridge, page }) => {
     await assert.rejects(
         bridge.applySnapshot({

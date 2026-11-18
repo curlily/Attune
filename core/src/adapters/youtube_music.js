@@ -395,13 +395,55 @@
         return rows;
     }
 
-    /** YouTube Music's song search. Resolves to candidates in its ranking. */
+    // A refused search is tried again after these waits.
+    const SEARCH_RETRY_DELAYS_MS = [1_000, 3_000];
+
+    // YouTube's network manager rejects with plain objects, not Errors.
+    function errorText(error) {
+        if (error instanceof Error) return error.message;
+        try {
+            return JSON.stringify(error)?.slice(0, 200) ?? String(error);
+        } catch {
+            return String(error);
+        }
+    }
+
+    /**
+     * YouTube Music's song search. Resolves to candidates in its ranking.
+     *
+     * Seen live (2026-11-18): looking up a 216-song list, one search was
+     * refused with an object, not an Error. That isn't a lookup failure, so
+     * it failed the whole list ("applyOperation failed: [object Object]")
+     * and stopped YouTube Music following the session. The same search
+     * worked a moment later. Refusals are tried again; if they go on, only
+     * this song counts as not found.
+     */
     async function searchSongs(query) {
-        const response = await withTimeout(
-            network.fetch("/search", { query, params: SEARCH_SONGS_PARAMS }),
+        const response = await fetchRetrying(
+            "/search",
+            { query, params: SEARCH_SONGS_PARAMS },
             `YouTube Music search timed out for "${query}"`,
+            `YouTube Music search failed for "${query}"`,
         );
         return songsOf(response);
+    }
+
+    /**
+     * `network.fetch`, tried again when YouTube refuses. A timeout, or a
+     * refusal that goes on, is a `TrackLookupError` (`failure` and why):
+     * it costs the songs asked about, not the whole change.
+     */
+    async function fetchRetrying(path, params, timeoutMessage, failure) {
+        for (let attempt = 0; ; attempt += 1) {
+            try {
+                return await withTimeout(network.fetch(path, params), timeoutMessage);
+            } catch (error) {
+                if (error instanceof TrackLookupError) throw error;
+                const delay = SEARCH_RETRY_DELAYS_MS[attempt];
+                if (delay == null) throw new TrackLookupError(`${failure}: ${errorText(error)}`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
     }
 
     /**
@@ -523,10 +565,19 @@
         const items = new Map();
         const unique = [...new Set(videoIds)];
         for (let start = 0; start < unique.length; start += QUEUE_FETCH_BATCH) {
-            const response = await withTimeout(
-                network.fetch("/music/get_queue", { videoIds: unique.slice(start, start + QUEUE_FETCH_BATCH) }),
-                "YouTube Music took too long to prepare the queue",
-            );
+            let response;
+            try {
+                response = await fetchRetrying(
+                    "/music/get_queue",
+                    { videoIds: unique.slice(start, start + QUEUE_FETCH_BATCH) },
+                    "YouTube Music took too long to prepare the queue",
+                    "YouTube Music refused to prepare the queue",
+                );
+            } catch (error) {
+                // These songs can't be queued now; the rest still can.
+                console.warn("[Attune]", error.message);
+                continue;
+            }
             for (const data of response?.queueDatas ?? []) {
                 const videoId = videoIdOf(data?.content);
                 if (videoId && !items.has(videoId)) items.set(videoId, data.content);
