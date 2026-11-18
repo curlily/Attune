@@ -1329,6 +1329,64 @@ async fn a_listener_that_falls_behind_shows_it_and_catches_up_once_it_plays_on()
 }
 
 #[tokio::test]
+async fn a_provider_that_stops_by_itself_is_started_again() {
+    // Seen live: a hidden TIDAL's start of the next song timed out without
+    // a word; it stayed paused, shown in sync, until the song after.
+    let s = session(&[]).await;
+    {
+        let mut state = s.b_provider.state.lock().unwrap();
+        *state = state::at_time(&state, now_ms());
+        state.playback.is_playing = false;
+    }
+    let limit = Duration::from_secs(15);
+    eventually_within(limit, "B plays again", || s.b_provider.playing()).await;
+    assert!(
+        s.b_provider.position().abs_diff(s.a_provider.position()) <= 1_500,
+        "B plays where A does: {} vs {}",
+        s.b_provider.position(),
+        s.a_provider.position()
+    );
+    // Starting it again is B's own business.
+    assert!(s.a_provider.applied.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_song_added_past_the_end_of_the_sessions_queue_goes_at_its_end() {
+    // Spotify's queue can run on past the session's (more of its playlist);
+    // a song it adds there was refused, and B resynced.
+    let s = session(&[]).await;
+    s.b_provider.emit(Op::QueueInsert {
+        entry: entry("s9"),
+        index: 7,
+    });
+    eventually("everyone has s9 at the end", || {
+        s.a_provider.ids() == ["s1", "s2", "s3", "s9"] && status_ids(&s.b).last().map(String::as_str) == Some("s9")
+    })
+    .await;
+    assert_eq!(s.b.status().sync, SyncState::Synced);
+}
+
+#[tokio::test]
+async fn a_pause_puts_everyone_where_the_session_paused() {
+    // Seen live: a pause stopped each app wherever its player was, and
+    // every pause and play added to the gap between them.
+    let s = session(&[]).await;
+    // B's player falls a second behind, not enough to count as drift.
+    s.b_provider.stall();
+    tokio::time::sleep(Duration::from_millis(1_000)).await;
+    s.b_provider.recover();
+    assert!(s.a_provider.position() >= s.b_provider.position() + 800);
+
+    s.a_provider
+        .local(Op::PlaybackSetPlaying { is_playing: false });
+    eventually("B paused where the session did", || {
+        !s.b_provider.playing() && s.b_provider.position().abs_diff(s.a_provider.position()) <= 250
+    })
+    .await;
+    assert_eq!(s.b_provider.seeks(), 1);
+}
+
+#[tokio::test]
 async fn a_paused_session_is_never_behind() {
     let s = session(&[]).await;
     s.a_provider

@@ -96,6 +96,9 @@ const DRIFT_TOLERANCE_MS: u64 = 2_000;
 /// Readings in a row that must be off before it shows: a moment of
 /// buffering, or a provider still settling after a seek, isn't worth it.
 const DRIFT_READINGS: u32 = 3;
+/// After a pause, a provider further than this from the session's paused
+/// position is moved there.
+const PAUSE_ALIGN_TOLERANCE_MS: u64 = 250;
 /// Catching up is a seek to the session's position, made once the music
 /// app plays on again (seeking a player that is still stuck changes
 /// nothing). At most this often, and this many times per song: on a
@@ -465,6 +468,9 @@ struct Drift {
     entry_id: Option<String>,
     catch_ups: u32,
     last_catch_up: Option<Instant>,
+    /// Readings in a row with the session's song paused here while the
+    /// session plays.
+    stopped_readings: u32,
 }
 
 struct Worker<B> {
@@ -779,10 +785,17 @@ impl<B: ProviderBridge> Worker<B> {
         let Ok(local) = self.bridge.get_state().await else {
             return;
         };
-        if local.current_entry_id != self.mirror.current_entry_id || !local.playback.is_playing {
+        if local.current_entry_id != self.mirror.current_entry_id {
             // Something else differs; the provider's events report that.
+            self.drift.stopped_readings = 0;
             return self.set_drift(None).await;
         }
+        if !local.playback.is_playing {
+            self.drift.stopped_readings += 1;
+            self.set_drift(None).await;
+            return self.restart_if_stopped().await;
+        }
+        self.drift.stopped_readings = 0;
         let local_now = now_ms();
         let here = state::position_at(&local, local_now);
         let session = state::position_at(&self.mirror, self.clock().server_time(local_now));
@@ -1501,12 +1514,14 @@ impl<B: ProviderBridge> Worker<B> {
             self.resync().await;
             return;
         }
+        let mut paused = false;
         while let Some(change) = self.pending.remove(&(self.applied + 1)) {
             let sequence = self.applied + 1;
             let (operation, at, remote) = match change {
                 Pending::Own(operation, at) => (operation, at, false),
                 Pending::Remote(operation, at) => (operation, at, true),
             };
+            paused |= matches!(operation, SessionOperation::PlaybackSetPlaying { is_playing: false });
             match state::apply(&self.mirror, &operation, at) {
                 Ok(next) => self.mirror = next,
                 Err(error) => {
@@ -1525,10 +1540,99 @@ impl<B: ProviderBridge> Worker<B> {
         }
         if self.sync == SyncState::Synced {
             self.ensure_current_playable().await;
+            if paused {
+                self.align_paused_position().await;
+            }
         }
         self.report_unavailable().await;
         self.refresh_local_covers(false).await;
         self.publish();
+    }
+
+    /// The session plays, but the provider sits paused on its song and
+    /// reported no pause. A user's pause is published (and pauses the
+    /// session) or undone; this is a start that didn't take. Seen live
+    /// (2026-11-18): a hidden TIDAL loaded the next song for someone's
+    /// Next, its start timed out without a word, and it stayed silent,
+    /// shown in sync, until the song after.
+    async fn restart_if_stopped(&mut self) {
+        if self.drift.stopped_readings < DRIFT_READINGS {
+            return;
+        }
+        if self.drift.entry_id != self.mirror.current_entry_id {
+            self.drift.entry_id = self.mirror.current_entry_id.clone();
+            self.drift.catch_ups = 0;
+        }
+        let due = self.drift.catch_ups < MAX_CATCH_UPS_PER_SONG
+            && self
+                .drift
+                .last_catch_up
+                .is_none_or(|at| at.elapsed() >= CATCH_UP_EVERY);
+        let Some(entry_id) = self.mirror.current_entry_id.clone() else {
+            return;
+        };
+        if !due {
+            return;
+        }
+        self.drift.catch_ups += 1;
+        self.drift.last_catch_up = Some(Instant::now());
+        self.drift.stopped_readings = 0;
+        self.drift.last = None;
+        info!(session_id = %self.session_id, "The music app stopped by itself; starting it again");
+        let position_ms = state::position_at(&self.mirror, self.server_now());
+        let started = async {
+            self.bridge
+                .apply_operation(&SessionOperation::PlaybackSeek {
+                    entry_id,
+                    position_ms,
+                })
+                .await?;
+            self.bridge
+                .apply_operation(&SessionOperation::PlaybackSetPlaying { is_playing: true })
+                .await
+        };
+        if let Err(error) = started.await {
+            debug!(%error, "Could not start the music app again");
+        }
+    }
+
+    /// After a pause: put the provider where the session paused.
+    ///
+    /// `playback.setPlaying` carries no position; the server takes it as of
+    /// when it accepts the pause, while every app (the one that paused
+    /// too) stops wherever its player is. Seen live (2026-11-18): each
+    /// pause and play left TIDAL 0.1–0.3 s further behind and Spotify
+    /// further ahead, 2.3 s apart after four, unnoticed below the 2 s
+    /// drift tolerance. A seek while paused can't be heard.
+    async fn align_paused_position(&mut self) {
+        if self.mirror.playback.is_playing {
+            return;
+        }
+        let Some(entry_id) = self.mirror.current_entry_id.clone() else {
+            return;
+        };
+        let Ok(local) = self.bridge.get_state().await else {
+            return;
+        };
+        if local.current_entry_id.as_ref() != Some(&entry_id) {
+            return;
+        }
+        let session = self.mirror.playback.position_ms;
+        let here = state::position_at(&local, now_ms());
+        if !local.playback.is_playing && here.abs_diff(session) <= PAUSE_ALIGN_TOLERANCE_MS {
+            return;
+        }
+        debug!(off_by_ms = here as i64 - session as i64, "Moving to where the session paused");
+        if let Err(error) = self
+            .bridge
+            .apply_operation(&SessionOperation::PlaybackSeek {
+                entry_id,
+                position_ms: session,
+            })
+            .await
+        {
+            debug!(%error, "Could not move to where the session paused");
+        }
     }
 
     /// Bring the provider along for one remote change (already in the
@@ -2007,6 +2111,18 @@ impl<B: ProviderBridge> Worker<B> {
                     RepeatMode::One => RepeatMode::Off,
                 },
             },
+            // The provider's queue can be longer than the session's: Spotify
+            // shows more of the playlist it started from as songs end, and
+            // reports each as an insert at its own end (seen live,
+            // 2026-11-18, 6 songs beyond the session's). Past the session's
+            // end the server refused it, and the resync that followed
+            // didn't take the songs out of Spotify. Its end is the end.
+            SessionOperation::QueueInsert { entry, index } if index > self.mirror.queue.len() => {
+                SessionOperation::QueueInsert {
+                    entry,
+                    index: self.mirror.queue.len(),
+                }
+            }
             // At song end the provider skips straight to the next song it
             // has. For the session, the song that ended is followed by the
             // one we're missing; advance to that and let it play for others.
