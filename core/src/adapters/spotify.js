@@ -538,6 +538,24 @@
      * Run `action` as a remote change: nothing Spotify does meanwhile is
      * reported as the user's doing.
      */
+    // Inserts to publish once the remote change that revealed them is done.
+    const revealed = [];
+
+    /**
+     * After moving on for the session: songs Spotify shows beyond what the
+     * session has. Seen live (2026-11-18): Spotify's own "Add to queue"
+     * with a long list showed 80 of it, and one more each time a song
+     * ended. Moving on by itself, the adapter published those; moving on
+     * for someone else's song end, they went into the baseline unreported,
+     * and Spotify's queue no longer matched the session.
+     */
+    function noteRevealed(expected) {
+        const edits = queueEditOperations(expected, getState().queue);
+        if (edits?.length && edits.every(edit => edit.type === "queue.insert")) {
+            revealed.push(...edits);
+        }
+    }
+
     function asRemoteChange(action) {
         const run = applyChain.then(async () => {
             applying += 1;
@@ -547,6 +565,12 @@
                 applying -= 1;
                 suppressLocalChangesUntil = Date.now() + REMOTE_CHANGE_SUPPRESSION_MS;
                 rebase();
+                // Songs Spotify itself added meanwhile are the user's:
+                // the baseline has them now, so publish them here.
+                const additions = revealed.splice(0);
+                if (additions.length) {
+                    setTimeout(() => additions.forEach(sendOperation), REMOTE_CHANGE_SUPPRESSION_MS);
+                }
             }
         });
         applyChain = run.catch(() => {});
@@ -1067,8 +1091,14 @@
                 };
                 // Spotify may have moved on by itself already (a song end
                 // reaches every client): then only line up the playback.
+                // What the session expects after it: the last state before
+                // Spotify (perhaps) moved on by itself, from the target on.
+                const lastSeen = baseline?.queue ?? queue;
+                const from = lastSeen.findIndex(entry => entry.entryId === targetId);
+                const expected = from >= 0 ? lastSeen.slice(from) : queue.slice(target);
                 if (target === 0) {
                     await alignPlayback(wanted, calledAt);
+                    noteRevealed(expected);
                     return done;
                 }
                 // Skipping keeps the context; drop what lies in between.
@@ -1083,6 +1113,7 @@
                 queueEnd = null;
                 if (readPlayer().current && getState().currentEntryId === targetId) {
                     await alignPlayback(wanted, calledAt);
+                    noteRevealed(expected);
                     return done;
                 }
                 // The skip went somewhere else: load the queue outright.

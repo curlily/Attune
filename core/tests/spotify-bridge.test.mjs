@@ -525,6 +525,34 @@ test("Advancing skips to the next track; an advance Spotify already made is left
     assert.deepEqual(spotify.calls, []);
 });
 
+test("A song Spotify shows while moving on for someone else's song end is published", async () => {
+    // Seen live: Spotify's own "Add to queue" with a long list showed 80
+    // of it, and one more each time a song ended. Moving on for another
+    // listener's song end, that one went unreported.
+    const { bridge, spotify, events } = await loadAdapter();
+    await loadSession(bridge, ["a", "b"]);
+    await settle();
+    events.length = 0;
+    const advance = spotify.advance;
+    spotify.advance = () => {
+        advance();
+        spotify.model.next.push(spotify.internalTrack("spotify:track:c", "queue"));
+    };
+
+    await bridge.applyOperation({ type: "playback.advance", targetEntryId: "session-b", positionMs: 0, isPlaying: true });
+    await sleep(500);
+    const published = operations(events);
+    assert.equal(published.length, 1, JSON.stringify(published));
+    assert.equal(published[0].type, "queue.insert");
+    assert.equal(published[0].index, 1);
+    assert.equal(published[0].entry.track.title, "Song C");
+    assert.equal(bridge.getState().queue.length, 2);
+
+    // Nothing more once it is in the session.
+    await settle();
+    assert.equal(operations(events).length, 1);
+});
+
 test("An empty session queue unloads Spotify's track", async () => {
     const { bridge, spotify } = await loadAdapter();
 
