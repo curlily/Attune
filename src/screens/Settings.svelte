@@ -26,6 +26,20 @@
       error = errorText(failure);
     }
   }
+
+  // The music app Attune connected last, by name, for the switch below.
+  let lastProviderName = $derived(
+    app.providers.find((provider) => provider.id === app.settings?.lastProvider)?.displayName ?? null,
+  );
+
+  async function toggleStartMusicApp() {
+    if (!app.settings) return;
+    try {
+      app.settings = await api.updateSettings({ startMusicApp: !app.settings.startMusicApp });
+    } catch (failure) {
+      error = errorText(failure);
+    }
+  }
   // Only the host's setting counts: someone else's is shown but can't be
   // changed while they're in that session.
   let controlLocked = $derived(app.screen === "jam" && !app.isHost && app.status?.hostClientId != null);
@@ -169,6 +183,28 @@
     <span class="switch-label">Start with Windows</span>
     <span class="switch" class:on={autostart === true}><span></span></span>
   </button>
+
+  {#if autostart === true}
+    <button
+      class="switch-row"
+      role="switch"
+      aria-checked={app.settings?.startMusicApp === true}
+      onclick={toggleStartMusicApp}
+      transition:slide={{ duration: 160 }}
+    >
+      <span class="switch-text">
+        <span class="switch-label">Start your music app too</span>
+        <span class="switch-hint">
+          {#if lastProviderName}
+            Opens {lastProviderName} and connects to it
+          {:else}
+            Opens the music app you connected last and connects to it
+          {/if}
+        </span>
+      </span>
+      <span class="switch" class:on={app.settings?.startMusicApp === true}><span></span></span>
+    </button>
+  {/if}
 
   <button
     class="switch-row"

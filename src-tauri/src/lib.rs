@@ -102,14 +102,15 @@ pub fn run() {
             let args: Vec<String> = std::env::args().collect();
             links::handle(app.handle(), args.iter().map(String::as_str));
 
-            if !args.iter().any(|arg| arg == HIDDEN_ARG) {
+            let at_login = args.iter().any(|arg| arg == HIDDEN_ARG);
+            if !at_login {
                 window::show(app.handle());
             }
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = handle.state::<AppState>();
-                commands::playback::auto_connect(&handle, &state).await;
+                commands::playback::auto_connect(&handle, &state, at_login).await;
             });
             Ok(())
         })

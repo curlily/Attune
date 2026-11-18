@@ -27,6 +27,8 @@ export interface Settings {
   displayName: string | null;
   serverUrl: string;
   lastProvider: ProviderId | null;
+  /** When Windows starts Attune, start and connect the last music app too. */
+  startMusicApp: boolean;
   listeningOffsetMs: number;
   clientId: string;
   skippedUpdateVersion: string | null;
@@ -57,6 +59,7 @@ export interface SettingsUpdate {
   discordPresence?: boolean;
   discordListenAlong?: boolean;
   othersCanControl?: boolean;
+  startMusicApp?: boolean;
 }
 
 export type SyncState =

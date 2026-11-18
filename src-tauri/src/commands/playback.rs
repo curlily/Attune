@@ -121,9 +121,16 @@ async fn provider_lost(app: &AppHandle, watched: &Weak<BridgeController>) {
 }
 
 /// On start: connect the last used provider, but only if that needs no
-/// restart. Anything else waits for the user on the connect screen.
-pub(crate) async fn auto_connect(app: &AppHandle, state: &AppState) {
-    let Some(id) = state.settings().last_provider else {
+/// restart. Anything else waits for the user on the connect screen, unless
+/// Windows started Attune (`at_login`) and the user asked for their music
+/// app to be started with it: then it is started, or restarted with its
+/// debug port, and connected.
+pub(crate) async fn auto_connect(app: &AppHandle, state: &AppState, at_login: bool) {
+    let (last, start_app) = {
+        let settings = state.settings();
+        (settings.last_provider, settings.start_music_app)
+    };
+    let Some(id) = last else {
         return;
     };
     let ready = match detect_providers().await {
@@ -135,8 +142,11 @@ pub(crate) async fn auto_connect(app: &AppHandle, state: &AppState) {
             false
         }
     };
-    if !ready {
+    if !ready && !(at_login && start_app) {
         return;
+    }
+    if !ready {
+        info!(?id, "Starting the last music app with Attune");
     }
     match connect(app, state, id).await {
         Ok(()) => info!(?id, "Reconnected to the last music app"),

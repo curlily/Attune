@@ -39,6 +39,10 @@ pub struct Settings {
     pub server_url: String,
     /// Connected automatically on start when it's running with its debug port.
     pub last_provider: Option<ProviderId>,
+    /// When Windows starts Attune, also start the last music app (or
+    /// restart it with its debug port) and connect to it. Counts only with
+    /// "Start with Windows" on.
+    pub start_music_app: bool,
     /// Play this far behind the group (for voice-chat sing-alongs).
     pub listening_offset_ms: u32,
     /// Identifies this installation to the server, so a restarted Attune can
@@ -62,6 +66,7 @@ impl Default for Settings {
             display_name: None,
             server_url: DEFAULT_SERVER_URL.to_owned(),
             last_provider: None,
+            start_music_app: false,
             listening_offset_ms: 0,
             client_id: new_client_id(),
             skipped_update_version: None,
@@ -82,6 +87,7 @@ pub struct SettingsUpdate {
     pub discord_presence: Option<bool>,
     pub discord_listen_along: Option<bool>,
     pub others_can_control: Option<bool>,
+    pub start_music_app: Option<bool>,
 }
 
 impl Settings {
@@ -132,6 +138,9 @@ impl Settings {
         }
         if let Some(allowed) = update.others_can_control {
             self.others_can_control = allowed;
+        }
+        if let Some(enabled) = update.start_music_app {
+            self.start_music_app = enabled;
         }
         Ok(())
     }
