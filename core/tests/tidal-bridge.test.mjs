@@ -769,6 +769,30 @@ test("TIDAL keeps a paused session paused, at its position, once the loaded trac
     assert.ok(Math.abs(controls().latestCurrentTime - 42) < 0.5, `${controls().latestCurrentTime}`);
 });
 
+test("The user's queue edits in TIDAL are published as small operations", async () => {
+    // Seen live: one removal in TIDAL was sent as a replace of all 78
+    // songs, which the server refuses if someone else edited meanwhile.
+    const { bridge, store, events } = await loadAdapter();
+    await sleep(STORE_EVENT_SETTLE_MS);
+    events.length = 0;
+    const before = entryIds(bridge.getState());
+    const removedUid = store.getState().playQueue.elements[store.getState().playQueue.currentIndex + 1].uid;
+
+    store.dispatch({ type: "playQueue/REMOVE_ELEMENT", payload: { uid: removedUid } });
+    await sleep(STORE_EVENT_SETTLE_MS);
+    assert.deepEqual(operations(events).map(event => event.data), [{ type: "queue.remove", entryId: before[1] }]);
+
+    events.length = 0;
+    const view = store.getState().playQueue;
+    store.dispatch({ type: "playQueue/ADD_AT_INDEX", payload: { index: view.currentIndex + 1, mediaItemIds: ["303"] } });
+    await sleep(STORE_EVENT_SETTLE_MS);
+    const published = operations(events).map(event => event.data);
+    assert.equal(published.length, 1, JSON.stringify(published));
+    assert.equal(published[0].type, "queue.insert");
+    assert.equal(published[0].index, 1);
+    assert.equal(published[0].entry.track.title, "Third Track");
+});
+
 test("TIDAL replaces the queue without restarting the song that keeps playing", async () => {
     const { bridge, store, events } = await loadAdapter();
     // TIDAL's sync point is a few seconds old, as usual while playing.

@@ -1611,9 +1611,43 @@
     // Local state observation and operation emission
     // ---------------------------------------------------------------------
 
-    function sameQueue(left, right) {
-        return left.length === right.length &&
-            left.every((entry, index) => entry.entryId === right[index].entryId);
+    /**
+     * The queue edit that turns `before` into `after` (same current entry)
+     * as operations, or null when it is no small edit. As in spotify.js.
+     */
+    function queueEditOperations(before, after) {
+        const beforeIds = before.map(entry => entry.entryId);
+        const afterIds = after.map(entry => entry.entryId);
+        const same = (left, right) => left.length === right.length && left.every((id, index) => id === right[index]);
+        if (same(beforeIds, afterIds)) return [];
+
+        const added = after.filter(entry => !beforeIds.includes(entry.entryId));
+        const removed = beforeIds.filter(id => !afterIds.includes(id));
+
+        // Entries added (anywhere), nothing else changed.
+        if (removed.length === 0 && added.length > 0 && added.length <= 20 &&
+            same(beforeIds, afterIds.filter(id => beforeIds.includes(id)))) {
+            return added.map(entry => ({
+                type: "queue.insert",
+                entry,
+                index: afterIds.indexOf(entry.entryId),
+            }));
+        }
+        // Entries removed, nothing else changed.
+        if (added.length === 0 && removed.length > 0 && removed.length <= 20 &&
+            same(afterIds, beforeIds.filter(id => afterIds.includes(id)))) {
+            return removed.map(entryId => ({ type: "queue.remove", entryId }));
+        }
+        // One entry moved.
+        if (added.length === 0 && removed.length === 0) {
+            const first = beforeIds.findIndex((id, index) => id !== afterIds[index]);
+            for (const moved of [beforeIds[first], afterIds[first]]) {
+                if (same(beforeIds.filter(id => id !== moved), afterIds.filter(id => id !== moved))) {
+                    return [{ type: "queue.move", entryId: moved, toIndex: afterIds.indexOf(moved) }];
+                }
+            }
+        }
+        return null;
     }
 
     // When a track starts, TIDAL resets its position sync point to 0 a moment
@@ -1720,23 +1754,33 @@
         }
 
         const currentChanged = before.currentEntryId !== after.currentEntryId;
-        const advancedToNextEntry = currentChanged &&
-            before.queue[1]?.entryId === after.currentEntryId &&
-            sameQueue(before.queue.slice(2), after.queue.slice(1));
-        const queueChanged = !sameQueue(before.queue, after.queue) && !advancedToNextEntry;
-
-        if (queueChanged) {
+        // Small edits as small operations, as the other adapters do. A
+        // replace of the whole queue for every edit in TIDAL (seen live,
+        // 2026-11-18: one removal sent all 78 songs) is refused as stale
+        // when someone else changed the queue meanwhile, which undid the
+        // TIDAL user's edit.
+        let edits = null;
+        if (currentChanged && after.currentEntryId && before.queue[1]?.entryId === after.currentEntryId) {
+            // Moved on to the next entry, perhaps with an edit besides.
+            edits = queueEditOperations(before.queue.slice(1), after.queue);
+            if (edits) {
+                sendOperation({
+                    type: "playback.advance",
+                    targetEntryId: after.currentEntryId,
+                    positionMs: after.playback.positionMs,
+                    isPlaying: after.playback.isPlaying,
+                });
+                edits.forEach(sendOperation);
+            }
+        } else if (!currentChanged) {
+            edits = queueEditOperations(before.queue, after.queue);
+            edits?.forEach(sendOperation);
+        }
+        if (edits === null) {
             sendOperation({
                 type: "queue.replace",
                 entries: after.queue,
                 currentEntryId: after.currentEntryId,
-            });
-        } else if (currentChanged && after.currentEntryId) {
-            sendOperation({
-                type: "playback.advance",
-                targetEntryId: after.currentEntryId,
-                positionMs: after.playback.positionMs,
-                isPlaying: after.playback.isPlaying,
             });
         }
 
