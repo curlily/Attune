@@ -520,7 +520,14 @@ async fn daemon(url: &str, host: &str, guests: &[String]) -> Outcome<()> {
         "[pair] all in session {}; control port {CONTROL}",
         members[0].runtime.status().session_id
     );
-    serve(Pair { members, left: Vec::new(), url: url.to_owned(), credentials, log }).await
+    serve(Pair {
+        members,
+        left: Vec::new(),
+        url: url.to_owned(),
+        credentials,
+        log,
+    })
+    .await
 }
 
 /// Join an existing session from one provider, e.g. to watch a real jam.

@@ -1360,7 +1360,8 @@ async fn a_song_added_past_the_end_of_the_sessions_queue_goes_at_its_end() {
         index: 7,
     });
     eventually("everyone has s9 at the end", || {
-        s.a_provider.ids() == ["s1", "s2", "s3", "s9"] && status_ids(&s.b).last().map(String::as_str) == Some("s9")
+        s.a_provider.ids() == ["s1", "s2", "s3", "s9"]
+            && status_ids(&s.b).last().map(String::as_str) == Some("s9")
     })
     .await;
     assert_eq!(s.b.status().sync, SyncState::Synced);

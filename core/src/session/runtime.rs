@@ -1521,7 +1521,10 @@ impl<B: ProviderBridge> Worker<B> {
                 Pending::Own(operation, at) => (operation, at, false),
                 Pending::Remote(operation, at) => (operation, at, true),
             };
-            paused |= matches!(operation, SessionOperation::PlaybackSetPlaying { is_playing: false });
+            paused |= matches!(
+                operation,
+                SessionOperation::PlaybackSetPlaying { is_playing: false }
+            );
             match state::apply(&self.mirror, &operation, at) {
                 Ok(next) => self.mirror = next,
                 Err(error) => {
@@ -1622,7 +1625,10 @@ impl<B: ProviderBridge> Worker<B> {
         if !local.playback.is_playing && here.abs_diff(session) <= PAUSE_ALIGN_TOLERANCE_MS {
             return;
         }
-        debug!(off_by_ms = here as i64 - session as i64, "Moving to where the session paused");
+        debug!(
+            off_by_ms = here as i64 - session as i64,
+            "Moving to where the session paused"
+        );
         if let Err(error) = self
             .bridge
             .apply_operation(&SessionOperation::PlaybackSeek {

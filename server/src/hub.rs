@@ -222,8 +222,8 @@ impl Hub {
                 "too many failed join attempts; try again in a minute",
             ));
         }
-        let exists = normalize_join_code(code)
-            .is_some_and(|code| self.sessions().contains_key(&code));
+        let exists =
+            normalize_join_code(code).is_some_and(|code| self.sessions().contains_key(&code));
         if !exists {
             self.limiter.failed(ip);
         }
