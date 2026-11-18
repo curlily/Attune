@@ -224,6 +224,15 @@ The adapter was injected into the running app and driven directly, not through
   `settle` still pauses if anything plays. Not yet heard live with the fix.
 - **Entry IDs live in the uids** (`pq__attune__<entryId>`). TIDAL saves its queue
   with them, so they survive a bridge reload.
+- **Another TIDAL listener's ID is checked before it is used** (from a log,
+  2026-11-16): a remote insert put a shared TIDAL ID straight into the queue
+  (`ADD_AT_INDEX`) without `LOAD_SINGLE_MEDIA_ITEM`. This TIDAL never had metadata
+  for it (162468397, likely not in this account's country), so every `getState`
+  threw "metadata unavailable" and the next remote advance failed: out of sync until
+  rejoining. Now a shared ID is used only if its media item loads, otherwise the
+  song is matched here like any other; inserts load metadata as replaces already
+  did; and a queued element TIDAL has no metadata for is described with the
+  session's descriptor instead of failing the whole state.
 - **Lookups:** ISRCs in batches of 20 first (cached per ISRC), then the open API's
   text search six at a time (the title without "(feat. …)" and the main artist, then
   the full title and all artists), or the app's search one at a time without it.

@@ -137,6 +137,21 @@
     const entryIdByQueueUid = new Map();
     const trackCache = new Map();
     const resolvedTrackCache = new Map();
+    // TIDAL product ID -> the session's descriptor of the song Attune put
+    // there, for when TIDAL has no metadata for it.
+    const sessionTracks = new Map();
+
+    function rememberSessionTrack(productId, track) {
+        if (!track || typeof track.title !== "string") return;
+        sessionTracks.set(String(productId), {
+            title: track.title,
+            artists: Array.isArray(track.artists) ? track.artists : [],
+            isrc: track.isrc ?? null,
+            album: track.album ?? null,
+            durationMs: Number.isFinite(track.durationMs) ? track.durationMs : null,
+            coverUrl: track.coverUrl ?? null,
+        });
+    }
 
     function isReduxStore(candidate) {
         return candidate &&
@@ -338,6 +353,11 @@
         if (trackCache.has(key)) return trackCache.get(key);
 
         const item = getMediaItem(state, key);
+        // A track Attune queued but TIDAL hasn't loaded (yet): describe it
+        // as the session does. Throwing here failed every state read, and
+        // so every remote change, while it was queued (seen in a log: a
+        // song another TIDAL listener added, unknown to this TIDAL).
+        if (!item && sessionTracks.has(key)) return sessionTracks.get(key);
         const descriptor = toTrackDescriptor(item, key);
         trackCache.set(key, descriptor);
         return descriptor;
@@ -493,8 +513,11 @@
     }
 
     async function resolveTrack(track) {
+        // Another TIDAL listener's ID is only good if this TIDAL can load
+        // it (another country's catalog may not have it); otherwise find
+        // the song here like any other.
         const known = matcher.knownId(track, "Tidal");
-        if (known) return known;
+        if (known && (await ensureMediaItems([known])).length === 0) return known;
 
         const key = matcher.cacheKey(track);
         if (resolvedTrackCache.has(key)) return resolvedTrackCache.get(key);
@@ -633,7 +656,9 @@
             const loadedProductId = known.get(entry.entryId);
             if (loadedProductId != null) return { entry, productId: loadedProductId };
             try {
-                return { entry, productId: await resolveTrack(entry.track) };
+                const productId = await resolveTrack(entry.track);
+                rememberSessionTrack(productId, entry.track);
+                return { entry, productId };
             } catch (error) {
                 if (error instanceof TrackLookupError) return { entry, error };
                 throw error;
@@ -829,6 +854,11 @@
         if (!view || index < 1 || index > view.elements.length) return null;
         const [resolved] = await resolveEntries([entry], loadedProductIds());
         if (resolved.error) return { unavailableEntryIds: [entry.entryId] };
+        // As when replacing the queue: the player can't load an element
+        // TIDAL has no metadata for.
+        if ((await ensureMediaItems([resolved.productId])).length) {
+            return { unavailableEntryIds: [entry.entryId] };
+        }
         setRemoteMutationWindow();
         dispatch("playQueue/ADD_AT_INDEX", {
             context: SOURCE_CONTEXT,
@@ -1858,6 +1888,7 @@
         entryIdByQueueUid.clear();
         trackCache.clear();
         resolvedTrackCache.clear();
+        sessionTracks.clear();
         isrcCandidates.clear();
         bridge.ready = false;
 

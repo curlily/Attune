@@ -668,6 +668,27 @@ test("TIDAL reports an unfindable inserted song without changing the queue", asy
     assert.deepEqual(entryIds(bridge.getState()), before);
 });
 
+test("A song another TIDAL listener added is found here when its ID won't load", async () => {
+    // From a log: a remote insert put a TIDAL ID this TIDAL had no metadata
+    // for straight into the queue, and every state read failed after it.
+    const { bridge } = await loadAdapter();
+    const before = entryIds(bridge.getState());
+
+    // Unknown ID, but the ISRC finds this catalog's recording.
+    const shared = { title: "Fourth Track", artists: ["Artist Four"], isrc: "ISRC-FOURTH", provider: "Tidal", providerTrackId: "999" };
+    const found = await bridge.applyOperation({ type: "queue.insert", index: 1, entry: { entryId: "session-shared", track: shared } });
+    assert.deepEqual([...found.unavailableEntryIds], []);
+    const state = bridge.getState();
+    assert.equal(state.queue[1].entryId, "session-shared");
+    assert.equal(state.queue[1].track.providerTrackId, "404");
+
+    // Unknown ID and nothing else to go on: reported, the queue unchanged.
+    const lost = { ...ghostTrack, provider: "Tidal", providerTrackId: "998" };
+    const outcome = await bridge.applyOperation({ type: "queue.insert", index: 1, entry: { entryId: "session-lost", track: lost } });
+    assert.deepEqual([...outcome.unavailableEntryIds], ["session-lost"]);
+    assert.deepEqual(entryIds(bridge.getState()), [before[0], "session-shared", ...before.slice(1)]);
+});
+
 test("TIDAL resetting the position when a track starts is not a seek", async () => {
     const { store, events } = await loadAdapter();
     const set = payload => store.dispatch({ type: "test/SET_PLAYBACK", payload });
