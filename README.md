@@ -1,92 +1,190 @@
 # Attune
 
-Listen together across music services. Everyone keeps using their own desktop
-client (TIDAL, Spotify, YouTube Music or Apple Music); Attune watches play/pause, seeking, skips and
-queue edits there and mirrors them to everyone else in the session.
+Listen together across music services. Everyone keeps their own music app
+(TIDAL, Spotify, YouTube Music or Apple Music); Attune follows play and pause,
+seeking, skips and queue edits there and mirrors them to everyone else in the
+session, whichever service they use.
 
-## Workspace
+## Download
+
+Attune runs on Windows. Get the installer from
+[curlily.github.io/Attune](https://curlily.github.io/Attune/) or the
+[releases page](https://github.com/curlily/Attune/releases). Installed copies
+offer new versions themselves.
+
+## Getting started
+
+1. Open Attune and connect your music app.
+2. **Create a session**, or **join** one with the four-letter code someone shared.
+3. Share your code (or an `attune://join/KWPZ` link) with whoever should listen along.
+
+Attune then lives in the tray. Its icon shows the session at a glance: green in
+sync, amber catching up, red out of sync, grey stepped out.
+
+## Music apps
+
+### TIDAL and Spotify
+
+Attune connects to the desktop app. If it's already running, Attune restarts it
+once so it can connect.
+
+### YouTube Music
+
+YouTube Music has no desktop app, so Attune opens it in a window of an installed
+browser (Microsoft Edge, Google Chrome or Brave) with a browser profile of its
+own. Your normal browser windows and profile aren't touched.
+
+To listen with your account, sign in once before connecting:
+
+1. On the connect screen, choose **Sign in first** under YouTube Music.
+2. Sign in to your Google account in the window that opens, then close it.
+3. Choose **Open YouTube Music**. Attune remembers the sign-in from now on.
+
+The sign-in needs its own step because Google refuses sign-ins in the window
+Attune connects to. If that window was left open, connecting asks you to close it.
+
+Without a subscription YouTube Music plays ads. During one, Attune steps out of
+the session and rejoins when it's over, so you may come back a little into the
+song the others are hearing.
+
+### Apple Music
+
+Attune uses Apple Music's web player (music.apple.com), opened the same way as
+YouTube Music. The Windows app from the Microsoft Store can't be connected to.
+
+Choose **Open Apple Music** and sign in with your Apple ID in the window that
+opens; the sign-in is remembered. Without a subscription (or signed out) Apple
+Music plays only previews: Attune then steps out, says so, and follows again once
+full songs play.
+
+## Overlay
+
+While you're in a session, a small pill in a corner of the screen tells you what
+happens, even over a full-screen game: "Paused by Lily", "Sam joined", "Stepped
+out: ad". It never takes focus and clicks go straight through it.
+
+- **Flash** (default) shows each event for a moment. **Persistent** keeps a small
+  status pill up for the whole session, showing what's playing between events.
+- A new event replaces the one on screen at once; nothing waits or piles up.
+- Optional song cards show the new song's name and cover when it changes.
+- With the **Match** theme it takes the music app's colours.
+
+Settings → **Overlay** sets when it shows (only over full-screen apps, whenever
+Attune is hidden, or always), the corner, how long events stay up, which events to
+show, and has a test button. It never covers Attune's own window.
+
+## Discord
+
+While a music app is connected and the Discord desktop app is running, your
+profile shows **Listening to** your music app and the song, with its artists,
+cover and a progress bar. Turn it off in Settings (**Show on Discord**).
+
+**Listen along button** (off by default) adds a button to that status while
+you're in a session. It opens the download page with the session's code, which
+starts Attune and joins, or offers the download to anyone who doesn't have it.
+Anyone who can see your status can then join, so it stays off unless you turn it on.
+
+Attune talks to the Discord app on your computer, as the "Attune" application.
+No Discord account is linked, and without Listen along the join code is never
+part of your status.
+
+## Settings worth knowing
+
+- **Start with Windows**, and **Start your music app too**: Attune opens your
+  last music app and connects to it when Windows starts.
+- **Allow others to change what's playing** (on by default): counts while you
+  host. When it's off, only the host changes playback and the queue.
+- **Remove songs not everyone has**: drops queued songs someone in the session
+  can't play.
+- **Theme**: Attune's colours, or **Match** your music app's.
+
+## Bug reports
+
+Settings → **Save log** writes what happened since Attune started to
+`Downloads\Attune log <date> <time>.txt` and shows it in Explorer: what you did,
+what the music app reported, every change the session made or received, sync
+states, reconnects and every error you saw. The log lives in memory (up to
+16 MB) and is saved only when you ask. It has song titles, names and the join
+code, but no rejoin secrets or server address.
+
+## How a session works
+
+- **Join code:** four letters (like `KWPZ`; no `I` or `O`). Anyone with the code
+  can join; there are no accounts. Codes are short, so the server allows only a
+  few failed join attempts per IP address per minute.
+- **Rejoin secret:** each participant also gets a private secret. Reconnecting,
+  or rejoining after restarting Attune, uses it to take the same seat back, so
+  knowing the code and someone's client ID isn't enough to take their place.
+- **Clock:** clients measure how far their clock is from the server's and how
+  long messages take, so a seek that took 80 ms to arrive lands 80 ms further
+  into the song.
+- **One order for everyone:** the server numbers every accepted change. Clients
+  apply changes in that order and fetch a snapshot if they ever miss one.
+- **Conflicts:** playback changes (pause, seek, skip) simply apply. A queue edit
+  based on an outdated queue is undone on the client that made it.
+- **Songs a service doesn't have:** each client reports songs its service can't
+  find as soon as they're queued, and everyone sees who is missing what. If
+  nobody listening can play the current song, the server skips it.
+- **Host:** whoever creates the session hosts it; if they leave, whoever has been
+  in it longest takes over. The host's **Allow others to change what's playing**
+  decides whether everyone else may change playback and the queue.
+- **Stepping out:** stop following (and resync later) without leaving. Songs you
+  can't play then no longer count.
+
+## Limitations
+
+- Sessions live in the server's memory: restarting the server ends them.
+- The music apps' own shuffle and repeat stay off during a session. Shuffling
+  reorders the shared queue like any queue edit. Repeat is the session's and
+  covers one song; there's no "repeat all" yet.
+- Concurrent queue edits aren't merged: the later one is undone.
+- Timing depends on the network and on how fast each app loads a song, so
+  listeners can be a little apart.
+
+---
+
+## Development
 
 | Crate / folder | What it is |
 |---|---|
-| `protocol/` (`attune-protocol`) | Provider-independent session protocol: data model, WebSocket messages, pure state transitions, and the per-session coordinator that decides what is accepted. No I/O. |
-| `core/` (`attune-core`) | Desktop library: `BridgeController` (CDP bridge into the music client), the JavaScript provider adapters, and `network::SessionClient` (WebSocket client). |
+| `protocol/` (`attune-protocol`) | The session protocol: data model, WebSocket messages, pure state transitions, and the coordinator that decides what's accepted. No I/O. |
+| `core/` (`attune-core`) | Desktop library: the CDP bridge into music apps (`BridgeController`), the JavaScript provider adapters, the WebSocket client and the session runtime. |
 | `server/` (`attune-server`) | The relay: a small in-memory WebSocket server around the coordinator. |
-| `src-tauri/`, `src/` | The Tauri desktop app: commands and settings (Rust), widget UI (Svelte 5 + Vite). |
+| `src-tauri/`, `src/` | The Tauri desktop app: commands, settings, tray, overlay and Discord (Rust); the UI (Svelte 5 + Vite). |
 
-See [BRIDGE_ARCHITECTURE.md](BRIDGE_ARCHITECTURE.md) for the provider bridge, and
-[PROVIDER_ADAPTERS.md](PROVIDER_ADAPTERS.md) for what is known about each music app's
-internals and open adapter problems.
+[BRIDGE_ARCHITECTURE.md](BRIDGE_ARCHITECTURE.md) explains the provider bridge,
+[PROVIDER_ADAPTERS.md](PROVIDER_ADAPTERS.md) what's known about each music app's
+internals, and [LIVE_TESTS.md](LIVE_TESTS.md) the tests against real music apps.
 
-## Checks
+### Checks
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets
 cargo test --workspace
 npm test
+npm run check
 ```
 
-`cargo test` includes the coordinator rules, the client against a test-only
-WebSocket peer (`core/tests/support`), and the real server driven by the real
-client (`server/tests/e2e.rs`). `npm test` runs the mocked TIDAL, Spotify,
-YouTube Music and Apple Music adapter tests. None of these replace a live test with the installed desktop clients.
+`cargo test` covers the coordinator rules, the client against a test WebSocket
+peer, the session runtime with fake music apps, and the real server driven by the
+real client (`server/tests/e2e.rs`). `npm test` runs the adapter tests against
+mocked music apps, and `npm run check` type-checks the UI. None of these replace a
+live test with the real apps. CI runs them on every push to master.
 
-CI runs these on every push to master ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
-
-## Releases and updates
-
-Releases are Windows NSIS installers on the
-[GitHub releases page](https://github.com/curlily/Attune/releases), built by
-[`.github/workflows/release.yml`](.github/workflows/release.yml) when a `v*.*.*` tag
-is pushed. To release, from Git Bash on a clean master:
+To check the Discord status against a running Discord app:
 
 ```sh
-scripts/release.sh 0.2.0
+cargo test -p attune --lib discord::live -- --ignored --nocapture
 ```
 
-It sets the version in `tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json`,
-commits, opens your editor for the tag message (first line a title, the rest the
-release notes shown in the app) and pushes master and the tag.
-
-Installed copies check `latest.json` on the latest release a few seconds after
-launch (not in development builds) and offer the update: **Update and restart**,
-**Later**, or **Skip this version**. Nothing is downloaded until the user chooses
-to update. Settings has **Check for updates**, which also shows skipped versions.
-Updates are signed. The app refuses one that doesn't match the public key in
-`tauri.conf.json`.
-
-The installer's sidebar and header images are drawn as HTML in
-[`src-tauri/installer/`](src-tauri/installer/) and rendered to the BMPs NSIS needs
-(at twice its sizes, so they stay sharp on high-DPI screens) with
-`scripts/render-installer-images.sh`. Commit the BMPs after changing the HTML.
-
-The download page, [curlily.github.io/Attune](https://curlily.github.io/Attune/), is
-the static site in [`site/`](site/), published by
-[`.github/workflows/pages.yml`](.github/workflows/pages.yml) when it changes. Its
-download button looks up the latest release's installer through the GitHub API and
-falls back to the releases page.
-
-The repository needs these Actions secrets:
-
-| Secret | What |
-|---|---|
-| `TAURI_SIGNING_PRIVATE_KEY` | Contents of the update signing key (`npx tauri signer generate`) |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Its password (empty if it has none) |
-| `ATTUNE_DEFAULT_SERVER_URL` | The relay release builds connect to by default |
-
-If the signing key is lost, installed copies can't update anymore. They'd have
-to install the next version by hand. Keep a backup of it.
-
-## Running the relay server
+### Running the relay
 
 ```sh
 cargo run --release -p attune-server
 ```
 
-It listens on `127.0.0.1:8787` and serves:
-
-- `ws://<host>/ws`: the session WebSocket
-- `http://<host>/healthz`: returns `ok`
+It serves `ws://<host>/ws` (sessions) and `http://<host>/healthz` (returns `ok`).
 
 | Setting | Default |
 |---|---|
@@ -97,72 +195,53 @@ It listens on `127.0.0.1:8787` and serves:
 | `ATTUNE_JOIN_ATTEMPTS_PER_MINUTE` | `10` (failed joins per IP address) |
 | `RUST_LOG` | `info` |
 
-Sessions live in memory: restarting the server ends them, and clients then report
-the session as ended. A session also ends when its last participant leaves or its
-reconnect grace period expires. Logs never contain join codes, rejoin secrets or
-track data.
+A session ends when its last participant leaves, its reconnect grace period
+expires, or the server restarts. Logs never contain join codes, rejoin secrets or
+track data. Behind a reverse proxy every client shares the proxy's address and so
+one join-attempt limit; raise `ATTUNE_JOIN_ATTEMPTS_PER_MINUTE` there.
 
-Behind a reverse proxy every client appears to come from the proxy's address, so
-they share one join-attempt limit; raise `ATTUNE_JOIN_ATTEMPTS_PER_MINUTE` there.
-
-### Deploying to the relay host
-
-The public relay runs as a systemd **user** service, `attune`, defined in
-[`server/deploy/attune.service`](server/deploy/attune.service). No root is needed;
-lingering is enabled for its user, so it starts at boot and is restarted if it
-crashes.
-
-The relay's address is kept out of the repository. The deploy script reads
-`ATTUNE_HOST=user@host` from the environment or from `scripts/deploy.env`
-(ignored by git), and the desktop app takes its default server from
-`ATTUNE_DEFAULT_SERVER_URL` at build time: a GitHub Actions secret for releases,
-and for local builds the ignored `.cargo/config.toml`:
+The desktop app's default relay comes from `ATTUNE_DEFAULT_SERVER_URL` at build
+time: an Actions secret for releases, and for local builds the git-ignored
+`.cargo/config.toml`:
 
 ```toml
 [env]
 ATTUNE_DEFAULT_SERVER_URL = "ws://<relay>:8787/ws"
 ```
 
-Without it, builds default to a local relay (`ws://127.0.0.1:8787/ws`).
+Without it, builds use a local relay (`ws://127.0.0.1:8787/ws`).
 
-From Git Bash in the repo, after committing:
+#### Deploying
+
+The public relay runs as a systemd user service, `attune`
+([`server/deploy/attune.service`](server/deploy/attune.service)), with lingering
+enabled so it starts at boot and restarts after a crash. Its address stays out of
+the repository: the deploy script reads `ATTUNE_HOST=user@host` from the
+environment or the git-ignored `scripts/deploy.env`. From Git Bash, after
+committing:
 
 ```sh
 scripts/deploy.sh            # deploy HEAD
 scripts/deploy.sh rollback   # put the previous binary back
 ```
 
-The script uploads `git archive HEAD` (only committed files) to `~/attune/src.tar`,
-builds `attune-server` on the server (incrementally, so about a minute, while the old
-server keeps running), installs the service file, keeps the old binary as
-`attune-server.prev`, restarts the service and checks `/healthz`. The deployed commit
-is recorded in `~/attune/DEPLOYED_COMMIT`. Restarting ends every live session.
-
-On the server:
+It uploads the committed files, builds `attune-server` on the host while the old
+one keeps running, installs the service file, keeps the old binary as
+`attune-server.prev`, restarts the service and checks `/healthz`. The deployed
+commit is recorded in `~/attune/DEPLOYED_COMMIT`. Restarting ends every session.
 
 ```sh
 systemctl --user status attune
-systemctl --user restart attune
 tail -f ~/attune/server.log
 ```
 
-Any host works the same way; it needs Rust installed
-(`rustup`) and, for start at boot, `loginctl enable-linger <user>`.
+Any host with Rust (`rustup`) works; for start at boot, run
+`loginctl enable-linger <user>`.
 
-### Exposing it with Cloudflare Tunnel
+#### TLS with Cloudflare Tunnel
 
-The server speaks plain `ws://` on loopback; a tunnel adds TLS (`wss://`) and a
-public hostname without opening ports. Keep `ATTUNE_BIND` on `127.0.0.1`.
-
-Quick test (random URL that changes every start):
-
-```sh
-cloudflared tunnel --url http://127.0.0.1:8787
-```
-
-Clients then use `wss://<random-name>.trycloudflare.com/ws`.
-
-Stable hostname (needs a domain on Cloudflare):
+The server speaks plain `ws://`. A tunnel adds TLS (`wss://`) and a public
+hostname without opening ports; keep `ATTUNE_BIND` on `127.0.0.1` then.
 
 ```sh
 cloudflared tunnel login
@@ -181,117 +260,46 @@ ingress:
   - service: http_status:404
 ```
 
-```sh
-cloudflared tunnel run attune
-```
+Run it with `cloudflared tunnel run attune`; clients use
+`wss://attune.example.com/ws`. For a quick test without a domain,
+`cloudflared tunnel --url http://127.0.0.1:8787` gives a temporary
+`wss://<random-name>.trycloudflare.com/ws`. Cloudflare drops idle WebSockets
+after about 100 seconds; the client pings every 30, so sessions stay open.
 
-Clients then use `wss://attune.example.com/ws`. Cloudflare drops idle WebSockets after
-about 100 seconds; the client pings every 30 seconds, so sessions stay open.
+### Releases
 
-## Using YouTube Music
-
-YouTube Music has no desktop app, so Attune opens it in a window of an installed
-browser (Microsoft Edge, Google Chrome or Brave), with a browser profile of its own.
-Your normal browser windows and profile are not touched.
-
-To listen with your account, sign in once before connecting:
-
-1. On the connect screen, choose **Sign in first** under YouTube Music.
-2. Sign in to your Google account in the window that opens.
-3. Close that window.
-4. Choose **Open YouTube Music**. Attune remembers the sign-in from now on.
-
-The sign-in needs its own step because Google refuses sign-ins in the window Attune
-connects to. If that window was left open, connecting fails with a message asking you
-to close it.
-
-Without a subscription YouTube Music plays advertisements. During one, Attune steps
-out of the session and rejoins when it is over, so you may come back a little into
-the song the others are hearing.
-
-Without a subscription (or signed out) Apple Music plays only previews. Attune then
-steps out of the session, saying so, and follows again once Apple Music plays full songs.
-
-## Using Apple Music
-
-Attune uses Apple Music's web player (music.apple.com), opened the same way as
-YouTube Music: in a window of an installed browser, with a profile of its own. The
-Windows app from the Microsoft Store can't be connected to.
-
-Choose **Open Apple Music** and sign in with your Apple ID in the window that opens.
-Unlike Google, Apple allows signing in there, and the sign-in is remembered.
-
-## Discord
-
-While a music app is connected and the Discord desktop app is running, your
-Discord profile shows **Listening to** your music app (say, **Listening to
-TIDAL**) and the song it's playing, with its artists, cover and a progress
-bar, in a session or not. Turn it off in Settings (**Show on Discord**).
-
-Turn on **Listen along button** (off by default) to give the status a
-**Listen along** button for others while you're in a session. It opens the download page with the
-session's code (`?join=KWPZ`), which opens `attune://join/KWPZ` to start Attune
-and join, and offers the download to anyone who doesn't have it yet. Anyone who
-can see your status can then join, so it's off unless you choose it.
-
-Attune talks to the Discord app on your computer over its local connection
-(`src-tauri/src/discord/`), as the "Attune" application (ID `1570918885920604200`).
-No Discord account is linked, and without Listen along the join code is never
-part of the activity.
-To check against a running Discord client:
+From Git Bash on a clean, up-to-date master:
 
 ```sh
-cargo test -p attune --lib discord::live -- --ignored --nocapture
+scripts/release.sh 0.2.0
 ```
 
-## Bug reports
+It sets the version in `tauri.conf.json`, `src-tauri/Cargo.toml` and
+`package.json`, commits, opens your editor for the tag message (the first line is
+the title, the rest the notes shown in the update offer) and pushes master and the
+tag. [`release.yml`](.github/workflows/release.yml) then builds, signs and
+publishes the NSIS installer.
 
-Settings → **Save log** writes what happened since Attune started to
-`Downloads\Attune log <date> <time>.txt` and shows it in Explorer: what you
-did in Attune, what the music app reported, every change the session made or
-received, sync states, reconnects and every error you were shown, with local
-times. It's kept in memory (the oldest lines go past 16 MB)
-and saved only when you ask (`src-tauri/src/log.rs`). It has song titles,
-names and the join code, but no rejoin secrets or server address.
+Installed copies check for a new release a few seconds after starting and offer
+**Update and restart**, **Later** or **Skip this version**; nothing is downloaded
+before the user chooses. Updates are signed, and the app refuses one that doesn't
+match the public key in `tauri.conf.json`.
 
-## How a session works
+The repository needs these Actions secrets:
 
-- **Join code:** creating a session returns a four-letter code (like `KWPZ`; no
-  `I` or `O`). Anyone with the code can join; there are no accounts. Codes are
-  short, so the server allows only a few failed join attempts per IP address per
-  minute.
-- **Rejoin secret:** each participant also gets a private secret. Reconnecting
-  (or rejoining after restarting Attune) uses it to take the same seat back, so
-  knowing the code and someone's client ID isn't enough to take their place.
-- **Clock:** clients measure how far their clock is from the server's and how long
-  messages take, and use that to place positions correctly: a seek that took
-  80 ms to arrive lands 80 ms further into the song.
-- **One order for everyone:** the server numbers every accepted change. Clients
-  apply changes in that order and fetch a snapshot if they ever miss one.
-- **Conflicts:** concurrent playback changes (pause, seek, skip) simply apply. A
-  queue edit based on an outdated queue is rejected and undone on that client.
-  Nothing is merged.
-- **Songs a service doesn't have:** each client reports songs its service can't
-  find as soon as they're queued. Others see who is missing what. If nobody
-  listening can play the current song, the server skips it.
-- **Host:** whoever creates the session hosts it; if they leave, whoever has been
-  in it longest takes over. The host's **Allow others to change what's playing**
-  setting (on by default) decides whether everyone else may change playback and
-  the queue. When it's off, the server refuses others' changes and their app puts
-  the session's state back, except moving on when a song has ended. A new host
-  starts with it on until their own setting arrives.
-- **Stepping out:** a participant can stop following (and later resync) without
-  leaving; songs they can't play then no longer count.
+| Secret | What |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | The update signing key (`npx tauri signer generate`) |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Its password (empty if it has none) |
+| `ATTUNE_DEFAULT_SERVER_URL` | The relay release builds connect to by default |
 
-## v1 limitations
+Keep a backup of the signing key: without it, installed copies can't update and
+would have to install the next version by hand.
 
-- No persistence; sessions end on server restart.
-- Shuffle and repeat: the music apps' own modes stay off during a session. Shuffling
-  reorders the queue, which is shared like any queue edit (where the app's shuffle
-  doesn't reorder a session's songs, as in Spotify and YouTube Music, Attune shuffles
-  them). Repeat is the session's: one song
-  (no "repeat all" yet), toggled from the icon by the current song or the music
-  app's repeat button.
-- Timing is approximate (network and track-loading delay); there is no clock sync.
-- Concurrent queue edits are not merged: the later one is undone.
-- The desktop session runtime and widget UI are not implemented yet.
+The installer's sidebar and header images are HTML in
+[`src-tauri/installer/`](src-tauri/installer/), rendered to the BMPs NSIS needs by
+`scripts/render-installer-images.sh`; commit the BMPs after changing the HTML.
+
+The download page is the static site in [`site/`](site/), published by
+[`pages.yml`](.github/workflows/pages.yml) when it changes. Its download button
+finds the latest installer through the GitHub API, falling back to the releases page.
