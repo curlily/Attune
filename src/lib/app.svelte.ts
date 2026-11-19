@@ -94,7 +94,17 @@ class App {
   code = $state<string | null>(null);
   rejoinCode = $state<string | null>(null);
   toasts = $state<Toast[]>([]);
-  showSettings = $state(false);
+  #showSettings = $state(false);
+  /** Which settings page is open: the list, or one of its sub-pages. */
+  settingsPage = $state<"main" | "overlay">("main");
+  get showSettings() {
+    return this.#showSettings;
+  }
+  /** Closing Settings goes back to its first page for next time. */
+  set showSettings(shown: boolean) {
+    this.#showSettings = shown;
+    if (!shown) this.settingsPage = "main";
+  }
   /** "Change" in the lobby: choosing another music app while one is connected. */
   choosingProvider = $state(false);
   /** The window's height; the session view shows less as it shrinks. */

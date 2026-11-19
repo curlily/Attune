@@ -3,6 +3,7 @@ mod discord;
 mod error;
 mod links;
 mod log;
+mod notify;
 mod settings;
 mod state;
 mod theme;
@@ -60,6 +61,8 @@ pub fn run() {
         links::get_autostart,
         links::set_autostart,
         log::save_log,
+        notify::test_overlay,
+        notify::overlay::overlay_ready,
     ];
 
     tauri::Builder::default()
@@ -115,6 +118,13 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(move |invoke| {
+            // The overlay only says it's ready; every other command is the
+            // main window's. (App commands aren't covered by capabilities.)
+            let from_overlay = invoke.message.webview().label() != "main";
+            if from_overlay && invoke.message.command() != "overlay_ready" {
+                invoke.resolver.reject("Not allowed from this window");
+                return true;
+            }
             if let tauri::ipc::InvokeBody::Json(args) = invoke.message.payload() {
                 log::command(invoke.message.command(), args);
             }

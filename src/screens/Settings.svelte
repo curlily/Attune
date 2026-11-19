@@ -78,6 +78,20 @@
     }
   }
 
+  const MODE_LABEL = { flash: "Flash", persistent: "Persistent" };
+  const CORNER_LABEL = {
+    topLeft: "Top left",
+    topRight: "Top right",
+    bottomLeft: "Bottom left",
+    bottomRight: "Bottom right",
+  };
+  // What the Overlay row says without opening it.
+  let overlaySummary = $derived.by(() => {
+    const overlay = app.settings?.overlay;
+    if (!overlay?.enabled) return "Off";
+    return `${MODE_LABEL[overlay.mode]} · ${CORNER_LABEL[overlay.corner]}`;
+  });
+
   let saved = $state(false);
   let savedTimer: ReturnType<typeof setTimeout> | undefined;
   let serverSaved = $state(false);
@@ -265,6 +279,15 @@
     </button>
   {/if}
 
+  <button class="nav-row" onclick={() => (app.settingsPage = "overlay")}>
+    <span class="switch-text">
+      <span class="switch-label">Overlay</span>
+      <span class="switch-hint">Notifications over games</span>
+    </span>
+    <span class="nav-value">{overlaySummary}</span>
+    <span class="nav-arrow"><Icon name="chevron" size={14} /></span>
+  </button>
+
   <div class="divider"></div>
 
   <p class="section-title">Theme</p>
@@ -404,12 +427,6 @@
     cursor: default;
   }
 
-  .divider {
-    height: 1px;
-    margin: 18px 0 14px;
-    background: var(--border);
-  }
-
   .reveal {
     display: flex;
     align-items: center;
@@ -426,103 +443,32 @@
     letter-spacing: 0.1em;
   }
 
-  .switch-row + .switch-row {
-    margin-top: 12px;
-  }
-  .switch-row {
+  .nav-row {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
     width: 100%;
+    margin-top: 12px;
     padding: 0;
     border: 0;
     background: none;
     text-align: left;
   }
-  .switch-row > .switch-label,
-  .switch-row > .switch-text {
+  .nav-row > .switch-text {
     flex: 1;
-  }
-  .switch-text {
-    display: flex;
-    flex-direction: column;
-  }
-  .switch-hint {
-    color: var(--text-3);
-    font-size: 11.5px;
-  }
-  .switch-row:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-  .switch-label {
-    font-weight: 600;
-  }
-  .switch {
-    position: relative;
-    flex: none;
-    width: 34px;
-    height: 20px;
-    border-radius: 10px;
-    background: var(--surface-3);
-    transition: background var(--base);
-  }
-  .switch > span {
-    position: absolute;
-    top: 3px;
-    left: 3px;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: var(--text-2);
-    transition:
-      transform var(--base) var(--ease-spring),
-      background var(--base);
-  }
-  .switch.on {
-    background: var(--accent-strong);
-  }
-  .switch.on > span {
-    transform: translateX(14px);
-    background: var(--on-accent);
-  }
-
-  .segmented {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius);
-    background: var(--surface-1);
-  }
-  .segmented button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
     min-width: 0;
-    height: 28px;
-    padding: 0 8px;
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: transparent;
+  }
+  .nav-value {
     color: var(--text-2);
     font-size: 12px;
-    font-weight: 600;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    transition:
-      background var(--fast),
-      color var(--fast);
   }
-  .segmented button:hover {
+  .nav-arrow {
+    color: var(--text-3);
+    transform: rotate(-90deg);
+  }
+  .nav-row:hover .nav-arrow {
     color: var(--text);
-  }
-  .segmented button[aria-checked="true"] {
-    background: var(--accent-tint);
-    color: var(--accent);
   }
 
   .app-row {

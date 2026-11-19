@@ -5,6 +5,8 @@
 //! - `session-status-changed`: [`RuntimeStatus`] whenever it changes
 //! - `session-notice`: [`Notice`] one-off messages
 //!
+//! They (and what others do, `Activity`) also go to the overlay.
+//!
 //! The server address, display name and client ID come from the settings.
 //! After a successful create or join the seat is saved (`rejoin.json`), so
 //! a restarted Attune can offer to rejoin; it is forgotten once the session
@@ -19,6 +21,7 @@ use crate::{
     commands::playback::connected_controller,
     discord::DiscordPresence,
     error::AppError,
+    notify,
     settings::{RejoinInfo, Store},
     state::AppState,
     tray,
@@ -46,23 +49,43 @@ enum Entry {
 
 /// Forward runtime status and notices to the frontend until it stops.
 fn forward_events(app: AppHandle, store: Store, runtime: &SessionRuntime) {
+    notify::open_overlay(&app);
     let mut status = runtime.watch_status();
     let status_app = app.clone();
     tauri::async_runtime::spawn(async move {
         let presence = status_app.state::<DiscordPresence>();
         let initial = status.borrow_and_update().clone();
+        // Joining is the user's own doing: only changes after it are news.
+        let mut sync = initial.sync;
         tray::set_status(&status_app, Some(initial.sync));
         presence.set_session(Some(&initial));
+        notify::on_status(&status_app, &initial);
         let _ = status_app.emit("session-status-changed", initial);
         while status.changed().await.is_ok() {
             let current = status.borrow_and_update().clone();
+            notify::on_sync(&status_app, sync, current.sync);
+            sync = current.sync;
+            notify::on_status(&status_app, &current);
             tray::set_status(&status_app, Some(current.sync));
             presence.set_session(Some(&current));
             let _ = status_app.emit("session-status-changed", current);
         }
         tray::set_status(&status_app, None);
         presence.set_session(None);
+        notify::close_overlay(&status_app);
         debug!("Session status forwarding stopped");
+    });
+
+    let mut activity = runtime.activity();
+    let activity_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match activity.recv().await {
+                Ok(done) => notify::on_activity(&activity_app, &done),
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
     });
 
     let mut notices = runtime.notices();
@@ -75,8 +98,11 @@ fn forward_events(app: AppHandle, store: Store, runtime: &SessionRuntime) {
                     if matches!(notice, Notice::Ended { .. }) {
                         store.clear_rejoin();
                     }
+                    let on_overlay = notify::on_notice(&app, &notice);
                     if let Notice::NotAllowed { host } = &notice {
-                        notify_if_hidden(&app, host);
+                        if !on_overlay {
+                            notify_if_hidden(&app, host);
+                        }
                     }
                     let _ = app.emit("session-notice", notice);
                 }

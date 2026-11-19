@@ -27,6 +27,8 @@ pub const DEFAULT_SERVER_URL: &str = match option_env!("ATTUNE_DEFAULT_SERVER_UR
 };
 /// Upper end of the listening offset setting.
 pub const MAX_LISTENING_OFFSET_MS: u32 = 1_000;
+/// How long a notification can stay up, in ms.
+pub const FLASH_MS_RANGE: std::ops::RangeInclusive<u32> = 1_000..=5_000;
 
 const SETTINGS_FILE: &str = "settings.json";
 const REJOIN_FILE: &str = "rejoin.json";
@@ -58,6 +60,77 @@ pub struct Settings {
     /// Let others in your session change what's playing. Counts only while
     /// you're the session's host.
     pub others_can_control: bool,
+    /// The small notification drawn over other apps (and games).
+    pub overlay: OverlaySettings,
+}
+
+/// The overlay: a small click-through pill in a corner of the screen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OverlaySettings {
+    pub enabled: bool,
+    pub mode: OverlayMode,
+    pub corner: Corner,
+    /// How long a notification stays up.
+    pub flash_ms: u32,
+    pub show_when: ShowWhen,
+    /// Paused, skipped, seeked, queue and repeat changes by others.
+    pub playback: bool,
+    /// Joined, left, new host.
+    pub people: bool,
+    /// Catching up, stepped out, out of sync and the like.
+    pub sync: bool,
+    /// Flash mode: the new song's name and cover when the song changes.
+    /// (Persistent mode shows the song all along.)
+    pub songs: bool,
+    /// Persistent mode: the song shows faded while nothing else is up.
+    pub dim_idle: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OverlayMode {
+    /// Shown for a moment when something happens, then gone.
+    Flash,
+    /// Always there during a session: what's playing, or what's going on.
+    Persistent,
+}
+
+impl Default for OverlaySettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: OverlayMode::Flash,
+            corner: Corner::BottomRight,
+            flash_ms: 3_000,
+            show_when: ShowWhen::FullScreen,
+            playback: true,
+            people: true,
+            sync: true,
+            songs: false,
+            dim_idle: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+/// When the overlay shows (never over Attune's own window in front).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ShowWhen {
+    /// Only while a full-screen app or game is in front.
+    FullScreen,
+    /// Whenever Attune's window is hidden or behind other windows.
+    Hidden,
+    Always,
 }
 
 impl Default for Settings {
@@ -73,6 +146,7 @@ impl Default for Settings {
             discord_presence: true,
             discord_listen_along: false,
             others_can_control: true,
+            overlay: OverlaySettings::default(),
         }
     }
 }
@@ -88,6 +162,8 @@ pub struct SettingsUpdate {
     pub discord_listen_along: Option<bool>,
     pub others_can_control: Option<bool>,
     pub start_music_app: Option<bool>,
+    /// Replaces the overlay settings as a whole.
+    pub overlay: Option<OverlaySettings>,
 }
 
 impl Settings {
@@ -127,6 +203,13 @@ impl Settings {
             Some(offset) => offset,
             None => self.listening_offset_ms,
         };
+        if let Some(overlay) = &update.overlay {
+            if !FLASH_MS_RANGE.contains(&overlay.flash_ms) {
+                return Err(AppError::InvalidSetting(
+                    "Notifications stay up for 1 to 5 seconds.".to_owned(),
+                ));
+            }
+        }
         self.display_name = display_name;
         self.server_url = server_url;
         self.listening_offset_ms = listening_offset_ms;
@@ -141,6 +224,9 @@ impl Settings {
         }
         if let Some(enabled) = update.start_music_app {
             self.start_music_app = enabled;
+        }
+        if let Some(overlay) = update.overlay {
+            self.overlay = overlay;
         }
         Ok(())
     }
@@ -263,6 +349,7 @@ mod tests {
         let settings = store.load_settings();
         assert_eq!(settings.display_name.as_deref(), Some("Lily"));
         assert_eq!(settings.listening_offset_ms, 0);
+        assert_eq!(settings.overlay, OverlaySettings::default());
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -300,6 +387,13 @@ mod tests {
             },
             SettingsUpdate {
                 listening_offset_ms: Some(MAX_LISTENING_OFFSET_MS + 1),
+                ..SettingsUpdate::default()
+            },
+            SettingsUpdate {
+                overlay: Some(OverlaySettings {
+                    flash_ms: 10_000,
+                    ..OverlaySettings::default()
+                }),
                 ..SettingsUpdate::default()
             },
         ] {

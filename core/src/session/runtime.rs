@@ -57,6 +57,7 @@ use crate::{
         SessionOperation, SessionSnapshot, state,
     },
     session::{
+        activity::{self, Activity},
         bridge::ProviderBridge,
         status::{Notice, QueueItem, RuntimeStatus, SyncState, UnavailableWarning},
     },
@@ -263,6 +264,7 @@ pub struct SessionRuntime {
     commands: mpsc::Sender<Command>,
     status: watch::Receiver<RuntimeStatus>,
     notices: broadcast::Sender<Notice>,
+    activity: broadcast::Sender<Activity>,
     credentials: JoinCredentials,
     task: JoinHandle<()>,
 }
@@ -357,11 +359,13 @@ impl SessionRuntime {
         worker.commands = Some(receiver);
         let status = worker.status.subscribe();
         let notices = worker.notices.clone();
+        let activity = worker.activity.clone();
         let task = tokio::spawn(worker.run());
         Self {
             commands,
             status,
             notices,
+            activity,
             credentials,
             task,
         }
@@ -381,6 +385,11 @@ impl SessionRuntime {
 
     pub fn notices(&self) -> broadcast::Receiver<Notice> {
         self.notices.subscribe()
+    }
+
+    /// What other people do in the session, as it arrives.
+    pub fn activity(&self) -> broadcast::Receiver<Activity> {
+        self.activity.subscribe()
     }
 
     /// Stop following until [`SessionRuntime::resync`].
@@ -481,6 +490,7 @@ struct Worker<B> {
     commands: Option<mpsc::Receiver<Command>>,
     status: watch::Sender<RuntimeStatus>,
     notices: broadcast::Sender<Notice>,
+    activity: broadcast::Sender<Activity>,
 
     session_id: String,
     mirror: SessionMusicState,
@@ -512,6 +522,9 @@ struct Worker<B> {
     reported_found: HashSet<String>,
     reported_status: Option<ParticipantStatus>,
     participants: Vec<Participant>,
+    /// Whether the server has sent the participant list yet. The first one
+    /// is who was already here: not reported as joining.
+    participants_known: bool,
     /// Who hosts and whether others may change what's playing, as the
     /// server last said.
     control: Option<SessionControl>,
@@ -562,6 +575,7 @@ impl<B: ProviderBridge> Worker<B> {
         };
         let (status, _) = watch::channel(initial_status);
         let (notices, _) = broadcast::channel(NOTICE_CAPACITY);
+        let (activity, _) = broadcast::channel(NOTICE_CAPACITY);
         let (prefetched_tx, prefetched_rx) = mpsc::unbounded_channel();
         let worker = Self {
             bridge,
@@ -571,6 +585,7 @@ impl<B: ProviderBridge> Worker<B> {
             commands: None,
             status,
             notices,
+            activity,
             session_id,
             applied: snapshot.revision,
             mirror: snapshot.state,
@@ -589,6 +604,7 @@ impl<B: ProviderBridge> Worker<B> {
             reported_found: HashSet::new(),
             reported_status: sync.participant_status(),
             participants: Vec::new(),
+            participants_known: false,
             control: None,
             allow_others: true,
             last_refusal_notice: None,
@@ -638,6 +654,17 @@ impl<B: ProviderBridge> Worker<B> {
 
     fn notify(&self, notice: Notice) {
         let _ = self.notices.send(notice);
+    }
+
+    fn report(&self, activity: Activity) {
+        let _ = self.activity.send(activity);
+    }
+
+    fn display_name(&self, client_id: &str) -> Option<String> {
+        self.participants
+            .iter()
+            .find(|p| p.client_id == client_id)
+            .map(|p| p.display_name.clone())
     }
 
     async fn run(mut self) {
@@ -1444,11 +1471,23 @@ impl<B: ProviderBridge> Worker<B> {
         match event {
             SessionEvent::RemoteOperation {
                 sequence,
+                origin_client_id,
                 operation,
                 accepted_at_ms,
-                ..
             } => {
+                // Reported as it arrives, not once applied: a pause shows
+                // the moment it's known.
                 if sequence > self.applied {
+                    let by = origin_client_id.as_deref().map(|id| {
+                        self.display_name(id)
+                            .unwrap_or_else(|| "Someone".to_owned())
+                    });
+                    let ending = self.song_is_ending();
+                    if let Some(done) =
+                        activity::from_operation(&operation, by, &self.mirror, ending)
+                    {
+                        self.report(done);
+                    }
                     self.pending
                         .insert(sequence, Pending::Remote(operation, accepted_at_ms));
                 }
@@ -1456,11 +1495,31 @@ impl<B: ProviderBridge> Worker<B> {
             }
             SessionEvent::SequenceGap { .. } => self.resync().await,
             SessionEvent::Participants(participants) => {
+                if self.participants_known {
+                    let own = self.client.client_id().to_owned();
+                    for change in
+                        activity::participant_changes(&self.participants, &participants, &own)
+                    {
+                        self.report(change);
+                    }
+                }
+                self.participants_known = true;
                 self.participants = participants;
                 self.publish();
             }
             SessionEvent::FoundTracks(tracks) => self.note_found(tracks),
             SessionEvent::Control(control) => {
+                let new_host = self
+                    .control
+                    .as_ref()
+                    .is_some_and(|before| before.host_client_id != control.host_client_id);
+                if new_host {
+                    let you = control.host_client_id == self.client.client_id();
+                    let name = self
+                        .display_name(&control.host_client_id)
+                        .unwrap_or_else(|| "Someone".to_owned());
+                    self.report(Activity::NewHost { name, you });
+                }
                 self.control = Some(control);
                 // Just became host, perhaps: the session follows our rule.
                 self.apply_own_rule().await;

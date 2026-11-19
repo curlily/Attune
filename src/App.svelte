@@ -17,6 +17,7 @@
   import Jam from "./screens/Jam.svelte";
   import Mini from "./screens/Mini.svelte";
   import SettingsScreen from "./screens/Settings.svelte";
+  import OverlaySettingsScreen from "./screens/OverlaySettings.svelte";
   import { applyTheme } from "./lib/theme";
 
   let failure = $state<string | null>(null);
@@ -80,15 +81,29 @@
   });
 
   let title = $derived(
-    app.showSettings ? "Settings" : app.screen === "jam" ? "Session" : "Attune",
+    app.showSettings
+      ? app.settingsPage === "overlay"
+        ? "Overlay"
+        : "Settings"
+      : app.screen === "jam"
+        ? "Session"
+        : "Attune",
   );
 
   // Screens rise into place; coming back from Settings (which slides in
   // from the right) slides back in from the left instead.
   let backFromSettings = false;
+  let lastSettingsPage = "main";
   $effect.pre(() => {
     if (app.showSettings) backFromSettings = true;
+    else lastSettingsPage = "main";
   });
+  // Settings' own pages: deeper in from the right, back out from the left.
+  function settingsIntroX() {
+    const back = lastSettingsPage === "overlay" && app.settingsPage === "main";
+    lastSettingsPage = app.settingsPage;
+    return back ? -24 : 24;
+  }
   function screenIntro() {
     const back = backFromSettings;
     backFromSettings = false;
@@ -153,9 +168,17 @@
       {#if failure}
         <p class="failure">Attune couldn't start: {failure}</p>
       {:else if app.showSettings}
-        <div class="screen" in:fly={{ x: 24, duration: 220, easing: cubicOut }}>
-          <SettingsScreen />
-        </div>
+        <!-- A sub-page slides in from the right; back from it, Settings
+             slides in from the left. -->
+        {#key app.settingsPage}
+          <div class="screen" in:fly={{ x: settingsIntroX(), duration: 220, easing: cubicOut }}>
+            {#if app.settingsPage === "overlay"}
+              <OverlaySettingsScreen />
+            {:else}
+              <SettingsScreen />
+            {/if}
+          </div>
+        {/key}
       {:else}
         {#key app.screen}
           <div

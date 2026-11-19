@@ -12,6 +12,10 @@ export default defineConfig({
   },
   build: {
     target: "es2022",
+    // The main window and the overlay window are separate pages.
+    rollupOptions: {
+      input: { main: "index.html", overlay: "overlay.html" },
+    },
     outDir: "dist",
     emptyOutDir: true,
   },

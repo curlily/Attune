@@ -19,7 +19,7 @@ use attune_core::{
         ParticipantStatus, QueueEntry, RepeatMode, SessionMusicState, SessionOperation as Op,
         SessionPlayback, SessionSnapshot, TrackDescriptor, state,
     },
-    session::{Notice, ProviderBridge, QueueEdit, SessionRuntime, SyncState},
+    session::{Activity, Notice, ProviderBridge, QueueEdit, SessionRuntime, SyncState},
 };
 use support::TestServer;
 use tokio::{sync::broadcast, time::timeout};
@@ -477,6 +477,72 @@ async fn joining_applies_the_session_and_changes_flow_both_ways() {
         s.a_provider.loads(),
         1,
         "A's own changes are not applied back to A"
+    );
+}
+
+#[tokio::test]
+async fn others_changes_are_reported_by_name_and_own_ones_are_not() {
+    let s = session(&[]).await;
+    let mut a_seen = s.a.activity();
+    let mut b_seen = s.b.activity();
+
+    s.a_provider
+        .local(Op::PlaybackSetPlaying { is_playing: false });
+    let seen = timeout(WAIT, b_seen.recv())
+        .await
+        .expect("B hears")
+        .expect("open");
+    assert_eq!(
+        seen,
+        Activity::Paused {
+            by: Some("User a".to_owned())
+        }
+    );
+    eventually("B paused", || !s.b_provider.playing()).await;
+    assert!(a_seen.try_recv().is_err(), "A's own pause isn't news to A");
+}
+
+#[tokio::test]
+async fn joins_and_leaves_are_reported_but_not_who_was_already_there() {
+    let server = TestServer::start().await;
+    let a_provider = FakeProvider::new(&["s1"]);
+    let a = SessionRuntime::create(a_provider.clone(), config(&server, "a"))
+        .await
+        .expect("create");
+    let mut a_seen = a.activity();
+    let b = SessionRuntime::join(
+        FakeProvider::new(&["x1"]),
+        config(&server, "b"),
+        a.credentials().clone(),
+    )
+    .await
+    .expect("join");
+    let mut b_seen = b.activity();
+    let joined = timeout(WAIT, a_seen.recv())
+        .await
+        .expect("A hears")
+        .expect("open");
+    assert_eq!(
+        joined,
+        Activity::Joined {
+            name: "User b".to_owned()
+        }
+    );
+
+    b.leave().await.expect("leave");
+    let left = timeout(WAIT, a_seen.recv())
+        .await
+        .expect("A hears")
+        .expect("open");
+    assert_eq!(
+        left,
+        Activity::Left {
+            name: "User b".to_owned()
+        }
+    );
+    assert!(
+        !matches!(b_seen.try_recv(), Ok(Activity::Joined { .. })),
+        "B isn't told A joined: A was already there"
     );
 }
 

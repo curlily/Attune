@@ -40,7 +40,38 @@ export interface Settings {
   discordListenAlong: boolean;
   /** Let others change what's playing (counts while you host). */
   othersCanControl: boolean;
+  overlay: OverlaySettings;
 }
+
+export type Corner = "topLeft" | "topRight" | "bottomLeft" | "bottomRight";
+/** fullScreen: only over a full-screen app or game; hidden: also whenever
+ *  Attune's window is in the tray or minimised; always: everywhere but
+ *  over Attune itself. */
+export type ShowWhen = "fullScreen" | "hidden" | "always";
+
+/** The small notification drawn over other apps and games. */
+export interface OverlaySettings {
+  enabled: boolean;
+  /** flash: shown for a moment when something happens; persistent: always
+   *  there in a session, showing the song between events. */
+  mode: OverlayMode;
+  corner: Corner;
+  /** How long a notification stays up (1000 to 5000). */
+  flashMs: number;
+  showWhen: ShowWhen;
+  /** Paused, skipped, queue changes and the like by others. */
+  playback: boolean;
+  /** Joined, left, new host. */
+  people: boolean;
+  /** Catching up, stepped out, out of sync. */
+  sync: boolean;
+  /** Flash mode: the new song's name and cover when the song changes. */
+  songs: boolean;
+  /** Persistent mode: the song shows faded while nothing else is up. */
+  dimIdle: boolean;
+}
+
+export type OverlayMode = "flash" | "persistent";
 
 export interface UpdateInfo {
   version: string;
@@ -62,6 +93,8 @@ export interface SettingsUpdate {
   discordListenAlong?: boolean;
   othersCanControl?: boolean;
   startMusicApp?: boolean;
+  /** Replaces the overlay settings as a whole. */
+  overlay?: OverlaySettings;
 }
 
 export type SyncState =
@@ -225,6 +258,8 @@ export const api = {
   setAutostart: (enabled: boolean) => invoke<boolean>("set_autostart", { enabled }),
   /** Save this run's log to Downloads and show it; returns the file's path. */
   saveLog: () => invoke<string>("save_log"),
+  /** Show a sample notification on the overlay, whatever is in front. */
+  testOverlay: () => invoke<void>("test_overlay"),
 };
 
 export const events = {
