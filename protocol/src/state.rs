@@ -485,11 +485,23 @@ pub fn is_noop(state: &SessionMusicState, operation: &SessionOperation, now_ms: 
 /// that preceded it in `session` and still exists; with no such anchor it goes
 /// right after the current entry. Relative order of re-inserted entries is
 /// preserved.
+///
+/// A `local` queue that shares no entry with `session` is a new list (the
+/// user started a playlist or album in the provider), so it replaces the
+/// session's songs, the unavailable ones too. Re-inserting them put them in
+/// front of the new list (seen live on TIDAL, 2026-11-27: three songs from
+/// a friend's queue stayed after the one the playlist started with).
 pub fn reinsert_unavailable(
     local: &[QueueEntry],
     session: &[QueueEntry],
     unavailable: &HashSet<String>,
 ) -> Vec<QueueEntry> {
+    let new_list = !local
+        .iter()
+        .any(|entry| session.iter().any(|e| e.entry_id == entry.entry_id));
+    if new_list {
+        return local.to_vec();
+    }
     let mut merged = local.to_vec();
     let mut insert_after: Option<usize> = None;
 

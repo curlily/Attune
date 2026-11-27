@@ -757,10 +757,20 @@ fn reinsert_walks_back_past_removed_predecessors() {
 
 #[test]
 fn reinsert_without_anchor_goes_after_current() {
-    let session = queue(&["gone", "x"]);
-    let local = queue(&["new", "other"]);
+    let session = queue(&["x", "a", "b"]);
+    let local = queue(&["b", "c"]); // user removed a
     let merged = reinsert_unavailable(&local, &session, &unavailable(&["x"]));
-    assert_eq!(entry_ids(&merged), ["new", "x", "other"]);
+    assert_eq!(entry_ids(&merged), ["b", "x", "c"]);
+}
+
+#[test]
+fn reinsert_leaves_a_new_list_alone() {
+    // Starting a playlist in the provider replaces the whole session queue,
+    // songs this client couldn't play included.
+    let session = queue(&["a", "x", "b", "y"]);
+    let local = queue(&["new", "other", "third"]);
+    let merged = reinsert_unavailable(&local, &session, &unavailable(&["x", "y"]));
+    assert_eq!(entry_ids(&merged), ["new", "other", "third"]);
 }
 
 #[test]

@@ -636,6 +636,22 @@ async fn local_queue_edits_keep_songs_this_provider_lacks() {
 }
 
 #[tokio::test]
+async fn starting_a_new_list_drops_songs_this_provider_lacks() {
+    let s = session(&["s2"]).await;
+
+    // B starts a playlist in its music app: none of the session's songs.
+    s.b_provider.local(Op::QueueReplace {
+        entries: vec![entry("p1"), entry("p2"), entry("p3")],
+        current_entry_id: Some("p1".to_owned()),
+        playback: None,
+    });
+    eventually("A plays the playlist without s2 in front", || {
+        s.a_provider.ids() == ["p1", "p2", "p3"]
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn song_nobody_listening_can_play_is_skipped() {
     let s = session(&["s2"]).await;
     // Only B is listening now, and B can't play s2.
