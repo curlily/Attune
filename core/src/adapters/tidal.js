@@ -1742,6 +1742,14 @@
 
     function emitLocalChanges(beforeReduxState, afterReduxState) {
         if (Date.now() < suppressLocalChangesUntil) return;
+        // What the session sees of TIDAL is its queue and playback; the store
+        // replaces each when it changes. Most store changes are elsewhere
+        // (views, search, the library), and reading both queues for them
+        // found nothing.
+        if (beforeReduxState?.playQueue === afterReduxState?.playQueue &&
+            beforeReduxState?.playbackControls === afterReduxState?.playbackControls) {
+            return;
+        }
 
         let before;
         let after;
