@@ -55,8 +55,6 @@ const SETTLE: Duration = Duration::from_millis(300);
 /// Applying a session's change can take the music app a moment longer, and
 /// it doesn't report those changes itself: read it again after this.
 const SESSION_SETTLE: Duration = Duration::from_millis(1500);
-/// Paused this long, the activity goes away until the music plays again.
-const PAUSED_HIDE_AFTER: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Default)]
 struct Wanted {
@@ -164,18 +162,15 @@ pub fn follow_music_app(app: AppHandle, controller: &Arc<BridgeController>) {
     tauri::async_runtime::spawn(async move {
         let presence = app.state::<DiscordPresence>();
         let session_changed = presence.session_changed.clone();
-        let mut pause = PauseClock::default();
         loop {
-            if !read_music_app(&presence, &watched, name, &mut pause).await {
+            if !read_music_app(&presence, &watched, name).await {
                 break;
             }
-            // Wake to hide it once it has been paused long enough.
-            let hide_at = pause.hide_at().filter(|&at| at > Instant::now());
-            match next_change(&mut events, &session_changed, hide_at).await {
-                Change::App | Change::PausedLong => {}
+            match next_change(&mut events, &session_changed).await {
+                Change::App => {}
                 Change::Session => {
                     sleep(SESSION_SETTLE - SETTLE).await;
-                    if !read_music_app(&presence, &watched, name, &mut pause).await {
+                    if !read_music_app(&presence, &watched, name).await {
                         break;
                     }
                 }
@@ -186,13 +181,12 @@ pub fn follow_music_app(app: AppHandle, controller: &Arc<BridgeController>) {
     });
 }
 
-/// Show what the music app plays, or nothing once it has been paused for
-/// [`PAUSED_HIDE_AFTER`]; `false` once it's gone.
+/// Show what the music app plays (nothing while it's paused); `false` once
+/// it's gone.
 async fn read_music_app(
     presence: &DiscordPresence,
     watched: &Weak<BridgeController>,
     name: &str,
-    pause: &mut PauseClock,
 ) -> bool {
     let Some(controller) = watched.upgrade() else {
         return false;
@@ -200,44 +194,10 @@ async fn read_music_app(
     let state = controller.get_session_state().await;
     drop(controller);
     match state {
-        Ok(state) => {
-            let now = Instant::now();
-            pause.update(&state, now);
-            let paused_long = pause.hide_at().is_some_and(|at| now >= at);
-            presence.show_music_app((!paused_long).then_some(&state), name);
-        }
+        Ok(state) => presence.show_music_app(Some(&state), name),
         Err(error) => debug!(%error, "Could not read the music app for Discord"),
     }
     true
-}
-
-/// How long the music app has been paused on the same song.
-#[derive(Debug, Default)]
-struct PauseClock {
-    /// The paused song (title and artists) and since when.
-    since: Option<(String, Instant)>,
-}
-
-impl PauseClock {
-    fn update(&mut self, state: &SessionMusicState, now: Instant) {
-        let paused_on = state
-            .queue
-            .first()
-            .filter(|_| !state.playback.is_playing)
-            .map(|entry| format!("{}\n{}", entry.track.title, entry.track.artists.join("\n")));
-        self.since = match (paused_on, self.since.take()) {
-            (None, _) => None,
-            (Some(song), Some((was, since))) if song == was => Some((was, since)),
-            (Some(song), _) => Some((song, now)),
-        };
-    }
-
-    /// When the activity should go away, while paused.
-    fn hide_at(&self) -> Option<Instant> {
-        self.since
-            .as_ref()
-            .map(|(_, since)| *since + PAUSED_HIDE_AFTER)
-    }
 }
 
 enum Change {
@@ -245,8 +205,6 @@ enum Change {
     App,
     /// The session changed something, or might have.
     Session,
-    /// Paused for [`PAUSED_HIDE_AFTER`].
-    PausedLong,
     /// The music app is gone.
     Gone,
 }
@@ -255,7 +213,6 @@ enum Change {
 async fn next_change(
     events: &mut broadcast::Receiver<BridgeEvent>,
     session_changed: &Notify,
-    hide_at: Option<Instant>,
 ) -> Change {
     let change = loop {
         tokio::select! {
@@ -269,9 +226,6 @@ async fn next_change(
                 Ok(_) | Err(RecvError::Lagged(_)) => continue,
             },
             () = session_changed.notified() => break Change::Session,
-            () = sleep_until(hide_at.unwrap_or_else(Instant::now)), if hide_at.is_some() => {
-                return Change::PausedLong;
-            }
         }
     };
     sleep(SETTLE).await;
@@ -438,25 +392,21 @@ mod tests {
     }
 
     #[test]
-    fn hides_a_minute_into_a_pause_on_the_same_song() {
-        let start = Instant::now();
-        let mut pause = PauseClock::default();
-        pause.update(&state("A", true), start);
-        assert_eq!(pause.hide_at(), None);
-
-        pause.update(&state("A", false), start);
-        let hide_at = start + PAUSED_HIDE_AFTER;
-        assert_eq!(pause.hide_at(), Some(hide_at));
-        // Reading again while paused keeps the clock.
-        pause.update(&state("A", false), start + Duration::from_secs(30));
-        assert_eq!(pause.hide_at(), Some(hide_at));
-        // Another song, still paused, starts it again.
-        let later = start + Duration::from_secs(40);
-        pause.update(&state("B", false), later);
-        assert_eq!(pause.hide_at(), Some(later + PAUSED_HIDE_AFTER));
-        // Playing stops it.
-        pause.update(&state("B", true), later);
-        assert_eq!(pause.hide_at(), None);
+    fn a_pause_takes_the_activity_away_at_once_and_playing_brings_it_back() {
+        let (wanted, shown) = watch::channel(Wanted {
+            enabled: true,
+            ..Wanted::default()
+        });
+        let presence = DiscordPresence {
+            wanted,
+            session_changed: Arc::new(Notify::new()),
+        };
+        presence.show_music_app(Some(&state("A", true)), "TIDAL");
+        assert!(shown.borrow().shown().is_some());
+        presence.show_music_app(Some(&state("A", false)), "TIDAL");
+        assert!(shown.borrow().shown().is_none());
+        presence.show_music_app(Some(&state("A", true)), "TIDAL");
+        assert!(shown.borrow().shown().is_some());
     }
 }
 

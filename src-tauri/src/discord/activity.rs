@@ -104,35 +104,25 @@ impl Activity {
 
 /// The activity for what the music app `app` is playing (`state`) at
 /// `now_ms` (Unix ms, this computer's clock), or `None` when it has nothing
-/// loaded.
+/// loaded or is paused: a pause takes the activity away until it plays again.
 pub fn from_state(state: &SessionMusicState, app: &str, now_ms: u64) -> Option<Activity> {
-    let track = &state.queue.first()?.track;
     let playback = &state.playback;
-    let title = text(&track.title).unwrap_or_else(|| "Unknown song".to_owned());
-    // Shown under your name too, so only the artists, paused or not.
+    if !playback.is_playing {
+        return None;
+    }
+    let track = &state.queue.first()?.track;
+    let details = text(&track.title).unwrap_or_else(|| "Unknown song".to_owned());
+    // Shown under your name too, so only the artists.
     let state = text(&track.artists.join(", "));
 
-    let (details, timestamps) = if playback.is_playing {
-        let elapsed = now_ms.saturating_sub(playback.position_captured_at_ms);
-        let position = playback.position_ms + elapsed;
-        let start = now_ms.saturating_sub(position);
-        let end = track
-            .duration_ms
-            .filter(|&duration| duration > 0 && position <= duration)
-            .map(|duration| start + duration);
-        (title, Some(Timestamps { start, end }))
-    } else {
-        let paused = text(&format!("Paused · {title}")).unwrap_or(title);
-        // With no timestamps Discord counts up from when the activity was
-        // set (a green ♫ 0:00). A song that started and ended at the moment
-        // it was paused shows no timer at all.
-        let paused_at = playback.position_captured_at_ms.min(now_ms);
-        let stopped = Timestamps {
-            start: paused_at,
-            end: Some(paused_at),
-        };
-        (paused, Some(stopped))
-    };
+    let elapsed = now_ms.saturating_sub(playback.position_captured_at_ms);
+    let position = playback.position_ms + elapsed;
+    let start = now_ms.saturating_sub(position);
+    let end = track
+        .duration_ms
+        .filter(|&duration| duration > 0 && position <= duration)
+        .map(|duration| start + duration);
+    let timestamps = Some(Timestamps { start, end });
 
     let assets = track
         .cover_url
@@ -222,24 +212,8 @@ mod tests {
     }
 
     #[test]
-    fn paused_has_no_timer() {
-        let activity = from_state(&state(false), "TIDAL", NOW).unwrap();
-        // Zero length, in the past: Discord shows neither a bar nor a counter.
-        let paused_at = NOW - 2_000;
-        assert_eq!(
-            activity.timestamps,
-            Some(Timestamps {
-                start: paused_at,
-                end: Some(paused_at)
-            })
-        );
-        // And it stays put while the pause lasts.
-        let later = from_state(&state(false), "TIDAL", NOW + 60_000).unwrap();
-        assert_eq!(activity, later);
-        // "Paused" on the card's title line; the line under your name keeps
-        // just the artists.
-        assert_eq!(activity.details, "Paused · Midnight Static");
-        assert_eq!(activity.state.as_deref(), Some("Paper Satellites, Kei"));
+    fn nothing_while_paused() {
+        assert_eq!(from_state(&state(false), "TIDAL", NOW), None);
     }
 
     #[test]
