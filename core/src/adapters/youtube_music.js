@@ -229,7 +229,23 @@
         return typeof url === "string" && url.startsWith("https://") && url.length <= 1024 ? url : null;
     }
 
+    // Queue items are the store's own, replaced rather than changed (only
+    // their queue number is set in place, which isn't part of this), so a
+    // song's details are worked out once per item, not on every store
+    // change, poll and position check.
+    const descriptors = new WeakMap();
+
     function descriptorOf(item) {
+        if (!item || typeof item !== "object") return readDescriptor(item);
+        let descriptor = descriptors.get(item);
+        if (!descriptor) {
+            descriptor = readDescriptor(item);
+            descriptors.set(item, descriptor);
+        }
+        return { ...descriptor, artists: [...descriptor.artists] };
+    }
+
+    function readDescriptor(item) {
         const renderer = rendererOf(item);
         const { artists, album } = parseByline(renderer?.longBylineText ?? renderer?.shortBylineText);
         // A video's title is shared as the song's, so every service finds it.
@@ -1533,6 +1549,19 @@
         });
     }
 
+    /** The current item, if it is a video to swap now (`videosToSwap` for it alone). */
+    function currentVideoToSwap() {
+        const state = appState();
+        const items = state.queue?.items ?? [];
+        const index = currentIndex(state);
+        const item = items[index];
+        const videoId = videoIdOf(item);
+        if (!videoId || !isMusicVideo(rendererOf(item))) return null;
+        noteGeneration();
+        const [entry] = videosToSwap([{ key: keyOf(item, index), videoId, item }]);
+        return entry ?? null;
+    }
+
     function videoIdOfRenderer(renderer) {
         return renderer?.videoId ?? renderer?.navigationEndpoint?.watchEndpoint?.videoId ?? null;
     }
@@ -1568,12 +1597,13 @@
     }
 
     // During a session, every store change: a video that just became the
-    // current item is held and swapped at once, before it plays.
+    // current item is held and swapped at once, before it plays. Only the
+    // current item is looked at: the store changes many times a second
+    // while a song plays.
     function holdCurrentVideo() {
         if (!sessionSettings || swapRunning || applying > 0 || Date.now() < suppressLocalChangesUntil) return;
-        const queue = readQueue();
-        const videos = videosToSwap(queue);
-        if (videos[0] && videos[0] === queue[0]) swapVideos([videos[0]]);
+        const video = currentVideoToSwap();
+        if (video) swapVideos([video]);
     }
 
     async function lookUpAll(videos) {

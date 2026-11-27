@@ -52,7 +52,7 @@
       </button>
     </div>
     {#if current}
-      <div class="progress" aria-hidden="true">
+      <div class="progress" aria-hidden="true" use:playback.bar>
         <div class="bar" style:transform="scaleX({playback.fraction})"></div>
       </div>
     {/if}

@@ -47,46 +47,67 @@
     return () => observer.disconnect();
   });
 
+  // The left edge fades while the text's start is out of view.
+  let panned = $state(false);
+  let fadeTime = $state(FADE_TIME);
+
+  // Each pan is an animation of its own, started by a timer: while the
+  // text rests nothing animates, so nothing is drawn. (One endless
+  // animation with the rests in it, plus the fade animated as a custom
+  // property, redrew the text every frame for as long as it was shown.)
   $effect(() => {
     if (!box || !inner || !active || overflow === 0) return;
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const el = inner;
     const shift = overflow + FADE;
-    const pan = shift / SPEED;
-    const total = REST_START + pan + REST_END + pan;
-    const at = (seconds: number) => seconds / total;
-    const ease = "ease-in-out";
-    const timing = { duration: total * 1000, iterations: Infinity };
+    const pan = (shift / SPEED) * 1000;
+    fadeTime = Math.min(FADE_TIME, pan / 2000);
+    const timing = { duration: pan, easing: "ease-in-out", fill: "forwards" as const };
+    const left = `translateX(-${shift}px)`;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let animations: Animation[] = [];
+    let stopped = false;
 
-    const moving = inner.animate(
-      [
-        { offset: 0, transform: "translateX(0)" },
-        { offset: at(REST_START), transform: "translateX(0)", easing: ease },
-        { offset: at(REST_START + pan), transform: `translateX(-${shift}px)` },
-        { offset: at(REST_START + pan + REST_END), transform: `translateX(-${shift}px)`, easing: ease },
-        { offset: 1, transform: "translateX(0)" },
-      ],
-      timing,
-    );
-    // The fade comes in as the text starts to leave, and goes as it's back.
-    const fadeTime = Math.min(FADE_TIME, pan / 2);
-    const fading = box.animate(
-      [
-        { offset: 0, "--fade-left": "0px" },
-        { offset: at(REST_START), "--fade-left": "0px" },
-        { offset: at(REST_START + fadeTime), "--fade-left": `${FADE}px` },
-        { offset: at(total - fadeTime), "--fade-left": `${FADE}px` },
-        { offset: 1, "--fade-left": "0px" },
-      ],
-      timing,
-    );
+    const after = (ms: number, next: () => void) => {
+      timer = setTimeout(() => !stopped && next(), ms);
+    };
+    const panOut = () => {
+      panned = true;
+      const out = el.animate([{ transform: "translateX(0)" }, { transform: left }], timing);
+      animations = [out];
+      out.onfinish = () => !stopped && after(REST_END * 1000, panBack);
+    };
+    const panBack = () => {
+      const back = el.animate([{ transform: left }, { transform: "translateX(0)" }], timing);
+      animations.push(back);
+      // The fade goes as the text arrives back.
+      after(pan - fadeTime * 1000, () => (panned = false));
+      back.onfinish = () => {
+        if (stopped) return;
+        animations.forEach((animation) => animation.cancel());
+        animations = [];
+        rest();
+      };
+    };
+    const rest = () => after(REST_START * 1000, panOut);
+
+    rest();
     return () => {
-      moving.cancel();
-      fading.cancel();
+      stopped = true;
+      clearTimeout(timer);
+      animations.forEach((animation) => animation.cancel());
+      panned = false;
     };
   });
 </script>
 
-<span class="marquee {className}" class:fades={overflow > 0} bind:this={box}>
+<span
+  class="marquee {className}"
+  class:fades={overflow > 0}
+  class:panned
+  style:--fade-time="{fadeTime}s"
+  bind:this={box}
+>
   <span class="inner" bind:this={inner}>
     {@render children()}
   </span>
@@ -107,6 +128,10 @@
       black calc(100% - 14px),
       transparent
     );
+    transition: --fade-left var(--fade-time) ease;
+  }
+  .marquee.panned {
+    --fade-left: 14px;
   }
   .inner {
     display: inline-block;

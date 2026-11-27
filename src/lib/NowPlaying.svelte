@@ -74,7 +74,7 @@
 {#if current}
   <div class="timeline" class:paused={!status.playback.isPlaying} title={status.playback.isPlaying ? undefined : "Paused"}>
     <span class="time">{formatTime(playback.position)}</span>
-    <div class="progress" aria-hidden="true">
+    <div class="progress" aria-hidden="true" use:playback.bar>
       <div class="bar" style:transform="scaleX({playback.fraction})"></div>
     </div>
     <span class="time">{playback.duration ? formatTime(playback.duration) : "–:––"}</span>
